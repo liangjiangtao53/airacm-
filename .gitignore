@@ -1,0 +1,20 @@
+# 依赖与构建产物
+node_modules/
+dist/
+build/
+
+# 本地数据库与密钥
+*.sqlite
+.env
+.env.local
+
+# 逆向反编译产物(体积大、非源码,仅本地参考)
+reverse_apk_21D7BBB4/
+reverse_com.appbyme.app/
+
+# 系统/编辑器
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.log

@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>机务在线学习计费 Mock</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark">A</div>
+        <div>
+          <div class="brand-title">机务在线</div>
+          <div class="brand-subtitle">学习与计费复原版</div>
+        </div>
+      </div>
+
+      <nav class="main-tabs" aria-label="主导航">
+        <button class="tab-button active" data-view="learning">英语学习</button>
+        <button class="tab-button" data-view="cart">购物车 <span id="cartCount" class="counter">0</span></button>
+        <button class="tab-button" data-view="orders">订单</button>
+        <button class="tab-button" data-view="mine">我的学习</button>
+      </nav>
+
+      <div class="user-box">
+        <span id="userStatus" class="user-status">未登录</span>
+        <button id="loginButton" class="button primary small">模拟登录</button>
+      </div>
+    </header>
+
+    <main class="content">
+      <section id="learningView" class="view active" aria-label="英语学习">
+        <div class="section-head">
+          <div>
+            <h1>英语学习</h1>
+            <p>按原 App 的频道结构复原，课程、购买和权益使用本地 mock 状态。</p>
+          </div>
+          <div class="status-strip">
+            <div>
+              <span class="metric" id="ownedCount">0</span>
+              <span class="metric-label">已购课程</span>
+            </div>
+            <div>
+              <span class="metric" id="pendingCount">0</span>
+              <span class="metric-label">待支付</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="learning-grid">
+          <aside class="module-panel">
+            <h2>参考</h2>
+            <div id="referenceModules" class="module-grid"></div>
+            <h2>练习</h2>
+            <div id="practiceModules" class="module-grid"></div>
+          </aside>
+
+          <section class="course-panel">
+            <div class="panel-toolbar">
+              <div>
+                <h2>课程</h2>
+                <p>价格和购买入口来自已抓取课程页。</p>
+              </div>
+              <div class="segmented" role="tablist" aria-label="课程筛选">
+                <button class="segment active" data-filter="all">全部</button>
+                <button class="segment" data-filter="owned">已购</button>
+                <button class="segment" data-filter="free">可试听</button>
+              </div>
+            </div>
+            <div id="courseList" class="course-list"></div>
+          </section>
+        </div>
+      </section>
+
+      <section id="cartView" class="view" aria-label="购物车">
+        <div class="section-head">
+          <div>
+            <h1>购物车</h1>
+            <p>复原 `keke_video_base:ajax` 加购物车后的本地状态。</p>
+          </div>
+          <button id="clearCartButton" class="button ghost">清空</button>
+        </div>
+        <div id="cartList" class="stack"></div>
+      </section>
+
+      <section id="ordersView" class="view" aria-label="订单">
+        <div class="section-head">
+          <div>
+            <h1>订单</h1>
+            <p>订单不会触发真实扣费，只做 pending、paid、failed、cancelled 状态。</p>
+          </div>
+        </div>
+        <div id="ordersList" class="stack"></div>
+      </section>
+
+      <section id="mineView" class="view" aria-label="我的学习">
+        <div class="section-head">
+          <div>
+            <h1>我的学习</h1>
+            <p>支付成功后写入本地权益，再开放付费课时和学习进度。</p>
+          </div>
+        </div>
+        <div id="mineList" class="stack"></div>
+      </section>
+    </main>
+  </div>
+
+  <aside id="detailDrawer" class="drawer" aria-hidden="true">
+    <div class="drawer-backdrop" data-close-drawer></div>
+    <div class="drawer-panel" role="dialog" aria-modal="true" aria-labelledby="detailTitle">
+      <div class="drawer-header">
+        <div>
+          <span id="detailCategory" class="eyebrow"></span>
+          <h2 id="detailTitle"></h2>
+        </div>
+        <button class="icon-button" data-close-drawer aria-label="关闭详情">×</button>
+      </div>
+      <div id="detailBody" class="drawer-body"></div>
+    </div>
+  </aside>
+
+  <div id="modal" class="modal" aria-hidden="true">
+    <div class="modal-backdrop" data-close-modal></div>
+    <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+      <h2 id="modalTitle"></h2>
+      <div id="modalBody"></div>
+      <div id="modalActions" class="modal-actions"></div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast" aria-live="polite"></div>
+
+  <script src="./app.js"></script>
+</body>
+</html>
