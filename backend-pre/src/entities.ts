@@ -11,6 +11,14 @@ import {
 // 约定:所有金额字段以「分」(integer)存储,避免浮点误差;前端展示再除 100。
 // 所有业务表带 tenant_id(行级多租户,D4),复合索引 (tenant_id, user_id)。
 
+// 时间列类型按驱动切换:Postgres 用 timestamptz,SQLite(dev/测试)用 datetime。
+// CreateDateColumn/UpdateDateColumn 由 TypeORM 自动按驱动选型,无需处理。
+const TS_TYPE: 'timestamptz' | 'datetime' =
+  (process.env.DB_TYPE ?? (process.env.NODE_ENV === 'production' ? 'postgres' : 'better-sqlite3')) ===
+  'postgres'
+    ? 'timestamptz'
+    : 'datetime';
+
 export type LessonAccess = 'free' | 'paid' | 'vip' | 'password';
 export type LessonType = 'video' | 'text';
 export type OrderStatus = 'pending' | 'paid' | 'failed' | 'cancelled';
@@ -51,6 +59,10 @@ export class User {
 
   @Column({ default: '' })
   passwordHash!: string;
+
+  // 角色:user(学员)/ admin(机构管理员)。管理接口走 RolesGuard 校验。
+  @Column({ type: 'varchar', default: 'user' })
+  role!: 'user' | 'admin';
 
   @CreateDateColumn()
   createdAt!: Date;
@@ -126,7 +138,7 @@ export class RechargeCode {
   @Column({ type: 'varchar', nullable: true })
   usedBy!: string | null;
 
-  @Column({ type: 'datetime', nullable: true })
+  @Column({ type: TS_TYPE, nullable: true })
   usedAt!: Date | null;
 }
 
@@ -241,7 +253,41 @@ export class Order {
   @CreateDateColumn()
   createdAt!: Date;
 
-  @Column({ type: 'datetime', nullable: true })
+  @Column({ type: TS_TYPE, nullable: true })
+  paidAt!: Date | null;
+}
+
+// 充值预单:微信在线充值的对账锚点。prepay 落 pending,回调按 outTradeNo 比对金额后置 paid。
+@Entity('recharge_order')
+@Index(['tenantId', 'userId'])
+@Index(['outTradeNo'], { unique: true })
+@Index(['transactionId'], { unique: true, where: '"transactionId" IS NOT NULL' })
+export class RechargeOrder {
+  @PrimaryGeneratedColumn('uuid')
+  id!: string;
+
+  @Column()
+  tenantId!: string;
+
+  @Column()
+  userId!: string;
+
+  @Column()
+  outTradeNo!: string;
+
+  @Column({ type: 'integer' })
+  amount!: number;
+
+  @Column({ type: 'varchar', default: 'pending' })
+  status!: 'pending' | 'paid' | 'cancelled';
+
+  @Column({ type: 'varchar', nullable: true })
+  transactionId!: string | null;
+
+  @CreateDateColumn()
+  createdAt!: Date;
+
+  @Column({ type: TS_TYPE, nullable: true })
   paidAt!: Date | null;
 }
 
@@ -266,7 +312,7 @@ export class Entitlement {
   @CreateDateColumn()
   startsAt!: Date;
 
-  @Column({ type: 'datetime', nullable: true })
+  @Column({ type: TS_TYPE, nullable: true })
   expiresAt!: Date | null;
 }
 
@@ -306,6 +352,7 @@ export const ALL_ENTITIES = [
   Chapter,
   Lesson,
   Order,
+  RechargeOrder,
   Entitlement,
   Progress,
 ];

@@ -3,15 +3,18 @@ import 'reflect-metadata';
 // 内存库 + dev 配置(必须在 import AppModule / config 前设好)。
 process.env.DB_TYPE = 'better-sqlite3';
 process.env.DB_DATABASE = ':memory:';
+process.env.DB_SYNC = 'true'; // 测试用 synchronize 建表
 process.env.WECHAT_PAY_ENABLED = 'true';
 process.env.WECHAT_API_KEY = 'dev-mch-key';
 
 import { Test, TestingModule } from '@nestjs/testing';
-import { INestApplication, ForbiddenException } from '@nestjs/common';
+import { INestApplication, ForbiddenException, ValidationPipe } from '@nestjs/common';
+import { JwtService } from '@nestjs/jwt';
 import { DataSource } from 'typeorm';
 import * as crypto from 'crypto';
+import request from 'supertest';
 import { AppModule } from '../src/app.module';
-import { AuthUser } from '../src/common';
+import { AuthUser, signToken } from '../src/common';
 import {
   Course,
   Lesson,
@@ -37,18 +40,22 @@ describe('CRITICAL paths', () => {
   let orders: OrderService;
   let payment: PaymentService;
   let courses: CourseService;
+  let jwt: JwtService;
 
   beforeAll(async () => {
     const moduleRef: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
     }).compile();
     app = moduleRef.createNestApplication();
+    // 镜像生产:全局严格校验(过滤器/拦截器已由 AppModule 注册)。
+    app.useGlobalPipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }));
     await app.init();
     ds = moduleRef.get(DataSource);
     wallet = moduleRef.get(WalletService);
     orders = moduleRef.get(OrderService);
     payment = moduleRef.get(PaymentService);
     courses = moduleRef.get(CourseService);
+    jwt = moduleRef.get(JwtService);
   });
 
   afterAll(async () => {
@@ -68,7 +75,7 @@ describe('CRITICAL paths', () => {
     await ds.getRepository(Wallet).save(
       ds.getRepository(Wallet).create({ tenantId: TENANT, userId: user.id, balance }),
     );
-    return { userId: user.id, tenantId: TENANT };
+    return { userId: user.id, tenantId: TENANT, role: 'user' };
   }
 
   async function makeCourse(
@@ -192,10 +199,11 @@ describe('CRITICAL paths', () => {
     expect(w.balance).toBe(5000); // 不重复入账
   });
 
-  // 路径3:微信回调幂等 — 同 transaction_id 重发只入账一次。
+  // 路径3:微信回调幂等 — 同 transaction_id 重发只入账一次(基于预单对账)。
   it('wechat callback idempotent: 同 transaction_id 重发只入账一次', async () => {
     const user = await freshUser(0);
-    const body = signedCallback(user, 'TXN-DUP-1', 8800);
+    const prepay = await payment.prepay(user, 8800);
+    const body = signedCallback(prepay.outTradeNo, 'TXN-DUP-1', 8800);
 
     const r1 = await payment.handleCallback(body);
     const r2 = await payment.handleCallback(body);
@@ -216,7 +224,8 @@ describe('CRITICAL paths', () => {
   // 路径4:微信回调验签 — 伪造签名拒绝。
   it('wechat callback sign: 伪造签名拒绝,不入账', async () => {
     const user = await freshUser(0);
-    const body = signedCallback(user, 'TXN-FAKE-1', 9900);
+    const prepay = await payment.prepay(user, 9900);
+    const body = signedCallback(prepay.outTradeNo, 'TXN-FAKE-1', 9900);
     body.sign = 'DEADBEEF'; // 篡改签名
 
     const r = await payment.handleCallback(body);
@@ -226,6 +235,31 @@ describe('CRITICAL paths', () => {
       where: { tenantId: TENANT, userId: user.userId },
     });
     expect(w.balance).toBe(0); // 未入账
+  });
+
+  // 对账:回调金额与预单不符 → 拒绝,不入账(防篡改/错单)。
+  it('wechat callback reconcile: 金额与预单不符被拒,不入账', async () => {
+    const user = await freshUser(0);
+    const prepay = await payment.prepay(user, 5000);
+    // 回调谎报 9999,但签名按 9999 算(攻击者改了金额并重算签名)。
+    const body = signedCallback(prepay.outTradeNo, 'TXN-AMT-1', 9999);
+
+    const r = await payment.handleCallback(body);
+    expect(r.code).toBe('FAIL');
+    expect(r.message).toContain('金额');
+
+    const w = await ds.getRepository(Wallet).findOneOrFail({
+      where: { tenantId: TENANT, userId: user.userId },
+    });
+    expect(w.balance).toBe(0);
+  });
+
+  // 回调无对应预单 → 拒绝(不凭空入账)。
+  it('wechat callback orphan: 无预单的回调被拒', async () => {
+    const body = signedCallback('NO-SUCH-ORDER', 'TXN-ORPHAN-1', 5000);
+    const r = await payment.handleCallback(body);
+    expect(r.code).toBe('FAIL');
+    expect(r.message).toContain('订单');
   });
 
   // 路径5:课时后端鉴权 — 未购/越权访问被拒(不靠前端)。
@@ -241,14 +275,70 @@ describe('CRITICAL paths', () => {
     expect(ok.playUrl).toContain(freeLesson.id);
   });
 
+  // 安全:管理接口未登录被拒。
+  it('admin guard: 无 token 访问管理接口 401', async () => {
+    const res = await request(app.getHttpServer())
+      .post('/admin/recharge-codes')
+      .send({ count: 1, amount: 100 });
+    expect(res.status).toBe(401);
+    expect(res.body.success).toBe(false); // 统一错误信封
+  });
+
+  // 安全:普通用户 token 访问管理接口被拒(角色越权)。
+  it('admin guard: 普通用户访问管理接口 401', async () => {
+    const user = await freshUser(0);
+    const token = signToken(jwt, user);
+    const res = await request(app.getHttpServer())
+      .post('/admin/recharge-codes')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ count: 1, amount: 100 });
+    expect(res.status).toBe(401);
+  });
+
+  // admin 角色可发码,且码为加密随机(防枚举)。
+  it('admin guard: admin 可发激活码', async () => {
+    const admin = await freshAdmin();
+    const token = signToken(jwt, admin);
+    const res = await request(app.getHttpServer())
+      .post('/admin/recharge-codes')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ count: 3, amount: 5000 });
+    expect(res.status).toBe(201);
+    expect(res.body.success).toBe(true);
+    expect(res.body.data.codes).toHaveLength(3);
+    expect(res.body.data.codes[0]).toMatch(/^[0-9A-F]{16}$/); // 16 位随机
+  });
+
+  // 统一错误信封:校验失败也是 { success:false, data:null, error }。
+  it('error envelope: 非法入参返回统一错误信封', async () => {
+    const res = await request(app.getHttpServer())
+      .post('/auth/register')
+      .send({ phone: 'bad', code: '0000', password: 'short' });
+    expect(res.status).toBe(400);
+    expect(res.body.success).toBe(false);
+    expect(res.body.data).toBeNull();
+    expect(typeof res.body.error).toBe('string');
+  });
+
+  async function freshAdmin(): Promise<AuthUser> {
+    const u = await ds.getRepository(User).save(
+      ds.getRepository(User).create({
+        tenantId: TENANT,
+        phone: `1${Math.floor(1e10 + Math.random() * 8e9)}`.slice(0, 11),
+        passwordHash: 'x',
+        role: 'admin',
+        openid: null,
+      }),
+    );
+    return { userId: u.id, tenantId: TENANT, role: 'admin' };
+  }
+
   // 复刻 payment 模块的 v2 签名算法,生成合法回调。
-  function signedCallback(user: AuthUser, transactionId: string, totalFee: number) {
-    const attach = JSON.stringify({ userId: user.userId, tenantId: user.tenantId });
+  function signedCallback(outTradeNo: string, transactionId: string, totalFee: number) {
     const params: Record<string, string | number> = {
-      out_trade_no: `O-${transactionId}`,
+      out_trade_no: outTradeNo,
       transaction_id: transactionId,
       total_fee: totalFee,
-      attach,
     };
     const keys = Object.keys(params)
       .filter((k) => params[k] !== '' && params[k] !== undefined)
@@ -259,7 +349,6 @@ describe('CRITICAL paths', () => {
       out_trade_no: string;
       transaction_id: string;
       total_fee: number;
-      attach: string;
       sign: string;
     };
   }

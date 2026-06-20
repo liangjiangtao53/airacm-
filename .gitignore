@@ -1,20 +1,25 @@
 # 依赖与构建产物
 node_modules/
 dist/
+.next/
+out/
 build/
+*.tsbuildinfo
 
-# 本地数据库与密钥
+# 运行时数据库与日志
 *.sqlite
+*.sqlite3
+*.log
+srv*.out
+srv*.err
+*.out
+*.err
+
+# 环境与密钥
 .env
 .env.local
+.env.*.local
 
-# 逆向反编译产物(体积大、非源码,仅本地参考)
-reverse_apk_21D7BBB4/
-reverse_com.appbyme.app/
-
-# 系统/编辑器
+# 系统
 .DS_Store
 Thumbs.db
-.idea/
-.vscode/
-*.log

@@ -104,12 +104,15 @@ export class WalletService {
     amount: number,
     refId: string | null,
   ): Promise<number> {
-    if (amount <= 0) throw new BadRequestException('金额必须大于 0');
+    if (!Number.isInteger(amount) || amount <= 0) {
+      throw new BadRequestException('金额必须为正整数(分)');
+    }
     const updated = await m
       .createQueryBuilder()
       .update(Wallet)
-      .set({ balance: () => `balance + ${amount}` })
+      .set({ balance: () => 'balance + :amt' })
       .where('tenantId = :t AND userId = :u', { t: user.tenantId, u: user.userId })
+      .setParameter('amt', amount)
       .execute();
     if (updated.affected !== 1) throw new NotFoundException('钱包不存在');
     const wallet = await m.findOne(Wallet, {
@@ -135,16 +138,19 @@ export class WalletService {
     amount: number,
     refId: string | null,
   ): Promise<number> {
-    if (amount <= 0) throw new BadRequestException('金额必须大于 0');
+    if (!Number.isInteger(amount) || amount <= 0) {
+      throw new BadRequestException('金额必须为正整数(分)');
+    }
     const result = await m
       .createQueryBuilder()
       .update(Wallet)
-      .set({ balance: () => `balance - ${amount}` })
+      .set({ balance: () => 'balance - :amt' })
       .where('tenantId = :t AND userId = :u AND balance >= :a', {
         t: user.tenantId,
         u: user.userId,
         a: amount,
       })
+      .setParameter('amt', amount)
       .execute();
     if (result.affected !== 1) {
       throw new BadRequestException('余额不足');

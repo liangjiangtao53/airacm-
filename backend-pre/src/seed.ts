@@ -1,5 +1,6 @@
 import 'reflect-metadata';
 import { DataSource } from 'typeorm';
+import * as bcrypt from 'bcryptjs';
 import {
   ALL_ENTITIES,
   Chapter,
@@ -8,6 +9,8 @@ import {
   LessonAccess,
   RechargeCode,
   Tenant,
+  User,
+  Wallet,
 } from './entities';
 import { buildDataSourceOptions, env } from './config';
 
@@ -63,11 +66,42 @@ async function run(): Promise<void> {
   const ds = new DataSource({
     ...(buildDataSourceOptions() as object),
     entities: ALL_ENTITIES,
+    synchronize: true, // seed 是开发工具,强制建表;生产 schema 走 migration。
   } as any);
   await ds.initialize();
 
   const tenantId = env.defaultTenantId;
   await ds.getRepository(Tenant).save({ id: tenantId, name: '默认机构', status: 'active' });
+
+  // 引导管理员(幂等):用 env 的 ADMIN_PHONE/ADMIN_PASSWORD。生产务必改默认值。
+  const userRepo = ds.getRepository(User);
+  const existingAdmin = await userRepo.findOne({
+    where: { tenantId, phone: env.bootstrapAdmin.phone },
+  });
+  if (!existingAdmin) {
+    const admin = await userRepo.save(
+      userRepo.create({
+        tenantId,
+        phone: env.bootstrapAdmin.phone,
+        nickname: '管理员',
+        passwordHash: await bcrypt.hash(env.bootstrapAdmin.password, 10),
+        role: 'admin',
+        openid: null,
+      }),
+    );
+    await ds.getRepository(Wallet).save(
+      ds.getRepository(Wallet).create({ tenantId, userId: admin.id, balance: 0 }),
+    );
+  }
+
+  // 生产 bootstrap 只建 schema + admin;示例课程/激活码仅开发态注入。
+  const seedDemo = process.env.SEED_DEMO !== 'false';
+  if (!seedDemo) {
+    // eslint-disable-next-line no-console
+    console.log(`seed done (schema + admin only): tenant=${tenantId}`);
+    await ds.destroy();
+    return;
+  }
 
   // 清旧课程数据(幂等)。
   await ds.getRepository(Lesson).delete({ tenantId });

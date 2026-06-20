@@ -1,36 +1,45 @@
-import { TypeOrmModuleOptions } from '@nestjs/typeorm';
+import * as dotenv from 'dotenv';
+import { DataSourceOptions } from 'typeorm';
 
-// 集中读取环境变量,提供类型化访问。所有默认值对齐 .env.example,保证开发态零配置可跑。
+dotenv.config();
+
+// 支持 postgres(生产) 与 better-sqlite3(测试) 双模式,通过 DB_TYPE 切换。
 export const env = {
-  port: parseInt(process.env.PORT ?? '8770', 10),
-  jwtSecret: process.env.JWT_SECRET ?? 'dev-secret-change-in-prod',
-  // 单租户第一版:固定租户号,架构层预留行级 tenant_id(见 D4)。
-  defaultTenantId: process.env.DEFAULT_TENANT_ID ?? 't1',
-  sms: {
-    devMode: (process.env.SMS_DEV_MODE ?? 'true') === 'true',
-    devCode: process.env.SMS_DEV_CODE ?? '0000',
-  },
-  wechatPay: {
-    enabled: (process.env.WECHAT_PAY_ENABLED ?? 'false') === 'true',
-    mchId: process.env.WECHAT_MCH_ID ?? '',
-    apiKey: process.env.WECHAT_API_KEY ?? 'dev-mch-key',
-  },
+  port: Number(process.env.PORT) || 8770,
+  dbType: (process.env.DB_TYPE as 'postgres' | 'better-sqlite3') || 'postgres',
+  dbSync: process.env.DB_SYNC === 'true',
+  databaseUrl: process.env.DATABASE_URL || '',
+  dbDatabase: process.env.DB_DATABASE || 'airacm.sqlite',
+  dbPoolMax: Number(process.env.DB_POOL_MAX) || 20,
+  jwtSecret: process.env.JWT_SECRET || '',
+  tenantId: process.env.DEFAULT_TENANT_ID || 't1',
+  wechatApiKey: process.env.WECHAT_API_KEY || '',
 };
 
-export function buildDataSourceOptions(): TypeOrmModuleOptions {
-  const dbType = process.env.DB_TYPE ?? 'better-sqlite3';
-  if (dbType === 'postgres') {
+export function buildDataSourceOptions(): DataSourceOptions {
+  if (env.dbType === 'better-sqlite3') {
     return {
-      type: 'postgres',
-      url: process.env.DATABASE_URL,
-      autoLoadEntities: true,
-      synchronize: true, // 第一版用 synchronize;上线前换 migration。
+      type: 'better-sqlite3',
+      database: env.dbDatabase,
+      synchronize: env.dbSync,
+      entities: [__dirname + '/entities.{ts,js}'],
     };
   }
   return {
-    type: 'better-sqlite3',
-    database: process.env.DB_DATABASE ?? 'airacm.sqlite',
-    autoLoadEntities: true,
-    synchronize: true,
+    type: 'postgres',
+    url: env.databaseUrl,
+    synchronize: env.dbSync,
+    entities: [__dirname + '/entities.{ts,js}'],
+    migrations: [__dirname + '/migrations/*.{ts,js}'],
+    // 连接池:pg 默认 max=10,高并发下易耗尽成瓶颈;调到 20(可经 DB_POOL_MAX 配置),
+    // 并设连接获取/空闲超时,避免连接泄漏与慢查询堆积拖垮服务。
+    poolSize: env.dbPoolMax,
+    extra: {
+      max: env.dbPoolMax,
+      connectionTimeoutMillis: 5000,
+      idleTimeoutMillis: 30000,
+    },
+    // 超过 1s 的查询打日志,便于定位慢查询。
+    maxQueryExecutionTime: 1000,
   };
 }
