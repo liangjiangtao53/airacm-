@@ -8,7 +8,7 @@ process.env.WECHAT_PAY_ENABLED = 'true';
 process.env.WECHAT_API_KEY = 'dev-mch-key';
 
 import { Test, TestingModule } from '@nestjs/testing';
-import { INestApplication, ForbiddenException, ValidationPipe } from '@nestjs/common';
+import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { DataSource } from 'typeorm';
 import * as crypto from 'crypto';
@@ -262,13 +262,12 @@ describe('CRITICAL paths', () => {
     expect(r.message).toContain('订单');
   });
 
-  // 路径5:课时后端鉴权 — 未购/越权访问被拒(不靠前端)。
-  it('lesson auth: 未购课访问付费课时被拒,免费课时放行', async () => {
+  // 路径5:课时鉴权 — 登录即可学全部(已去付费墙),免费/付费课时均放行,返回播放地址。
+  it('lesson auth: 登录用户可学任意课时(含付费),返回播放地址', async () => {
     const user = await freshUser(0);
     const { lesson: paidLesson } = await makeCourse(1400, 'paid');
-    await expect(courses.lessonDetail(user, paidLesson.id)).rejects.toBeInstanceOf(
-      ForbiddenException,
-    );
+    const paid = await courses.lessonDetail(user, paidLesson.id);
+    expect(paid.playUrl).toContain(paidLesson.id);
 
     const { lesson: freeLesson } = await makeCourse(1400, 'free');
     const ok = await courses.lessonDetail(user, freeLesson.id);
@@ -295,16 +294,21 @@ describe('CRITICAL paths', () => {
     expect(res.status).toBe(401);
   });
 
-  // admin 角色可发码,且码为加密随机(防枚举)。
-  it('admin guard: admin 可发激活码', async () => {
+  // 充值码仅超级管理员:admin 被拒,super 可发(码为加密随机防枚举)。
+  it('admin guard: 充值码仅 super', async () => {
     const admin = await freshAdmin();
-    const token = signToken(jwt, admin);
+    const denied = await request(app.getHttpServer())
+      .post('/admin/recharge-codes')
+      .set('Authorization', `Bearer ${signToken(jwt, admin)}`)
+      .send({ count: 3, amount: 5000 });
+    expect(denied.status).toBe(401);
+
+    const sup = await freshAdmin('super');
     const res = await request(app.getHttpServer())
       .post('/admin/recharge-codes')
-      .set('Authorization', `Bearer ${token}`)
+      .set('Authorization', `Bearer ${signToken(jwt, sup)}`)
       .send({ count: 3, amount: 5000 });
     expect(res.status).toBe(201);
-    expect(res.body.success).toBe(true);
     expect(res.body.data.codes).toHaveLength(3);
     expect(res.body.data.codes[0]).toMatch(/^[0-9A-F]{16}$/); // 16 位随机
   });
@@ -320,17 +324,17 @@ describe('CRITICAL paths', () => {
     expect(typeof res.body.error).toBe('string');
   });
 
-  async function freshAdmin(): Promise<AuthUser> {
+  async function freshAdmin(role: 'admin' | 'super' = 'admin'): Promise<AuthUser> {
     const u = await ds.getRepository(User).save(
       ds.getRepository(User).create({
         tenantId: TENANT,
         phone: `1${Math.floor(1e10 + Math.random() * 8e9)}`.slice(0, 11),
         passwordHash: 'x',
-        role: 'admin',
+        role,
         openid: null,
       }),
     );
-    return { userId: u.id, tenantId: TENANT, role: 'admin' };
+    return { userId: u.id, tenantId: TENANT, role };
   }
 
   // 复刻 payment 模块的 v2 签名算法,生成合法回调。

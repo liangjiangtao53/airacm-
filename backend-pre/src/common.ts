@@ -17,8 +17,10 @@ import { JwtService } from '@nestjs/jwt';
 import { Observable } from 'rxjs';
 import { map } from 'rxjs/operators';
 import { env } from './config';
+import { SessionService } from './session';
 
-export type UserRole = 'user' | 'admin';
+// user 普通学员 / admin 业务管理员 / super 超级管理员(全权,自动满足任意 @Roles)。
+export type UserRole = 'user' | 'admin' | 'super';
 
 // 登录态:JWT payload 解出的当前用户。tenantId 随 token 走,后端查询统一带上(D4)。
 export interface AuthUser {
@@ -31,6 +33,10 @@ export interface JwtPayload {
   sub: string;
   tenantId: string;
   role: UserRole;
+  // 单点登录会话 id。守卫比对 user.sessionId,不一致即踢(仅 role=user)。
+  sid?: string;
+  // 卡密首次登录的"待补全"态:仅可用于补全资料接口,业务接口一律拒绝。
+  pending?: boolean;
 }
 
 // 统一响应信封 { success, data, error }(见 patterns)。
@@ -51,26 +57,32 @@ export class ApiResponseInterceptor implements NestInterceptor {
 
 @Injectable()
 export class JwtAuthGuard implements CanActivate {
-  constructor(private readonly jwt: JwtService) {}
+  constructor(
+    private readonly jwt: JwtService,
+    private readonly session: SessionService,
+  ) {}
 
-  canActivate(context: ExecutionContext): boolean {
+  async canActivate(context: ExecutionContext): Promise<boolean> {
     const req = context.switchToHttp().getRequest();
     const header: string | undefined = req.headers?.authorization;
     if (!header || !header.startsWith('Bearer ')) {
       throw new UnauthorizedException('缺少登录凭证');
     }
     const token = header.slice('Bearer '.length).trim();
+    let payload: JwtPayload;
     try {
-      const payload = this.jwt.verify<JwtPayload>(token, { secret: env.jwtSecret });
-      req.user = {
-        userId: payload.sub,
-        tenantId: payload.tenantId,
-        role: payload.role ?? 'user',
-      } satisfies AuthUser;
-      return true;
+      payload = this.jwt.verify<JwtPayload>(token, { secret: env.jwtSecret });
     } catch {
       throw new UnauthorizedException('登录已失效,请重新登录');
     }
+    req.user = {
+      userId: payload.sub,
+      tenantId: payload.tenantId,
+      role: payload.role ?? 'user',
+    } satisfies AuthUser;
+    // 单点登录校验(管理员放行)。校验失败抛 401,不被上面的 catch 吞掉。
+    await this.session.validate(payload);
+    return true;
   }
 }
 
@@ -82,9 +94,9 @@ export const CurrentUser = createParamDecorator(
   },
 );
 
-export function signToken(jwt: JwtService, user: AuthUser): string {
+export function signToken(jwt: JwtService, user: AuthUser, sid?: string): string {
   return jwt.sign(
-    { sub: user.userId, tenantId: user.tenantId, role: user.role } satisfies JwtPayload,
+    { sub: user.userId, tenantId: user.tenantId, role: user.role, sid } satisfies JwtPayload,
     { secret: env.jwtSecret, expiresIn: env.jwtExpiresIn },
   );
 }
@@ -104,12 +116,18 @@ export const Roles =
 @Injectable()
 export class RolesGuard implements CanActivate {
   canActivate(context: ExecutionContext): boolean {
-    const handler = context.getHandler();
-    const required: UserRole[] | undefined = Reflect.getMetadata(ROLES_KEY, handler);
+    // @Roles 既可标在方法也可标在控制器类上。方法优先,缺失则回退类级,
+    // 否则类级 @Roles('admin') 会被静默忽略导致越权(普通用户调管理接口)。
+    const required: UserRole[] | undefined =
+      Reflect.getMetadata(ROLES_KEY, context.getHandler()) ??
+      Reflect.getMetadata(ROLES_KEY, context.getClass());
     if (!required || required.length === 0) return true;
     const req = context.switchToHttp().getRequest();
     const user = req.user as AuthUser | undefined;
-    if (!user || !required.includes(user.role)) {
+    if (!user) throw new UnauthorizedException('需要管理员权限');
+    // 超级管理员全权,自动满足任意角色要求。
+    if (user.role === 'super') return true;
+    if (!required.includes(user.role)) {
       throw new UnauthorizedException('需要管理员权限');
     }
     return true;

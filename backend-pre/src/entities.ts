@@ -26,6 +26,28 @@ export type PayChannel = 'wallet' | 'wechat';
 export type WalletTxnType = 'recharge' | 'consume';
 export type RechargeCodeStatus = 'unused' | 'used';
 export type ProgressStatus = 'not_started' | 'in_progress' | 'done';
+export type QuestionType = 'single' | 'multiple';
+// 题目用途:仅学习刷题 / 仅考试 / 两者都进。Excel 导入时整批指定。
+export type QuestionUsage = 'study' | 'exam' | 'both';
+
+export interface QuestionOption {
+  key: string; // A / B / C / D
+  text: string;
+}
+
+// 题目科目分类(机务执照模块 M1-M9 + 无人机)。导入时按科目归档。
+export const QUESTION_CATEGORIES = [
+  'M1 航空概论',
+  'M2 航空器维修',
+  'M3 飞机结构和系统',
+  'M4 直升机结构和系统',
+  'M5 航空涡轮发动机',
+  'M6 航空活塞发动机',
+  'M9 航空英语',
+  'M9 new',
+  '无人机',
+] as const;
+export type QuestionCategory = (typeof QUESTION_CATEGORIES)[number];
 
 @Entity('tenant')
 export class Tenant {
@@ -60,9 +82,13 @@ export class User {
   @Column({ default: '' })
   passwordHash!: string;
 
-  // 角色:user(学员)/ admin(机构管理员)。管理接口走 RolesGuard 校验。
+  // 角色:user(学员)/ admin(业务管理员)/ super(超级管理员)。管理接口走 RolesGuard 校验。
   @Column({ type: 'varchar', default: 'user' })
-  role!: 'user' | 'admin';
+  role!: 'user' | 'admin' | 'super';
+
+  // 单点登录:当前有效会话 id。每次登录刷新,JWT 带 sid,守卫比对不一致即踢。仅 role=user 校验。
+  @Column({ type: 'varchar', nullable: true })
+  sessionId!: string | null;
 
   @CreateDateColumn()
   createdAt!: Date;
@@ -342,6 +368,250 @@ export class Progress {
   updatedAt!: Date;
 }
 
+// 题库:学习刷题 / 考试组卷共用。usage 区分用途,courseId 可空(独立题库)。
+@Entity('question')
+@Index(['tenantId', 'usage'])
+@Index(['tenantId', 'courseId'])
+@Index(['tenantId', 'category'])
+export class Question {
+  @PrimaryGeneratedColumn('uuid')
+  id!: string;
+
+  @Column()
+  tenantId!: string;
+
+  // 科目分类(QUESTION_CATEGORIES 之一)。空串表示未分类。
+  @Column({ default: '' })
+  category!: string;
+
+  // 可挂课程,也可建独立题库(null)。
+  @Column({ type: 'varchar', nullable: true })
+  courseId!: string | null;
+
+  @Column({ type: 'varchar', default: 'single' })
+  type!: QuestionType;
+
+  @Column({ type: 'text' })
+  stem!: string; // 题干
+
+  // 选项数组 [{key,text}]。simple-json 在 postgres/sqlite 双驱动均可用。
+  @Column({ type: 'simple-json' })
+  options!: QuestionOption[];
+
+  // 正确答案:单选 'A',多选按字母序拼接 'AC'。
+  @Column()
+  answer!: string;
+
+  @Column({ type: 'text', default: '' })
+  analysis!: string; // 解析/答案说明
+
+  // 题目配图 URL。Excel/WPS 单元格图片导入后写入,学习/考试/错题复盘共用。
+  @Column({ type: 'simple-json', nullable: true })
+  imageUrls!: string[] | null;
+
+  @Column({ type: 'varchar', default: 'study' })
+  usage!: QuestionUsage;
+
+  @Column({ type: 'integer', default: 0 })
+  order!: number;
+
+  @CreateDateColumn()
+  createdAt!: Date;
+}
+
+// 考试作答记录:一次组卷 + 作答 + 判分。questionIds 锁定本次卷子,answers 存提交答案。
+@Entity('exam_attempt')
+@Index(['tenantId', 'userId'])
+export class ExamAttempt {
+  @PrimaryGeneratedColumn('uuid')
+  id!: string;
+
+  @Column()
+  tenantId!: string;
+
+  @Column()
+  userId!: string;
+
+  @Column({ type: 'varchar', nullable: true })
+  courseId!: string | null;
+
+  // 本次卷子的题目 id 顺序(组卷时锁定)。
+  @Column({ type: 'simple-json' })
+  questionIds!: string[];
+
+  // 提交答案 {questionId: 'A'|'AC'}。未交卷前为空。
+  @Column({ type: 'simple-json' })
+  answers!: Record<string, string>;
+
+  @Column({ type: 'integer' })
+  total!: number;
+
+  @Column({ type: 'integer', default: 0 })
+  correct!: number;
+
+  // 百分制 0-100。
+  @Column({ type: 'integer', default: 0 })
+  score!: number;
+
+  @Column({ type: 'varchar', default: 'in_progress' })
+  status!: 'in_progress' | 'submitted';
+
+  @CreateDateColumn()
+  createdAt!: Date;
+
+  @Column({ type: TS_TYPE, nullable: true })
+  submittedAt!: Date | null;
+}
+
+// 错题本:学员答错的题。唯一 (tenantId,userId,questionId),答对后置 mastered。
+@Entity('wrong_question')
+@Index(['tenantId', 'userId', 'questionId'], { unique: true })
+@Index(['tenantId', 'userId', 'status'])
+export class WrongQuestion {
+  @PrimaryGeneratedColumn('uuid')
+  id!: string;
+
+  @Column()
+  tenantId!: string;
+
+  @Column()
+  userId!: string;
+
+  @Column()
+  questionId!: string;
+
+  // 累计答错次数。
+  @Column({ type: 'integer', default: 1 })
+  wrongCount!: number;
+
+  @Column({ type: 'varchar', default: 'open' })
+  status!: 'open' | 'mastered';
+
+  @Column({ type: TS_TYPE })
+  lastWrongAt!: Date;
+
+  @UpdateDateColumn()
+  updatedAt!: Date;
+}
+
+// 题目评论:学习端互动。
+@Entity('comment')
+@Index(['tenantId', 'questionId'])
+export class Comment {
+  @PrimaryGeneratedColumn('uuid')
+  id!: string;
+
+  @Column()
+  tenantId!: string;
+
+  @Column()
+  questionId!: string;
+
+  @Column()
+  userId!: string;
+
+  @Column({ type: 'text' })
+  content!: string;
+
+  @CreateDateColumn()
+  createdAt!: Date;
+}
+
+// 认证卡密:批量生成,凭 key 登录即可学习(无需手机号/密码),到期失效。
+@Entity('access_key')
+@Index(['tenantId', 'key'], { unique: true })
+export class AccessKey {
+  @PrimaryGeneratedColumn('uuid')
+  id!: string;
+
+  @Column()
+  tenantId!: string;
+
+  @Column()
+  key!: string;
+
+  @Column({ type: TS_TYPE })
+  expiresAt!: Date;
+
+  @Column({ type: 'varchar', default: 'active' })
+  status!: 'active' | 'revoked';
+
+  // 补全资料后关联的正式 user.id;空=未补全(首次卡密登录强制补全手机号/昵称)。
+  @Column({ type: 'varchar', nullable: true })
+  userId!: string | null;
+
+  @CreateDateColumn()
+  createdAt!: Date;
+}
+
+// 交流区帖子(学员发的主题/留言)。
+@Entity('post')
+@Index(['tenantId'])
+export class Post {
+  @PrimaryGeneratedColumn('uuid')
+  id!: string;
+
+  @Column()
+  tenantId!: string;
+
+  // 归属论坛主题/版块。可空仅为兼容旧帖(seed 回填默认主题);新帖发布时必填。
+  @Column({ type: 'varchar', nullable: true })
+  topicId!: string | null;
+
+  @Column()
+  userId!: string;
+
+  @Column({ type: 'text' })
+  content!: string;
+
+  @CreateDateColumn()
+  createdAt!: Date;
+}
+
+// 论坛主题/版块。admin+super 维护,学员发帖时归属其一。
+@Entity('forum_topic')
+@Index(['tenantId'])
+export class ForumTopic {
+  @PrimaryGeneratedColumn('uuid')
+  id!: string;
+
+  @Column()
+  tenantId!: string;
+
+  @Column()
+  name!: string;
+
+  // 展示排序,小在前。
+  @Column({ default: 0 })
+  order!: number;
+
+  @CreateDateColumn()
+  createdAt!: Date;
+}
+
+// 交流区回复。
+@Entity('post_reply')
+@Index(['tenantId', 'postId'])
+export class PostReply {
+  @PrimaryGeneratedColumn('uuid')
+  id!: string;
+
+  @Column()
+  tenantId!: string;
+
+  @Column()
+  postId!: string;
+
+  @Column()
+  userId!: string;
+
+  @Column({ type: 'text' })
+  content!: string;
+
+  @CreateDateColumn()
+  createdAt!: Date;
+}
+
 export const ALL_ENTITIES = [
   Tenant,
   User,
@@ -355,4 +625,12 @@ export const ALL_ENTITIES = [
   RechargeOrder,
   Entitlement,
   Progress,
+  Question,
+  Comment,
+  ExamAttempt,
+  WrongQuestion,
+  AccessKey,
+  Post,
+  PostReply,
+  ForumTopic,
 ];

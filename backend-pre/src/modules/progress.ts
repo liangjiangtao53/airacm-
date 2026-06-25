@@ -4,36 +4,31 @@ import {
   Get,
   Injectable,
   Module,
-  Post,
-  Query,
-  UseGuards,
   NotFoundException,
+  Param,
+  Post,
+  UseGuards,
 } from '@nestjs/common';
 import { InjectRepository, TypeOrmModule } from '@nestjs/typeorm';
-import { In, Repository } from 'typeorm';
-import { IsIn, IsInt, IsOptional, IsString, Min } from 'class-validator';
-import { Lesson, Progress, ProgressStatus } from '../entities';
+import { Repository } from 'typeorm';
+import { IsIn, IsInt, IsString, Min } from 'class-validator';
+import { Lesson, Progress } from '../entities';
 import { AuthUser, CurrentUser, JwtAuthGuard } from '../common';
+import { cacheGet, cacheSet } from '../cache';
 
 class UpsertProgressDto {
   @IsString()
   lessonId!: string;
 
-  @IsOptional()
   @IsInt()
   @Min(0)
-  position?: number;
+  position!: number;
 
-  @IsOptional()
-  @IsIn(['not_started', 'in_progress', 'done'])
-  status?: ProgressStatus;
+  @IsIn(['in_progress', 'done'])
+  status!: 'in_progress' | 'done';
 }
 
-class ProgressQueryDto {
-  @IsOptional()
-  @IsString()
-  courseId?: string;
-}
+const LESSON_EXIST_TTL_MS = 60_000;
 
 @Injectable()
 export class ProgressService {
@@ -42,70 +37,65 @@ export class ProgressService {
     @InjectRepository(Lesson) private readonly lessons: Repository<Lesson>,
   ) {}
 
-  // 高频写第一版直接写;量大再异步批量(性能要求)。upsert 按 (tenantId,userId,lessonId) 唯一。
-  async upsert(user: AuthUser, dto: UpsertProgressDto): Promise<Progress> {
-    const lesson = await this.lessons.findOne({
-      where: { tenantId: user.tenantId, id: dto.lessonId },
-    });
-    if (!lesson) throw new NotFoundException('课时不存在');
+  // 上报学习进度(高频写)。优化:课时存在性走缓存省一次查询 + 数据库原生 upsert 一次写完成。
+  async upsert(user: AuthUser, dto: UpsertProgressDto): Promise<{ ok: boolean }> {
+    // 课时存在性走缓存:课时基本不变,高频上报下缓存命中可省掉这次查询。
+    const now = Date.now();
+    const lkey = `lessonexist:${user.tenantId}:${dto.lessonId}`;
+    let exists = cacheGet<boolean>(lkey, now);
+    if (exists === undefined) {
+      exists = !!(await this.lessons.findOne({
+        where: { tenantId: user.tenantId, id: dto.lessonId },
+      }));
+      cacheSet(lkey, exists, LESSON_EXIST_TTL_MS, now);
+    }
+    if (!exists) throw new NotFoundException('课时不存在');
 
-    let row = await this.progress.findOne({
-      where: { tenantId: user.tenantId, userId: user.userId, lessonId: dto.lessonId },
-    });
-    if (!row) {
-      row = this.progress.create({
+    // 数据库原生 upsert(INSERT ... ON CONFLICT DO UPDATE):一次写,无"先查后写"竞态。
+    await this.progress.upsert(
+      {
         tenantId: user.tenantId,
         userId: user.userId,
         lessonId: dto.lessonId,
-        position: dto.position ?? 0,
-        status: dto.status ?? 'in_progress',
-      });
-    } else {
-      if (dto.position !== undefined) row.position = dto.position;
-      if (dto.status !== undefined) row.status = dto.status;
-    }
-    return this.progress.save(row);
+        position: dto.position,
+        status: dto.status,
+      },
+      ['tenantId', 'userId', 'lessonId'],
+    );
+    return { ok: true };
   }
 
-  async list(user: AuthUser, query: ProgressQueryDto): Promise<Progress[]> {
-    if (query.courseId) {
-      // 按课程过滤:先取该课程课时 id,再批量查进度(避免 N+1)。
-      const lessons = await this.lessons.find({
-        where: { tenantId: user.tenantId, courseId: query.courseId },
-      });
-      const ids = lessons.map((l) => l.id);
-      if (ids.length === 0) return [];
-      return this.progress.find({
-        where: { tenantId: user.tenantId, userId: user.userId, lessonId: In(ids) },
-      });
-    }
-    return this.progress.find({
-      where: { tenantId: user.tenantId, userId: user.userId },
-      order: { updatedAt: 'DESC' },
+  async get(
+    user: AuthUser,
+    lessonId: string,
+  ): Promise<{ position: number; status: string } | null> {
+    const p = await this.progress.findOne({
+      where: { tenantId: user.tenantId, userId: user.userId, lessonId },
     });
+    return p ? { position: p.position, status: p.status } : null;
   }
 }
 
-@UseGuards(JwtAuthGuard)
 @Controller('progress')
+@UseGuards(JwtAuthGuard)
 export class ProgressController {
   constructor(private readonly svc: ProgressService) {}
 
   @Post()
-  upsert(@CurrentUser() user: AuthUser, @Body() dto: UpsertProgressDto) {
+  async upsert(@CurrentUser() user: AuthUser, @Body() dto: UpsertProgressDto) {
     return this.svc.upsert(user, dto);
   }
 
-  @Get()
-  list(@CurrentUser() user: AuthUser, @Query() query: ProgressQueryDto) {
-    return this.svc.list(user, query);
+  @Get(':lessonId')
+  async get(@CurrentUser() user: AuthUser, @Param('lessonId') lessonId: string) {
+    return this.svc.get(user, lessonId);
   }
 }
 
 @Module({
   imports: [TypeOrmModule.forFeature([Progress, Lesson])],
-  controllers: [ProgressController],
   providers: [ProgressService],
+  controllers: [ProgressController],
   exports: [ProgressService],
 })
 export class ProgressModule {}

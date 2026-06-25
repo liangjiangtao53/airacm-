@@ -1,0 +1,29 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* 极简 + 大留白:浅雾底色上叠两团柔和色晕,让毛玻璃透出层次。 */
+body {
+  color: theme('colors.ink');
+  min-height: 100vh;
+  background:
+    radial-gradient(48rem 48rem at 108% -8%, rgba(43, 143, 214, 0.14), transparent 60%),
+    radial-gradient(42rem 42rem at -8% 112%, rgba(59, 84, 112, 0.1), transparent 55%),
+    theme('colors.mist');
+  background-attachment: fixed;
+}
+
+@layer components {
+  /* 毛玻璃卡片:半透白 + 背景模糊 + 极细描边 + 微阴影 + 大圆角。 */
+  .glass {
+    @apply rounded-2xl bg-white/55 shadow-sm ring-1 ring-white/60 backdrop-blur-xl;
+  }
+  /* 可交互卡片:毛玻璃 + 悬浮微抬升 + 阴影加深。 */
+  .glass-tile {
+    @apply glass transition duration-300 hover:-translate-y-0.5 hover:shadow-md hover:ring-sky/30;
+  }
+  /* 内容容器卡片(列表/面板),比 tile 更克制。 */
+  .card {
+    @apply rounded-2xl bg-white/65 p-6 shadow-sm ring-1 ring-white/60 backdrop-blur-xl;
+  }
+}

@@ -1,0 +1,98 @@
+{
+  "pages": [
+    {
+      "path": "pages/index/index",
+      "style": {
+        "navigationBarTitleText": "维修翼站"
+      }
+    },
+    {
+      "path": "pages/forum/index",
+      "style": {
+        "navigationBarTitleText": "交流"
+      }
+    },
+    {
+      "path": "pages/study/index",
+      "style": {
+        "navigationBarTitleText": "专题学习"
+      }
+    },
+    {
+      "path": "pages/exam/index",
+      "style": {
+        "navigationBarTitleText": "在线考试"
+      }
+    },
+    {
+      "path": "pages/exam-review/index",
+      "style": {
+        "navigationBarTitleText": "考试回顾"
+      }
+    },
+    {
+      "path": "pages/wrong/index",
+      "style": {
+        "navigationBarTitleText": "错题本"
+      }
+    },
+    {
+      "path": "pages/upgrade/index",
+      "style": {
+        "navigationBarTitleText": "专升本"
+      }
+    },
+    {
+      "path": "pages/download-app/index",
+      "style": {
+        "navigationBarTitleText": "下载 App"
+      }
+    },
+    {
+      "path": "pages/login/index",
+      "style": {
+        "navigationBarTitleText": "登录"
+      }
+    },
+    {
+      "path": "pages/complete-profile/index",
+      "style": {
+        "navigationBarTitleText": "补全资料"
+      }
+    }
+  ],
+  "tabBar": {
+    "color": "#7b8493",
+    "selectedColor": "#1f6feb",
+    "backgroundColor": "#ffffff",
+    "borderStyle": "white",
+    "list": [
+      {
+        "pagePath": "pages/index/index",
+        "text": "首页"
+      },
+      {
+        "pagePath": "pages/forum/index",
+        "text": "交流"
+      },
+      {
+        "pagePath": "pages/study/index",
+        "text": "学习"
+      },
+      {
+        "pagePath": "pages/exam/index",
+        "text": "考试"
+      },
+      {
+        "pagePath": "pages/wrong/index",
+        "text": "错题"
+      }
+    ]
+  },
+  "globalStyle": {
+    "navigationBarTextStyle": "black",
+    "navigationBarTitleText": "维修翼站",
+    "navigationBarBackgroundColor": "#f4f7fb",
+    "backgroundColor": "#edf3f8"
+  }
+}

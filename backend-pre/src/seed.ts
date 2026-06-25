@@ -5,8 +5,10 @@ import {
   ALL_ENTITIES,
   Chapter,
   Course,
+  ForumTopic,
   Lesson,
   LessonAccess,
+  Post,
   RechargeCode,
   Tenant,
   User,
@@ -73,26 +75,55 @@ async function run(): Promise<void> {
   const tenantId = env.defaultTenantId;
   await ds.getRepository(Tenant).save({ id: tenantId, name: '默认机构', status: 'active' });
 
-  // 引导管理员(幂等):用 env 的 ADMIN_PHONE/ADMIN_PASSWORD。生产务必改默认值。
+  // 引导管理员(幂等):超级管理员 + 业务管理员都自动写入。已存在则校正角色。
   const userRepo = ds.getRepository(User);
-  const existingAdmin = await userRepo.findOne({
-    where: { tenantId, phone: env.bootstrapAdmin.phone },
-  });
-  if (!existingAdmin) {
-    const admin = await userRepo.save(
+  const walletRepo = ds.getRepository(Wallet);
+  const ensureAdmin = async (
+    phone: string,
+    password: string,
+    role: 'admin' | 'super',
+    nickname: string,
+  ): Promise<void> => {
+    const existing = await userRepo.findOne({ where: { tenantId, phone } });
+    if (existing) {
+      if (existing.role !== role) await userRepo.update(existing.id, { role });
+      return;
+    }
+    const u = await userRepo.save(
       userRepo.create({
         tenantId,
-        phone: env.bootstrapAdmin.phone,
-        nickname: '管理员',
-        passwordHash: await bcrypt.hash(env.bootstrapAdmin.password, 10),
-        role: 'admin',
+        phone,
+        nickname,
+        passwordHash: await bcrypt.hash(password, 10),
+        role,
         openid: null,
       }),
     );
-    await ds.getRepository(Wallet).save(
-      ds.getRepository(Wallet).create({ tenantId, userId: admin.id, balance: 0 }),
-    );
+    await walletRepo.save(walletRepo.create({ tenantId, userId: u.id, balance: 0 }));
+  };
+  await ensureAdmin(env.bootstrapAdmin.phone, env.bootstrapAdmin.password, 'super', '超级管理员');
+  await ensureAdmin(env.bootstrapBizAdmin.phone, env.bootstrapBizAdmin.password, 'admin', '业务管理员');
+
+  // 论坛默认主题(幂等):确保"综合讨论"存在,并回填无主题的旧帖,满足"发帖必选主题"约束。
+  const topicRepo = ds.getRepository(ForumTopic);
+  let general = await topicRepo.findOne({ where: { tenantId, name: '综合讨论' } });
+  if (!general) {
+    general = await topicRepo.save(topicRepo.create({ tenantId, name: '综合讨论', order: 0 }));
   }
+  // demo 态补几个示例版块,方便演示分类。
+  if (process.env.SEED_DEMO !== 'false') {
+    for (const [i, name] of ['技术答疑', '经验分享', '考证交流'].entries()) {
+      const exists = await topicRepo.findOne({ where: { tenantId, name } });
+      if (!exists) await topicRepo.save(topicRepo.create({ tenantId, name, order: i + 1 }));
+    }
+  }
+  await ds
+    .getRepository(Post)
+    .createQueryBuilder()
+    .update(Post)
+    .set({ topicId: general.id })
+    .where('tenantId = :t AND topicId IS NULL', { t: tenantId })
+    .execute();
 
   // 生产 bootstrap 只建 schema + admin;示例课程/激活码仅开发态注入。
   const seedDemo = process.env.SEED_DEMO !== 'false';

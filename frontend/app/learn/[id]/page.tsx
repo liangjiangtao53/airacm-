@@ -35,7 +35,7 @@ export default function LearnPage() {
   if (locked) {
     return (
       <main className="mx-auto max-w-3xl px-6 py-20 text-center">
-        <div className="rounded-2xl bg-white p-12 ring-1 ring-ink/5">
+        <div className="rounded-2xl bg-white/60 backdrop-blur-xl p-12 shadow-sm ring-1 ring-white/55">
           <p className="text-lg font-medium text-ink">该课时需购买课程后学习</p>
           <a href="/courses" className="mt-5 inline-block rounded-lg bg-steel px-6 py-2.5 font-medium text-white hover:bg-ink">
             去购买
@@ -71,7 +71,7 @@ export default function LearnPage() {
           </div>
         )
       ) : (
-        <article className="rounded-2xl bg-white p-7 leading-relaxed text-ink/80 ring-1 ring-ink/5">
+        <article className="rounded-2xl bg-white/60 backdrop-blur-xl p-7 leading-relaxed text-ink/80 shadow-sm ring-1 ring-white/55">
           {lesson.content || '图文内容待后端返回。'}
         </article>
       )}

@@ -1,10 +1,15 @@
 import {
   Body,
   Controller,
+  Delete,
+  Get,
   Injectable,
   Module,
+  Param,
   Post,
   UseGuards,
+  BadRequestException,
+  ForbiddenException,
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository, TypeOrmModule } from '@nestjs/typeorm';
@@ -14,11 +19,14 @@ import {
   IsInt,
   IsOptional,
   IsString,
+  Matches,
   Max,
   MaxLength,
   Min,
+  MinLength,
 } from 'class-validator';
 import * as crypto from 'crypto';
+import * as bcrypt from 'bcryptjs';
 import {
   Chapter,
   Course,
@@ -27,9 +35,13 @@ import {
   LessonType,
   RechargeCode,
   User,
+  Wallet,
 } from '../entities';
 import { AuthUser, CurrentUser, JwtAuthGuard, Roles, RolesGuard } from '../common';
 import { WalletModule, WalletService } from './wallet';
+
+// 中国大陆手机号(与 auth 模块一致)。
+const PHONE_RE = /^1[3-9]\d{9}$/;
 
 class GenCodesDto {
   @IsInt()
@@ -40,6 +52,22 @@ class GenCodesDto {
   @IsInt()
   @Min(1)
   amount!: number; // 每张面额(分)
+}
+
+// 超管新增业务管理员:手机号 + 密码 + 昵称。
+class CreateAdminDto {
+  @IsString()
+  @Matches(PHONE_RE, { message: '手机号格式不正确' })
+  phone!: string;
+
+  @IsString()
+  @MinLength(8, { message: '密码至少 8 位' })
+  @MaxLength(64, { message: '密码过长' })
+  password!: string;
+
+  @IsString()
+  @MaxLength(30, { message: '昵称过长' })
+  nickname!: string;
 }
 
 class ManualRechargeDto {
@@ -212,14 +240,108 @@ export class AdminService {
     }
     return lesson;
   }
+
+  // 超管新增业务管理员(role=admin):建用户+开钱包。手机号不可与现有用户冲突。
+  async createAdmin(
+    caller: AuthUser,
+    phone: string,
+    password: string,
+    nickname: string,
+  ): Promise<{ id: string; phone: string; nickname: string; role: string }> {
+    const nick = nickname.trim();
+    if (!nick) throw new BadRequestException('昵称不能为空');
+    const dup = await this.users.findOne({ where: { tenantId: caller.tenantId, phone } });
+    if (dup) throw new BadRequestException('该手机号已被占用');
+    const passwordHash = await bcrypt.hash(password, 10);
+    const userId = await this.dataSource.transaction(async (m) => {
+      const u = await m.save(
+        m.create(User, {
+          tenantId: caller.tenantId,
+          phone,
+          nickname: nick,
+          passwordHash,
+          role: 'admin',
+          openid: null,
+        }),
+      );
+      await m.save(m.create(Wallet, { tenantId: caller.tenantId, userId: u.id, balance: 0 }));
+      return u.id;
+    });
+    return { id: userId, phone, nickname: nick, role: 'admin' };
+  }
+
+  // 用户列表:超管看全部(含业务管理员/超管),业务管理员只看普通用户。
+  // source 区分来源:key=卡密补全 / wechat=微信 / register=手机号注册,供前端打标签。
+  async listUsers(
+    caller: AuthUser,
+  ): Promise<
+    Array<{
+      id: string;
+      phone: string;
+      nickname: string;
+      role: string;
+      source: 'key' | 'wechat' | 'register';
+      createdAt: Date;
+    }>
+  > {
+    const where: Record<string, unknown> = { tenantId: caller.tenantId };
+    if (caller.role !== 'super') where.role = 'user'; // 业务管理员看不到管理员/超管
+    const rows = await this.users.find({ where, order: { createdAt: 'DESC' }, take: 1000 });
+    return rows.map((u) => ({
+      id: u.id,
+      phone: u.phone,
+      nickname: u.nickname,
+      role: u.role,
+      source: u.openid?.startsWith('key:') ? 'key' : u.openid ? 'wechat' : 'register',
+      createdAt: u.createdAt,
+    }));
+  }
+
+  // 删除用户:业务管理员只能删普通用户;超管可删普通用户与业务管理员,但不能删超管或自己。
+  async deleteUser(caller: AuthUser, targetId: string): Promise<{ deleted: number }> {
+    if (caller.userId === targetId) throw new BadRequestException('不能删除自己');
+    const target = await this.users.findOne({
+      where: { tenantId: caller.tenantId, id: targetId },
+    });
+    if (!target) throw new NotFoundException('用户不存在');
+    if (caller.role !== 'super') {
+      if (target.role !== 'user') throw new ForbiddenException('无权删除该用户');
+    } else if (target.role === 'super') {
+      throw new ForbiddenException('不能删除超级管理员');
+    }
+    await this.dataSource.transaction(async (m) => {
+      await m.delete(Wallet, { tenantId: caller.tenantId, userId: targetId });
+      await m.delete(User, { tenantId: caller.tenantId, id: targetId });
+    });
+    return { deleted: 1 };
+  }
 }
 
-// 全部管理接口:登录 + admin 角色双重守卫。
+// 管理接口:类默认仅 super(充值码/手动充值/建课程);
+// 用户管理方法级放宽到 admin(业务管理员也能管学员)。
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Roles('admin')
+@Roles('super')
 @Controller('admin')
 export class AdminController {
   constructor(private readonly svc: AdminService) {}
+
+  @Roles('admin')
+  @Get('users')
+  listUsers(@CurrentUser() admin: AuthUser) {
+    return this.svc.listUsers(admin);
+  }
+
+  @Roles('admin')
+  @Delete('users/:id')
+  deleteUser(@CurrentUser() admin: AuthUser, @Param('id') id: string) {
+    return this.svc.deleteUser(admin, id);
+  }
+
+  // 新增业务管理员:仅超管(类级 @Roles('super'),方法不放宽)。
+  @Post('admins')
+  createAdmin(@CurrentUser() admin: AuthUser, @Body() dto: CreateAdminDto) {
+    return this.svc.createAdmin(admin, dto.phone, dto.password, dto.nickname);
+  }
 
   @Post('recharge-codes')
   genCodes(@CurrentUser() admin: AuthUser, @Body() dto: GenCodesDto) {

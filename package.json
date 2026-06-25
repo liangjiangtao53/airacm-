@@ -3,5 +3,28 @@
     "@nestjs/throttler": "^6.5.0",
     "better-sqlite3": "^12.11.1",
     "helmet": "^8.2.0"
-  }
+  },
+  "name": "airacm",
+  "version": "1.0.0",
+  "description": "航空机务培训学习平台。顺序学习 · 专题学习(M1-M9 题库) · 在线考试 · 错题本 · 交流。",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs"
+  },
+  "devDependencies": {},
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/liangjiangtao53/airacm-.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/liangjiangtao53/airacm-/issues"
+  },
+  "homepage": "https://github.com/liangjiangtao53/airacm-#readme"
 }

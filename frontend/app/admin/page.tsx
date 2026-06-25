@@ -2,11 +2,21 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { api } from '@/lib/api';
+import {
+  api,
+  getToken,
+  type AdminUser,
+  type AppApkStatus,
+  type ForumTopic,
+  type ImportResult,
+  type QuestionUsage,
+  type UserRole,
+} from '@/lib/api';
+import CategoryManager from '@/components/CategoryManager';
 
 function Card(props: { title: string; children: React.ReactNode }) {
   return (
-    <section className="rounded-2xl bg-white p-6 ring-1 ring-ink/5">
+    <section className="rounded-2xl bg-white/60 backdrop-blur-xl p-6 shadow-sm ring-1 ring-white/55">
       <h2 className="mb-4 font-semibold text-ink">{props.title}</h2>
       {props.children}
     </section>
@@ -23,17 +33,17 @@ export default function AdminPage() {
   const [ready, setReady] = useState(false);
   const [err, setErr] = useState('');
 
-  // 发码
+  // 发码(仅 super)
   const [count, setCount] = useState('5');
   const [codeAmount, setCodeAmount] = useState('100');
   const [codes, setCodes] = useState<string[]>([]);
 
-  // 手动充值
+  // 手动充值(仅 super)
   const [userId, setUserId] = useState('');
   const [rechargeAmount, setRechargeAmount] = useState('');
   const [rechargeMsg, setRechargeMsg] = useState('');
 
-  // 建课程链
+  // 建课程链(仅 super)
   const [title, setTitle] = useState('');
   const [price, setPrice] = useState('');
   const [createdCourseId, setCreatedCourseId] = useState('');
@@ -42,15 +52,61 @@ export default function AdminPage() {
   const [lessonTitle, setLessonTitle] = useState('');
   const [contentMsg, setContentMsg] = useState('');
 
+  // 题库 Excel/PDF 导入
+  const [importFile, setImportFile] = useState<File | null>(null);
+  const [importUsage, setImportUsage] = useState<QuestionUsage>('both');
+  const [importCategory, setImportCategory] = useState('');
+  const [importCourseId, setImportCourseId] = useState('');
+  const [importResult, setImportResult] = useState<ImportResult | null>(null);
+  const [categories, setCategories] = useState<string[]>([]);
+
+  // App 安装包上传(admin + super)
+  const [apkFile, setApkFile] = useState<File | null>(null);
+  const [apkStatus, setApkStatus] = useState<AppApkStatus | null>(null);
+  const [apkMsg, setApkMsg] = useState('');
+
+  // 数据维护
+  const [stats, setStats] = useState<Array<{ category: string; count: number }>>([]);
+  const [activeCategory, setActiveCategory] = useState<string | null>(null);
+  const [keys, setKeys] = useState<Array<{ id: string; key: string; status: string; expiresAt: string }>>([]);
+  const [genCount, setGenCount] = useState('20');
+  const [genTtl, setGenTtl] = useState('30');
+  const [genKeysOut, setGenKeysOut] = useState<string[]>([]);
+  const [maintMsg, setMaintMsg] = useState('');
+
+  // 用户管理
+  const [meRole, setMeRole] = useState<UserRole>('admin');
+  const [users, setUsers] = useState<AdminUser[]>([]);
+
+  // 论坛主题管理(admin+super)
+  const [topics, setTopics] = useState<ForumTopic[]>([]);
+  const [newTopic, setNewTopic] = useState('');
+
+  // 新增业务管理员(仅超管)
+  const [adminPhone, setAdminPhone] = useState('');
+  const [adminPwd, setAdminPwd] = useState('');
+  const [adminNick, setAdminNick] = useState('');
+  const [adminMsg, setAdminMsg] = useState('');
+
+  const isSuper = meRole === 'super';
+
   useEffect(() => {
     api
       .me()
       .then((u) => {
-        if (u.role !== 'admin') {
+        if (u.role !== 'admin' && u.role !== 'super') {
           router.push('/');
           return;
         }
+        setMeRole(u.role);
         setReady(true);
+        api.categories().then(setCategories).catch(() => undefined);
+        api.questionStats().then(setStats).catch(() => undefined);
+        api.appApkStatus().then(setApkStatus).catch(() => undefined);
+        api.users().then(setUsers).catch(() => undefined);
+        api.forumTopics().then(setTopics).catch(() => undefined);
+        // 卡密仅 super 可见
+        if (u.role === 'super') api.accessKeys().then(setKeys).catch(() => undefined);
       })
       .catch(() => router.push('/login'));
   }, [router]);
@@ -65,6 +121,8 @@ export default function AdminPage() {
       }
     };
   }
+
+  const refreshStats = async () => setStats(await api.questionStats());
 
   const genCodes = wrap(async () => {
     const r = await api.adminGenCodes(Number(count), Math.round(Number(codeAmount) * 100));
@@ -91,116 +149,592 @@ export default function AdminPage() {
     setContentMsg('课时已创建: ' + l.id);
   });
 
+  const doImport = wrap(async () => {
+    if (!importFile) throw new Error('请先选择 Excel 或 PDF 文件');
+    setImportResult(null);
+    const r = await api.importQuestions(
+      importFile,
+      importUsage,
+      importCategory || undefined,
+      importCourseId.trim() || undefined,
+    );
+    setImportResult(r);
+    await refreshStats();
+  });
+
+  function inferImportCategory(file: File): string {
+    const name = file.name.toLowerCase();
+    if (name.includes('r3m1')) return 'M1 航空概论';
+    if (name.includes('3257')) return 'M9 航空英语';
+    if (name.includes('民用航空器维修人员执照英语参考试题m9')) return 'M9 new';
+    return '';
+  }
+
+  function chooseImportFile(file: File | null) {
+    setImportFile(file);
+    if (!file) return;
+    const inferred = inferImportCategory(file);
+    if (inferred) setImportCategory(inferred);
+  }
+
+  const uploadApk = wrap(async () => {
+    if (!apkFile) throw new Error('请先选择 APK 文件');
+    if (!apkFile.name.toLowerCase().endsWith('.apk')) throw new Error('只支持上传 .apk 安装包');
+    setApkMsg('');
+    const status = await api.uploadAppApk(apkFile);
+    setApkStatus(status);
+    setApkFile(null);
+    setApkMsg('App 安装包已上传');
+  });
+
+  // 模板下载:端点需鉴权,普通 <a> 不带 token,改为带鉴权头取 blob 下载。
+  const downloadTemplate = wrap(async () => {
+    const res = await fetch(api.questionTemplateUrl(), {
+      headers: { Authorization: `Bearer ${getToken() ?? ''}` },
+    });
+    if (!res.ok) throw new Error('模板下载失败');
+    const url = URL.createObjectURL(await res.blob());
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'question-template.xlsx';
+    a.click();
+    URL.revokeObjectURL(url);
+  });
+
+  const purgeCategory = (category: string) =>
+    wrap(async () => {
+      const label = category || '(未分类)';
+      if (!window.confirm(`确认删除「${label}」科目下全部题目?此操作不可恢复。`)) return;
+      const r = await api.purgeQuestions(category);
+      setMaintMsg(`已删除 ${label} 下 ${r.deleted} 题`);
+      if (activeCategory === category) setActiveCategory(null);
+      await refreshStats();
+    })();
+
+  const doGenKeys = wrap(async () => {
+    const r = await api.generateKeys(Number(genCount) || 20, Number(genTtl) || 30);
+    setGenKeysOut(r.keys);
+    setMaintMsg(`已生成 ${r.keys.length} 个卡密,有效期至 ${new Date(r.expiresAt).toLocaleDateString()}`);
+    setKeys(await api.accessKeys());
+  });
+
+  const revokeKey = (id: string) =>
+    wrap(async () => {
+      await api.revokeKey(id);
+      setKeys(await api.accessKeys());
+    })();
+
+  const cleanupKeys = wrap(async () => {
+    if (!window.confirm('确认删除全部已过期/已作废的卡密?')) return;
+    const r = await api.cleanupKeys();
+    setMaintMsg(`已清理 ${r.deleted} 个失效卡密`);
+    setKeys(await api.accessKeys());
+  });
+
+  const removeUser = (u: AdminUser) =>
+    wrap(async () => {
+      if (!window.confirm(`确认删除用户 ${u.phone || u.nickname}?`)) return;
+      await api.deleteUser(u.id);
+      setUsers((l) => l.filter((x) => x.id !== u.id));
+    })();
+
+  const addTopic = wrap(async () => {
+    const name = newTopic.trim();
+    if (!name) return;
+    const t = await api.adminCreateTopic(name, topics.length);
+    setTopics((l) => [...l, t]);
+    setNewTopic('');
+  });
+
+  const renameTopic = (t: ForumTopic) =>
+    wrap(async () => {
+      const name = window.prompt('修改主题名', t.name)?.trim();
+      if (!name || name === t.name) return;
+      const updated = await api.adminUpdateTopic(t.id, { name });
+      setTopics((l) => l.map((x) => (x.id === t.id ? updated : x)));
+    })();
+
+  const removeTopic = (t: ForumTopic) =>
+    wrap(async () => {
+      if (!window.confirm(`确认删除主题「${t.name}」?(该主题下有帖子则无法删除)`)) return;
+      await api.adminDeleteTopic(t.id);
+      setTopics((l) => l.filter((x) => x.id !== t.id));
+    })();
+
+  const createAdmin = wrap(async () => {
+    setAdminMsg('');
+    const created = await api.adminCreateAdmin(adminPhone.trim(), adminPwd, adminNick.trim());
+    setUsers((l) => [
+      { id: created.id, phone: created.phone, nickname: created.nickname, role: created.role, source: 'register', createdAt: new Date().toISOString() },
+      ...l,
+    ]);
+    setAdminMsg(`已添加业务管理员 ${created.nickname}(${created.phone})`);
+    setAdminPhone('');
+    setAdminPwd('');
+    setAdminNick('');
+  });
+
+  const roleLabel = (r: UserRole) =>
+    r === 'super' ? '超级管理员' : r === 'admin' ? '业务管理员' : '学员';
+
+  const sourceLabel = (s?: AdminUser['source']) =>
+    s === 'key' ? '卡密' : s === 'wechat' ? '微信' : s === 'register' ? '注册' : '';
+
   if (!ready) {
     return <main className="flex min-h-screen items-center justify-center text-ink/50">校验权限...</main>;
   }
 
   return (
     <main className="mx-auto max-w-3xl px-6 py-10">
-      <a href="/" className="text-sm text-ink/50 hover:text-ink">
+      <a href="/" className="text-sm font-bold text-ink hover:text-sky">
         ← 返回工作台
       </a>
       <h1 className="mb-6 mt-1 text-3xl font-semibold tracking-tight text-ink">管理后台</h1>
       {err && <p className="mb-4 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-600">{err}</p>}
 
       <div className="space-y-5">
-        <Card title="生成充值码">
-          <div className="flex flex-wrap items-end gap-3">
-            <div className="w-28">
-              <label className="mb-1 block text-xs text-ink/60">数量</label>
-              <input className={input} value={count} onChange={(e) => setCount(e.target.value)} />
+        {/* 充值码 / 手动充值 / 建课程:仅超级管理员 */}
+        {isSuper && (
+          <Card title="生成充值码">
+            <div className="flex flex-wrap items-end gap-3">
+              <div className="w-28">
+                <label className="mb-1 block text-xs text-ink/60">数量</label>
+                <input className={input} value={count} onChange={(e) => setCount(e.target.value)} />
+              </div>
+              <div className="w-36">
+                <label className="mb-1 block text-xs text-ink/60">面额(元)</label>
+                <input className={input} value={codeAmount} onChange={(e) => setCodeAmount(e.target.value)} />
+              </div>
+              <button className={btn} onClick={genCodes}>
+                生成
+              </button>
             </div>
-            <div className="w-36">
-              <label className="mb-1 block text-xs text-ink/60">面额(元)</label>
+            {codes.length > 0 && (
+              <div className="mt-4 grid grid-cols-2 gap-2 rounded-lg bg-mist p-3 font-mono text-xs text-ink/70">
+                {codes.map((c) => (
+                  <span key={c}>{c}</span>
+                ))}
+              </div>
+            )}
+          </Card>
+        )}
+
+        {isSuper && (
+          <Card title="手动充值">
+            <div className="space-y-3">
               <input
                 className={input}
-                value={codeAmount}
-                onChange={(e) => setCodeAmount(e.target.value)}
+                placeholder="用户 ID"
+                value={userId}
+                onChange={(e) => setUserId(e.target.value)}
               />
+              <div className="flex gap-3">
+                <input
+                  className={input}
+                  placeholder="金额(元)"
+                  value={rechargeAmount}
+                  onChange={(e) => setRechargeAmount(e.target.value)}
+                />
+                <button className={btn} onClick={doRecharge}>
+                  充值
+                </button>
+              </div>
+              {rechargeMsg && <p className="text-sm text-sky">{rechargeMsg}</p>}
             </div>
-            <button className={btn} onClick={genCodes}>
-              生成
-            </button>
-          </div>
-          {codes.length > 0 && (
-            <div className="mt-4 grid grid-cols-2 gap-2 rounded-lg bg-mist p-3 font-mono text-xs text-ink/70">
-              {codes.map((c) => (
-                <span key={c}>{c}</span>
-              ))}
-            </div>
-          )}
-        </Card>
+          </Card>
+        )}
 
-        <Card title="手动充值">
+        {isSuper && (
+          <Card title="创建课程内容">
+            <div className="space-y-4">
+              <div className="flex gap-3">
+                <input
+                  className={input}
+                  placeholder="课程标题"
+                  value={title}
+                  onChange={(e) => setTitle(e.target.value)}
+                />
+                <input
+                  className={input + ' w-32'}
+                  placeholder="价格(元)"
+                  value={price}
+                  onChange={(e) => setPrice(e.target.value)}
+                />
+                <button className={btn} onClick={createCourse}>
+                  建课程
+                </button>
+              </div>
+              {createdCourseId && (
+                <div className="flex gap-3">
+                  <input
+                    className={input}
+                    placeholder="章节标题"
+                    value={chapterTitle}
+                    onChange={(e) => setChapterTitle(e.target.value)}
+                  />
+                  <button className={btn} onClick={createChapter}>
+                    建章节
+                  </button>
+                </div>
+              )}
+              {createdChapterId && (
+                <div className="flex gap-3">
+                  <input
+                    className={input}
+                    placeholder="课时标题(video/paid)"
+                    value={lessonTitle}
+                    onChange={(e) => setLessonTitle(e.target.value)}
+                  />
+                  <button className={btn} onClick={createLesson}>
+                    建课时
+                  </button>
+                </div>
+              )}
+              {contentMsg && <p className="text-sm text-sky">{contentMsg}</p>}
+            </div>
+          </Card>
+        )}
+
+        {/* App 安装包:admin + super */}
+        <Card title="App 安装包">
           <div className="space-y-3">
-            <input
-              className={input}
-              placeholder="用户 ID"
-              value={userId}
-              onChange={(e) => setUserId(e.target.value)}
-            />
-            <div className="flex gap-3">
-              <input
-                className={input}
-                placeholder="金额(元)"
-                value={rechargeAmount}
-                onChange={(e) => setRechargeAmount(e.target.value)}
-              />
-              <button className={btn} onClick={doRecharge}>
-                充值
-              </button>
+            <div className="rounded-lg bg-mist p-3 text-sm text-ink/70">
+              <p>
+                当前状态:{' '}
+                <span className={apkStatus?.exists ? 'font-semibold text-sky' : 'font-semibold text-ink/45'}>
+                  {apkStatus?.exists ? '已上传' : '未上传'}
+                </span>
+              </p>
+              {apkStatus?.exists && (
+                <p className="mt-1">
+                  文件大小 {(apkStatus.size / 1024 / 1024).toFixed(2)} MB
+                  {apkStatus.updatedAt ? ` · 更新时间 ${new Date(apkStatus.updatedAt).toLocaleString()}` : ''}
+                </p>
+              )}
+              <p className="mt-1">
+                下载地址 <span className="font-medium text-ink">/downloads/app/airacm-android.apk</span>
+              </p>
             </div>
-            {rechargeMsg && <p className="text-sm text-sky">{rechargeMsg}</p>}
+            <input
+              type="file"
+              accept=".apk,application/vnd.android.package-archive"
+              onChange={(e) => setApkFile(e.target.files?.[0] ?? null)}
+              className="block w-full text-sm text-ink/70 file:mr-3 file:rounded-lg file:border-0 file:bg-steel file:px-4 file:py-2 file:text-white"
+            />
+            <div className="flex flex-wrap items-center gap-3">
+              <button className={btn} onClick={uploadApk} disabled={!apkFile}>
+                上传安装包
+              </button>
+              <a href="/download-app" className="text-sm text-sky hover:underline">
+                查看下载页
+              </a>
+            </div>
+            {apkMsg && <p className="text-sm text-sky">{apkMsg}</p>}
           </div>
         </Card>
 
-        <Card title="创建课程内容">
-          <div className="space-y-4">
+        {/* 导入题库:admin + super */}
+        <Card title="导入题库(Excel/PDF)">
+          <div className="space-y-3">
+            <div className="flex flex-wrap items-end gap-3">
+              <div>
+                <label className="mb-1 block text-xs text-ink/60">科目</label>
+                <select
+                  className={input + ' w-44'}
+                  value={importCategory}
+                  onChange={(e) => setImportCategory(e.target.value)}
+                >
+                  <option value="">未分类</option>
+                  {categories.map((c) => (
+                    <option key={c} value={c}>
+                      {c}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="mb-1 block text-xs text-ink/60">归属</label>
+                <select
+                  className={input + ' w-36'}
+                  value={importUsage}
+                  onChange={(e) => setImportUsage(e.target.value as QuestionUsage)}
+                >
+                  <option value="both">考试+学习</option>
+                  <option value="exam">仅考试</option>
+                </select>
+              </div>
+              <div className="flex-1">
+                <label className="mb-1 block text-xs text-ink/60">关联课程 ID(可选)</label>
+                <input
+                  className={input}
+                  placeholder="留空则为独立题库"
+                  value={importCourseId}
+                  onChange={(e) => setImportCourseId(e.target.value)}
+                />
+              </div>
+            </div>
+            <input
+              type="file"
+              accept=".xlsx,.xls,.pdf"
+              onChange={(e) => chooseImportFile(e.target.files?.[0] ?? null)}
+              className="block w-full text-sm text-ink/70 file:mr-3 file:rounded-lg file:border-0 file:bg-steel file:px-4 file:py-2 file:text-white"
+            />
+            <div className="flex items-center gap-3">
+              <button className={btn} onClick={doImport}>
+                导入
+              </button>
+              <button onClick={downloadTemplate} className="text-sm text-sky hover:underline">
+                下载导入模板
+              </button>
+            </div>
+            {importResult && (
+              <div className="rounded-lg bg-mist p-3 text-sm">
+                <p className="text-ink">
+                  成功导入 <span className="font-semibold text-sky">{importResult.imported}</span> 题
+                  {importResult.failed.length > 0 && (
+                    <span className="text-red-500">,失败 {importResult.failed.length} 行</span>
+                  )}
+                </p>
+                {importResult.failed.length > 0 && (
+                  <ul className="mt-2 space-y-1 text-red-500/90">
+                    {importResult.failed.map((f) => (
+                      <li key={f.row}>
+                        第 {f.row} 行:{f.reason}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
+          </div>
+        </Card>
+
+        {/* 数据维护:题库(admin+super) + 卡密(仅 super) */}
+        <Card title="数据维护">
+          <div className="space-y-5">
+            {maintMsg && <p className="rounded-lg bg-sky/10 px-3 py-2 text-sm text-sky">{maintMsg}</p>}
+
+            <div>
+              <h3 className="mb-2 text-sm font-medium text-ink/80">题库(按科目)</h3>
+              {stats.length === 0 ? (
+                <p className="text-sm text-ink/40">暂无题目</p>
+              ) : (
+                <ul className="space-y-1">
+                  {stats.map((s) => {
+                    const realCat = s.category === '(未分类)' ? '' : s.category;
+                    const open = activeCategory === realCat;
+                    return (
+                      <li key={s.category} className="rounded-lg bg-mist">
+                        <div className="flex items-center justify-between px-3 py-2 text-sm">
+                          <span className="text-ink/75">
+                            {s.category} · {s.count} 题
+                          </span>
+                          <span className="flex items-center gap-3">
+                            <button
+                              onClick={() => setActiveCategory(open ? null : realCat)}
+                              className="text-xs font-medium text-sky hover:underline"
+                            >
+                              {open ? '收起' : '进入'}
+                            </button>
+                            <button
+                              onClick={() => purgeCategory(realCat)}
+                              className="text-xs text-red-500 hover:underline"
+                            >
+                              删除该科目
+                            </button>
+                          </span>
+                        </div>
+                        {open && (
+                          <div className="px-3 pb-3">
+                            <CategoryManager category={realCat} onChanged={refreshStats} />
+                          </div>
+                        )}
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </div>
+
+            {isSuper && (
+              <div className="border-t border-ink/5 pt-4">
+                <h3 className="mb-2 text-sm font-medium text-ink/80">认证卡密</h3>
+                <div className="mb-3 flex flex-wrap items-end gap-3">
+                  <div className="w-24">
+                    <label className="mb-1 block text-xs text-ink/60">数量</label>
+                    <input className={input} value={genCount} onChange={(e) => setGenCount(e.target.value)} />
+                  </div>
+                  <div className="w-28">
+                    <label className="mb-1 block text-xs text-ink/60">有效期(天)</label>
+                    <input className={input} value={genTtl} onChange={(e) => setGenTtl(e.target.value)} />
+                  </div>
+                  <button className={btn} onClick={doGenKeys}>
+                    生成卡密
+                  </button>
+                  <button onClick={cleanupKeys} className="text-sm text-red-500 hover:underline">
+                    清理过期/作废
+                  </button>
+                </div>
+
+                {genKeysOut.length > 0 && (
+                  <div className="mb-3 grid grid-cols-2 gap-2 rounded-lg bg-mist p-3 font-mono text-xs text-ink/70">
+                    {genKeysOut.map((k) => (
+                      <span key={k}>{k}</span>
+                    ))}
+                  </div>
+                )}
+
+                <p className="mb-1 text-xs text-ink/50">现有卡密 {keys.length} 个(最多显示 500)</p>
+                <ul className="max-h-60 space-y-1 overflow-y-auto">
+                  {keys.map((k) => {
+                    const expired = new Date(k.expiresAt).getTime() < Date.now();
+                    const dead = k.status === 'revoked' || expired;
+                    return (
+                      <li
+                        key={k.id}
+                        className="flex items-center justify-between rounded-lg bg-mist px-3 py-1.5 text-xs"
+                      >
+                        <span className={`font-mono ${dead ? 'text-ink/35 line-through' : 'text-ink/75'}`}>
+                          {k.key}
+                        </span>
+                        <span className="flex items-center gap-2">
+                          <span className="text-ink/40">
+                            {k.status === 'revoked' ? '已作废' : expired ? '已过期' : '有效'}
+                          </span>
+                          {!dead && (
+                            <button onClick={() => revokeKey(k.id)} className="text-red-500 hover:underline">
+                              作废
+                            </button>
+                          )}
+                        </span>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            )}
+          </div>
+        </Card>
+
+        {/* 新增业务管理员:仅超管 */}
+        {isSuper && (
+          <Card title="添加业务管理员">
+            <div className="space-y-3">
+              <div className="flex flex-wrap gap-3">
+                <input
+                  className={input + ' flex-1'}
+                  placeholder="手机号"
+                  inputMode="numeric"
+                  value={adminPhone}
+                  onChange={(e) => setAdminPhone(e.target.value)}
+                />
+                <input
+                  className={input + ' flex-1'}
+                  placeholder="昵称"
+                  value={adminNick}
+                  onChange={(e) => setAdminNick(e.target.value)}
+                />
+              </div>
+              <div className="flex gap-3">
+                <input
+                  className={input}
+                  type="password"
+                  placeholder="登录密码(至少 8 位)"
+                  value={adminPwd}
+                  onChange={(e) => setAdminPwd(e.target.value)}
+                />
+                <button
+                  className={btn + ' whitespace-nowrap'}
+                  onClick={createAdmin}
+                  disabled={!adminPhone.trim() || adminPwd.length < 8 || !adminNick.trim()}
+                >
+                  添加
+                </button>
+              </div>
+              {adminMsg && <p className="rounded-lg bg-sky/10 px-3 py-2 text-sm text-sky">{adminMsg}</p>}
+            </div>
+          </Card>
+        )}
+
+        {/* 论坛主题管理:admin + super */}
+        <Card title="论坛主题">
+          <div className="space-y-3">
             <div className="flex gap-3">
               <input
                 className={input}
-                placeholder="课程标题"
-                value={title}
-                onChange={(e) => setTitle(e.target.value)}
+                placeholder="新主题名(如:技术答疑)"
+                value={newTopic}
+                maxLength={30}
+                onChange={(e) => setNewTopic(e.target.value)}
               />
-              <input
-                className={input + ' w-32'}
-                placeholder="价格(元)"
-                value={price}
-                onChange={(e) => setPrice(e.target.value)}
-              />
-              <button className={btn} onClick={createCourse}>
-                建课程
+              <button className={btn} onClick={addTopic} disabled={!newTopic.trim()}>
+                新建
               </button>
             </div>
-            {createdCourseId && (
-              <div className="flex gap-3">
-                <input
-                  className={input}
-                  placeholder="章节标题"
-                  value={chapterTitle}
-                  onChange={(e) => setChapterTitle(e.target.value)}
-                />
-                <button className={btn} onClick={createChapter}>
-                  建章节
-                </button>
-              </div>
+            {topics.length === 0 ? (
+              <p className="text-sm text-ink/40">暂无主题</p>
+            ) : (
+              <ul className="space-y-1">
+                {topics.map((t) => (
+                  <li
+                    key={t.id}
+                    className="flex items-center justify-between rounded-lg bg-mist px-3 py-2 text-sm"
+                  >
+                    <span className="text-ink/80">{t.name}</span>
+                    <span className="flex items-center gap-3">
+                      <button onClick={() => renameTopic(t)} className="text-xs text-sky hover:underline">
+                        改名
+                      </button>
+                      <button onClick={() => removeTopic(t)} className="text-xs text-red-500 hover:underline">
+                        删除
+                      </button>
+                    </span>
+                  </li>
+                ))}
+              </ul>
             )}
-            {createdChapterId && (
-              <div className="flex gap-3">
-                <input
-                  className={input}
-                  placeholder="课时标题(video/paid)"
-                  value={lessonTitle}
-                  onChange={(e) => setLessonTitle(e.target.value)}
-                />
-                <button className={btn} onClick={createLesson}>
-                  建课时
-                </button>
-              </div>
-            )}
-            {contentMsg && <p className="text-sm text-sky">{contentMsg}</p>}
           </div>
+        </Card>
+
+        {/* 用户管理:admin + super */}
+        <Card title={isSuper ? '用户管理(超管:可见全部)' : '用户管理(仅普通学员)'}>
+          {users.length === 0 ? (
+            <p className="text-sm text-ink/40">暂无用户</p>
+          ) : (
+            <ul className="max-h-80 space-y-1 overflow-y-auto">
+              {users.map((u) => (
+                <li
+                  key={u.id}
+                  className="flex items-center justify-between rounded-lg bg-mist px-3 py-2 text-sm"
+                >
+                  <span className="flex items-center gap-2">
+                    <span className="text-ink/80">{u.phone || u.nickname || '(无)'}</span>
+                    <span
+                      className={`rounded px-1.5 py-0.5 text-xs ${
+                        u.role === 'super'
+                          ? 'bg-red-50 text-red-500'
+                          : u.role === 'admin'
+                            ? 'bg-sky/10 text-sky'
+                            : 'bg-ink/5 text-ink/50'
+                      }`}
+                    >
+                      {roleLabel(u.role)}
+                    </span>
+                    {u.role === 'user' && u.source && (
+                      <span className="rounded bg-amber-50 px-1.5 py-0.5 text-xs text-amber-600">
+                        {sourceLabel(u.source)}
+                      </span>
+                    )}
+                  </span>
+                  {u.role !== 'super' && (
+                    <button onClick={() => removeUser(u)} className="text-xs text-red-500 hover:underline">
+                      删除
+                    </button>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
         </Card>
       </div>
     </main>

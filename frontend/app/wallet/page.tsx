@@ -63,7 +63,7 @@ export default function WalletPage() {
 
   return (
     <main className="mx-auto max-w-2xl px-6 py-10">
-      <a href="/" className="text-sm text-ink/50 hover:text-ink">
+      <a href="/" className="text-sm font-bold text-ink hover:text-sky">
         ← 返回工作台
       </a>
       <h1 className="mb-6 mt-1 text-3xl font-semibold tracking-tight text-ink">我的钱包</h1>
@@ -78,7 +78,7 @@ export default function WalletPage() {
       {msg && <p className="mb-4 rounded-lg bg-sky/10 px-4 py-3 text-sm text-sky">{msg}</p>}
       {err && <p className="mb-4 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-600">{err}</p>}
 
-      <section className="mb-5 rounded-2xl bg-white p-6 ring-1 ring-ink/5">
+      <section className="mb-5 rounded-2xl bg-white/60 backdrop-blur-xl p-6 shadow-sm ring-1 ring-white/55">
         <h2 className="mb-3 font-semibold text-ink">充值码充值</h2>
         <div className="flex gap-2">
           <input
@@ -97,7 +97,7 @@ export default function WalletPage() {
         </div>
       </section>
 
-      <section className="rounded-2xl bg-white p-6 ring-1 ring-ink/5">
+      <section className="rounded-2xl bg-white/60 backdrop-blur-xl p-6 shadow-sm ring-1 ring-white/55">
         <h2 className="mb-3 font-semibold text-ink">微信充值</h2>
         <div className="flex gap-2">
           <input

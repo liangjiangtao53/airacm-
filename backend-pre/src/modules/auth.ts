@@ -1,9 +1,11 @@
 import {
   Body,
   Controller,
+  Get,
   Injectable,
   Module,
   Post,
+  UseGuards,
   BadRequestException,
   UnauthorizedException,
 } from '@nestjs/common';
@@ -14,11 +16,19 @@ import { IsOptional, IsString, Length, Matches, MaxLength, MinLength } from 'cla
 import { Throttle } from '@nestjs/throttler';
 import * as bcrypt from 'bcryptjs';
 import { Tenant, User, Wallet } from '../entities';
-import { AuthUser, signToken } from '../common';
+import { AuthUser, CurrentUser, JwtAuthGuard, signToken } from '../common';
+import { SessionService } from '../session';
 import { env } from '../config';
+import { SmsModule, SmsService } from './sms';
 
 // 中国大陆手机号。
 const PHONE_RE = /^1[3-9]\d{9}$/;
+
+class SendCodeDto {
+  @IsString()
+  @Matches(PHONE_RE, { message: '手机号格式不正确' })
+  phone!: string;
+}
 
 class RegisterDto {
   @IsString()
@@ -62,12 +72,18 @@ export class AuthService {
     @InjectRepository(Wallet) private readonly wallets: Repository<Wallet>,
     @InjectRepository(Tenant) private readonly tenants: Repository<Tenant>,
     private readonly jwt: JwtService,
+    private readonly sms: SmsService,
+    private readonly session: SessionService,
   ) {}
 
-  // 第一版短信验证:dev 万能码;生产接服务商。
-  private verifySmsCode(code: string): boolean {
-    if (env.sms.devMode) return code === env.sms.devCode;
-    return false; // 生产模式未接服务商前一律拒绝,避免假放行
+  // 发送注册验证码:已注册手机号直接拒绝,避免无谓短信与撞库探测。
+  async sendCode(phone: string): Promise<{ sent: true }> {
+    const existing = await this.users.findOne({
+      where: { tenantId: env.defaultTenantId, phone },
+    });
+    if (existing) throw new BadRequestException('该手机号已注册');
+    await this.sms.sendCode(phone);
+    return { sent: true };
   }
 
   private async ensureTenant(tenantId: string): Promise<void> {
@@ -78,8 +94,8 @@ export class AuthService {
   }
 
   async register(dto: RegisterDto): Promise<{ token: string; userId: string }> {
-    if (!this.verifySmsCode(dto.code)) {
-      throw new BadRequestException('验证码错误');
+    if (!this.sms.verify(dto.phone, dto.code)) {
+      throw new BadRequestException('验证码错误或已过期');
     }
     const tenantId = env.defaultTenantId;
     await this.ensureTenant(tenantId);
@@ -101,7 +117,7 @@ export class AuthService {
     // 注册即开钱包(每用户一个,唯一约束 (tenantId,userId))。
     await this.wallets.save(this.wallets.create({ tenantId, userId: user.id, balance: 0 }));
 
-    return { token: this.issue({ userId: user.id, tenantId, role: user.role }), userId: user.id };
+    return { token: await this.issue({ userId: user.id, tenantId, role: user.role }), userId: user.id };
   }
 
   async login(dto: LoginDto): Promise<{ token: string; userId: string }> {
@@ -110,7 +126,7 @@ export class AuthService {
     if (!user || !(await bcrypt.compare(dto.password, user.passwordHash))) {
       throw new UnauthorizedException('手机号或密码错误');
     }
-    return { token: this.issue({ userId: user.id, tenantId, role: user.role }), userId: user.id };
+    return { token: await this.issue({ userId: user.id, tenantId, role: user.role }), userId: user.id };
   }
 
   // 微信登录:code 换 openid。dev 桩用 code 直接当 openid;生产调微信 jscode2session。
@@ -131,11 +147,19 @@ export class AuthService {
       );
       await this.wallets.save(this.wallets.create({ tenantId, userId: user.id, balance: 0 }));
     }
-    return { token: this.issue({ userId: user.id, tenantId, role: user.role }), userId: user.id };
+    return { token: await this.issue({ userId: user.id, tenantId, role: user.role }), userId: user.id };
   }
 
-  private issue(user: AuthUser): string {
-    return signToken(this.jwt, user);
+  // 签发登录 token:同时刷新单点会话(sid),旧端 token 立即失效。
+  private async issue(user: AuthUser): Promise<string> {
+    const sid = await this.session.issue(user.userId);
+    return signToken(this.jwt, user, sid);
+  }
+
+  // 当前用户身份 + 昵称(首页/导航展示用)。昵称随用户表,token 里不冗余存。
+  async profile(user: AuthUser): Promise<AuthUser & { nickname: string }> {
+    const u = await this.users.findOne({ where: { tenantId: user.tenantId, id: user.userId } });
+    return { ...user, nickname: u?.nickname ?? '' };
   }
 }
 
@@ -144,6 +168,13 @@ export class AuthService {
 @Controller('auth')
 export class AuthController {
   constructor(private readonly svc: AuthService) {}
+
+  // 发送注册短信验证码。限流随父级 @Throttle(60s/10) 收紧防轰炸。
+  @Throttle({ default: { ttl: 60_000, limit: 3 } })
+  @Post('send-code')
+  sendCode(@Body() dto: SendCodeDto) {
+    return this.svc.sendCode(dto.phone);
+  }
 
   @Post('register')
   register(@Body() dto: RegisterDto) {
@@ -159,12 +190,20 @@ export class AuthController {
   wechat(@Body() dto: WechatLoginDto) {
     return this.svc.wechatLogin(dto);
   }
+
+  // 当前登录用户身份 + 昵称(前端鉴权/角色判断/导航展示用)。
+  @UseGuards(JwtAuthGuard)
+  @Get('me')
+  me(@CurrentUser() user: AuthUser) {
+    return this.svc.profile(user);
+  }
 }
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([User, Wallet, Tenant]),
     JwtModule.register({ secret: env.jwtSecret }),
+    SmsModule,
   ],
   controllers: [AuthController],
   providers: [AuthService],

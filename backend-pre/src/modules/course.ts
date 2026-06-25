@@ -47,13 +47,11 @@ export class CourseService {
     return !!e;
   }
 
-  // 访问规则沿用 mock canOpenLesson,但在后端强制(D 约束 2):
-  // free 永远开;paid/vip 需已购权益;password 需登录(控制器已守卫)。
-  private canOpen(access: LessonAccess, owns: boolean): boolean {
-    if (access === 'free') return true;
-    if (access === 'paid' || access === 'vip') return owns;
-    if (access === 'password') return true; // 登录即可,真实场景再校验课时密码
-    return false;
+  // 访问规则:当前为「登录即可学全部」模式(凭账号/卡密登录即可学习所有课时,
+  // 不再按购买拦截)。控制器已要求登录,故任意课时一律放行。
+  // 若日后恢复付费墙,改回按 owns 判定 paid/vip 即可。
+  private canOpen(_access: LessonAccess, _owns: boolean): boolean {
+    return true;
   }
 
   async list(user: AuthUser): Promise<Course[]> {

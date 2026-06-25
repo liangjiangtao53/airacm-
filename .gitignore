@@ -4,6 +4,7 @@ dist/
 .next/
 out/
 build/
+.tmp/
 *.tsbuildinfo
 
 # 运行时数据库与日志
@@ -14,12 +15,18 @@ srv*.out
 srv*.err
 *.out
 *.err
+uploads/
 
 # 环境与密钥
 .env
 .env.local
 .env.*.local
 
+# TLS 证书/私钥与 certbot 挑战目录:绝不入库
+deploy/nginx/certs/
+deploy/certbot/
+
 # 系统
 .DS_Store
 Thumbs.db
+.gstack/
