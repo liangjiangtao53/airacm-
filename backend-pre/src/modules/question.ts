@@ -26,7 +26,6 @@ import type { Response } from 'express';
 import { createHash } from 'crypto';
 import { mkdir, writeFile } from 'fs/promises';
 import { basename, extname, join } from 'path';
-import { PDFParse } from 'pdf-parse';
 import * as XLSX from 'xlsx';
 import {
   Comment,
@@ -438,6 +437,8 @@ export class QuestionService {
 
   private async parsePdfRows(buffer: Buffer): Promise<unknown[][]> {
     let text = '';
+    // PDF parsing is optional and heavy; load it only for PDF imports so API boot does not depend on canvas polyfills.
+    const { PDFParse } = await import('pdf-parse');
     const parser = new PDFParse({ data: new Uint8Array(buffer) });
     try {
       const result = await parser.getText();
