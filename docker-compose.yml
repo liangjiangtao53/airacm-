@@ -1,17 +1,26 @@
-# 维修翼站 — 整套一键部署
-# 用法:
-#   1. cp .env.example .env  并填写(至少 DB_PASSWORD / JWT_SECRET;短信/管理员按需)
-#   2. 放置 TLS 证书到 deploy/nginx/certs/{fullchain.pem,privkey.pem}
-#      (无域名测试可自签: 见 .env.example 末尾命令)
-#   3. 改 deploy/nginx/airacm.conf 里的 server_name 为你的域名
-#   4. docker compose build
-#   5. 首次建表+写管理员(seed 幂等,先在 .env 设好 ADMIN_PASSWORD/BIZ_ADMIN_PASSWORD):
-#        docker compose run --rm -e SEED_DEMO=false api node dist/seed.js
-#   6. docker compose up -d
-#   仅 nginx 暴露 80/443;api/db/frontend 均限容器内网。
-#   默认管理员: 超管 13259858973 / 业务管理员 13772066855(密码=.env 对应项)
+# 维修翼站整套部署:
+#   nginx exposes 80/443; db/api/frontend stay inside the compose network.
+#   Required .env values: DB_ROOT_PASSWORD, DB_PASSWORD, JWT_SECRET,
+#   ADMIN_PASSWORD, BIZ_ADMIN_PASSWORD.
 
 services:
+  db:
+    image: mysql:8.4
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:?DB_ROOT_PASSWORD required}
+      MYSQL_DATABASE: ${DB_DATABASE:-airacm}
+      MYSQL_USER: ${DB_USER:-airacm}
+      MYSQL_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD required}
+      TZ: Asia/Shanghai
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --default-time-zone=+08:00
+    volumes:
+      - mysql_data:/var/lib/mysql
+    expose:
+      - '3306'
 
   api:
     build: ./backend-pre
@@ -19,28 +28,26 @@ services:
     environment:
       NODE_ENV: production
       DB_TYPE: ${DB_TYPE:-mysql}
-      DB_HOST: ${DB_HOST:-192.168.22.10}
+      DB_HOST: ${DB_HOST:-db}
       DB_PORT: ${DB_PORT:-3306}
       DB_USER: ${DB_USER:-airacm}
       DB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD required}
       DB_DATABASE: ${DB_DATABASE:-airacm}
-      DB_SYNC: ${DB_SYNC:-false}            # 首次建表设 true,之后改 false
+      DB_SYNC: ${DB_SYNC:-false}
       DB_MIGRATIONS_RUN: ${DB_MIGRATIONS_RUN:-true}
       DB_POOL_MAX: ${DB_POOL_MAX:-20}
       THROTTLE_TTL_MS: ${THROTTLE_TTL_MS:-60000}
       THROTTLE_LIMIT: ${THROTTLE_LIMIT:-120}
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET required}
       JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-7d}
-      CORS_ORIGINS: ${CORS_ORIGINS:-}       # 同域反代可留空
+      CORS_ORIGINS: ${CORS_ORIGINS:-}
       APP_APK_PATH: /app/uploads/app/airacm-android.apk
       QUESTION_IMAGE_DIR: /app/uploads/question-images
-      # 短信(阿里云):生产关 dev 模式
       SMS_DEV_MODE: ${SMS_DEV_MODE:-false}
       ALI_SMS_AK_ID: ${ALI_SMS_AK_ID:-}
       ALI_SMS_AK_SECRET: ${ALI_SMS_AK_SECRET:-}
       ALI_SMS_SIGN: ${ALI_SMS_SIGN:-}
       ALI_SMS_TEMPLATE: ${ALI_SMS_TEMPLATE:-}
-      # 引导管理员(首次 seed 写入)
       ADMIN_PHONE: ${ADMIN_PHONE:-}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
       BIZ_ADMIN_PHONE: ${BIZ_ADMIN_PHONE:-}
@@ -49,16 +56,18 @@ services:
       - ${APP_UPLOAD_DIR:-./uploads/app}:/app/uploads/app
       - ${QUESTION_IMAGE_DIR:-./uploads/question-images}:/app/uploads/question-images
     expose:
-      - '8770'                              # 仅内网,不映射到宿主
+      - '8770'
+    depends_on:
+      - db
 
   frontend:
     build:
       context: ./frontend
       args:
-        NEXT_PUBLIC_API_BASE: /api          # 同域反代,前端调 /api/*
+        NEXT_PUBLIC_API_BASE: /api
     restart: unless-stopped
     expose:
-      - '3000'                              # 仅内网
+      - '3000'
     volumes:
       - ${APP_UPLOAD_DIR:-./uploads/app}:/app/public/downloads/app:ro
     depends_on:
@@ -79,3 +88,6 @@ services:
     depends_on:
       - api
       - frontend
+
+volumes:
+  mysql_data:
