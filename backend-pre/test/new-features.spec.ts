@@ -14,6 +14,7 @@ import { JwtService } from '@nestjs/jwt';
 import { DataSource } from 'typeorm';
 import * as crypto from 'crypto';
 import * as fs from 'fs';
+import * as bcrypt from 'bcryptjs';
 import request from 'supertest';
 import * as XLSX from 'xlsx';
 import { AppModule } from '../src/app.module';
@@ -134,6 +135,58 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
         .send({ phone, code: '1234', password: 'passw0rd123' });
       const again = await request(app.getHttpServer()).post('/auth/send-code').send({ phone });
       expect(again.status).toBe(400);
+    });
+  });
+
+  describe('POST /auth/password', () => {
+    it('修改密码必须校验原密码,并要求新密码复杂', async () => {
+      const phone = uniquePhone();
+      const oldPassword = 'OldPass@123';
+      const newPassword = 'NewPass@456';
+      const sid = crypto.randomUUID();
+      const u = await ds.getRepository(User).save(
+        ds.getRepository(User).create({
+          tenantId: TENANT,
+          phone,
+          nickname: '改密管理员',
+          passwordHash: await bcrypt.hash(oldPassword, 10),
+          role: 'admin',
+          openid: null,
+          sessionId: sid,
+        }),
+      );
+      const authUser: AuthUser = { userId: u.id, tenantId: TENANT, role: 'admin' };
+      const token = signToken(jwt, authUser, sid);
+
+      const wrongOld = await request(app.getHttpServer())
+        .post('/auth/password')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ oldPassword: 'WrongPass@123', newPassword });
+      expect(wrongOld.status).toBe(400);
+
+      const weakNew = await request(app.getHttpServer())
+        .post('/auth/password')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ oldPassword, newPassword: 'simple12345' });
+      expect(weakNew.status).toBe(400);
+
+      const changed = await request(app.getHttpServer())
+        .post('/auth/password')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ oldPassword, newPassword });
+      expect(changed.status).toBe(201);
+      expect(changed.body.data.ok).toBe(true);
+
+      const oldLogin = await request(app.getHttpServer())
+        .post('/auth/login')
+        .send({ phone, password: oldPassword });
+      expect(oldLogin.status).toBe(401);
+
+      const newLogin = await request(app.getHttpServer())
+        .post('/auth/login')
+        .send({ phone, password: newPassword });
+      expect(newLogin.status).toBe(201);
+      expect(newLogin.body.data.token).toBeTruthy();
     });
   });
 
@@ -627,6 +680,26 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
         .set('Authorization', `Bearer ${admin.token}`)
         .send({ count: 5, ttlDays: 7 });
       expect(gen.body.data.keys).toHaveLength(5);
+    });
+
+    it('超级管理员可以修改卡密有效期', async () => {
+      const admin = await makeUser('super');
+      const gen = await request(app.getHttpServer())
+        .post('/admin/access-keys')
+        .set('Authorization', `Bearer ${admin.token}`)
+        .send({ count: 1, ttlDays: 30 });
+      const list = await request(app.getHttpServer())
+        .get('/admin/access-keys')
+        .set('Authorization', `Bearer ${admin.token}`);
+      const target = list.body.data.find((k: { key: string }) => k.key === gen.body.data.keys[0]);
+      const updated = await request(app.getHttpServer())
+        .post(`/admin/access-keys/${target.id}`)
+        .set('Authorization', `Bearer ${admin.token}`)
+        .send({ ttlDays: 90 });
+      expect(updated.status).toBe(201);
+      const remainingDays = Math.round((new Date(updated.body.data.expiresAt).getTime() - Date.now()) / 86_400_000);
+      expect(remainingDays).toBeGreaterThanOrEqual(89);
+      expect(remainingDays).toBeLessThanOrEqual(90);
     });
 
     it('普通用户不能生成卡密', async () => {

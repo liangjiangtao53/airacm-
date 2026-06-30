@@ -54,7 +54,7 @@
 - 输入校验(class-validator)、helmet 安全头、CORS 白名单、密钥强校验
 
 ### 4.3 可用性与扩展
-- 双数据库模式(postgres 生产 / sqlite 测试)
+- 双数据库模式(MySQL 生产 / sqlite 测试)
 - 可降级缓存(Redis 多实例共享 / 内存单实例)
 - 限流/连接池可配,支持水平扩展
 

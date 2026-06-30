@@ -6,6 +6,7 @@ import {
   Injectable,
   Module,
   Param,
+  Patch,
   Post,
   Query,
   Res,
@@ -18,7 +19,7 @@ import {
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { InjectRepository, TypeOrmModule } from '@nestjs/typeorm';
-import { In, Like, Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import { IsArray, IsIn, IsInt, IsNotEmpty, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
 import { Type } from 'class-transformer';
 import type { Response } from 'express';
@@ -30,6 +31,7 @@ import * as XLSX from 'xlsx';
 import {
   Comment,
   Question,
+  QuestionCategoryEntity,
   QuestionOption,
   QuestionUsage,
   QUESTION_CATEGORIES,
@@ -45,7 +47,6 @@ interface UploadedQuestionFile {
 }
 
 const USAGES: QuestionUsage[] = ['study', 'exam', 'both'];
-const CATEGORIES = QUESTION_CATEGORIES as readonly string[];
 // 模板表头(下载用)。解析按表头名匹配,不依赖列序,兼容真实文件(序号/参考答案/3选项等)。
 const TEMPLATE_HEADER = ['题干', '选项A', '选项B', '选项C', '选项D', '答案', '解析'] as const;
 const PDF_IMPORT_HEADER = ['题干', '选项A', '选项B', '选项C', '选项D', '选项E', '选项F', '选项G', '选项H', '答案', '解析'] as const;
@@ -73,7 +74,8 @@ class ImportQuery {
 
   // 科目(QUESTION_CATEGORIES 之一)。可空(未分类)。
   @IsOptional()
-  @IsIn(CATEGORIES)
+  @IsString()
+  @MaxLength(50)
   category?: string;
 
   @IsOptional()
@@ -87,7 +89,8 @@ class ListQuery {
   usage?: QuestionUsage;
 
   @IsOptional()
-  @IsIn(CATEGORIES)
+  @IsString()
+  @MaxLength(50)
   category?: string;
 
   @IsOptional()
@@ -151,6 +154,52 @@ class BatchDeleteDto {
   ids!: string[];
 }
 
+class UpdateQuestionDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(50)
+  category?: string;
+
+  @IsOptional()
+  @IsIn(['single', 'multiple'])
+  type?: 'single' | 'multiple';
+
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty({ message: '题干不能为空' })
+  stem?: string;
+
+  @IsOptional()
+  @IsArray()
+  options?: QuestionOption[];
+
+  @IsOptional()
+  @IsString()
+  answer?: string;
+
+  @IsOptional()
+  @IsString()
+  analysis?: string;
+
+  @IsOptional()
+  @IsIn(USAGES)
+  usage?: QuestionUsage;
+}
+
+class CreateCategoryDto {
+  @IsString()
+  @IsNotEmpty({ message: '类别名称不能为空' })
+  @MaxLength(50, { message: '类别名称过长' })
+  name!: string;
+}
+
+class RenameCategoryDto {
+  @IsString()
+  @IsNotEmpty({ message: '类别名称不能为空' })
+  @MaxLength(50, { message: '类别名称过长' })
+  name!: string;
+}
+
 interface ImportFailure {
   row: number; // Excel 行号(含表头,从 1 计)
   reason: string;
@@ -163,11 +212,124 @@ interface ExtractedImage {
 
 @Injectable()
 export class QuestionService {
+  private readonly questionListCountCache = new Map<string, { total: number; expiresAt: number }>();
+  private readonly questionListCountInFlight = new Map<string, Promise<number>>();
+  private readonly questionListCountTtlMs = 30_000;
+
   constructor(
     @InjectRepository(Question) private readonly questions: Repository<Question>,
+    @InjectRepository(QuestionCategoryEntity)
+    private readonly categories: Repository<QuestionCategoryEntity>,
     @InjectRepository(Comment) private readonly comments: Repository<Comment>,
     @InjectRepository(User) private readonly users: Repository<User>,
   ) {}
+
+  private clearQuestionListCountCache(tenantId: string): void {
+    for (const key of this.questionListCountCache.keys()) {
+      if (key.startsWith(`${tenantId}|`)) this.questionListCountCache.delete(key);
+    }
+  }
+
+  private async cachedQuestionListTotal(cacheKey: string, loader: () => Promise<number>): Promise<number> {
+    const now = Date.now();
+    const cached = this.questionListCountCache.get(cacheKey);
+    if (cached && cached.expiresAt > now) return cached.total;
+    const inFlight = this.questionListCountInFlight.get(cacheKey);
+    if (inFlight) return inFlight;
+    const promise = loader()
+      .then((total) => {
+        this.questionListCountCache.set(cacheKey, { total, expiresAt: Date.now() + this.questionListCountTtlMs });
+        return total;
+      })
+      .finally(() => {
+        this.questionListCountInFlight.delete(cacheKey);
+      });
+    this.questionListCountInFlight.set(cacheKey, promise);
+    return promise;
+  }
+
+  private questionListIndex(q: ListQuery): string {
+    if (q.category !== undefined) return 'IDX_question_tenant_category_order';
+    if (q.courseId) return 'IDX_question_tenant_course_order';
+    return 'IDX_question_tenant_order';
+  }
+
+  private normalizeCategoryName(name: string): string {
+    return name.trim();
+  }
+
+  private async ensureDefaultCategories(tenantId: string): Promise<void> {
+    const count = await this.categories.count({ where: { tenantId } });
+    if (count > 0) return;
+    await this.categories.save(
+      QUESTION_CATEGORIES.map((name, order) => this.categories.create({ tenantId, name, order })),
+    );
+  }
+
+  async listCategoryNames(tenantId: string): Promise<string[]> {
+    await this.ensureDefaultCategories(tenantId);
+    const rows = await this.categories.find({ where: { tenantId }, order: { order: 'ASC', name: 'ASC' } });
+    return rows.map((r) => r.name);
+  }
+
+  async listManagedCategories(
+    user: AuthUser,
+  ): Promise<Array<{ id: string; name: string; count: number }>> {
+    await this.ensureDefaultCategories(user.tenantId);
+    const [rows, stats] = await Promise.all([
+      this.categories.find({ where: { tenantId: user.tenantId }, order: { order: 'ASC', name: 'ASC' } }),
+      this.statsByCategory(user),
+    ]);
+    const counts = new Map(stats.map((s) => [s.category === '(未分类)' ? '' : s.category, s.count]));
+    return rows.map((r) => ({ id: r.id, name: r.name, count: counts.get(r.name) ?? 0 }));
+  }
+
+  async createCategory(user: AuthUser, rawName: string): Promise<{ id: string; name: string; count: number }> {
+    const name = this.normalizeCategoryName(rawName);
+    if (!name) throw new BadRequestException('类别名称不能为空');
+    if (name === '(未分类)') throw new BadRequestException('该名称为系统保留名称');
+    await this.ensureDefaultCategories(user.tenantId);
+    const dup = await this.categories.findOne({ where: { tenantId: user.tenantId, name } });
+    if (dup) throw new BadRequestException('类别已存在');
+    const order = await this.categories.count({ where: { tenantId: user.tenantId } });
+    const row = await this.categories.save(this.categories.create({ tenantId: user.tenantId, name, order }));
+    return { id: row.id, name: row.name, count: 0 };
+  }
+
+  async renameCategory(
+    user: AuthUser,
+    id: string,
+    rawName: string,
+  ): Promise<{ id: string; name: string; count: number }> {
+    const name = this.normalizeCategoryName(rawName);
+    if (!name) throw new BadRequestException('类别名称不能为空');
+    if (name === '(未分类)') throw new BadRequestException('该名称为系统保留名称');
+    const row = await this.categories.findOne({ where: { tenantId: user.tenantId, id } });
+    if (!row) throw new NotFoundException('类别不存在');
+    if (row.name === name) return { id: row.id, name: row.name, count: 0 };
+    const count = await this.questions.count({ where: { tenantId: user.tenantId, category: row.name } });
+    if (count > 0) throw new BadRequestException('该类别下还有题目，请先删除题目后再修改类别');
+    const dup = await this.categories.findOne({ where: { tenantId: user.tenantId, name } });
+    if (dup && dup.id !== id) throw new BadRequestException('类别已存在');
+    await this.categories.update(row.id, { name });
+    return { id: row.id, name, count: 0 };
+  }
+
+  async deleteCategory(user: AuthUser, id: string): Promise<{ deleted: number }> {
+    const row = await this.categories.findOne({ where: { tenantId: user.tenantId, id } });
+    if (!row) throw new NotFoundException('类别不存在');
+    const count = await this.questions.count({ where: { tenantId: user.tenantId, category: row.name } });
+    if (count > 0) throw new BadRequestException('该类别下还有题目，请先删除题目后再删除类别');
+    const r = await this.categories.delete({ tenantId: user.tenantId, id });
+    return { deleted: r.affected ?? 0 };
+  }
+
+  private async assertCategoryExists(tenantId: string, category: string | undefined): Promise<void> {
+    if (!category) return;
+    await this.ensureDefaultCategories(tenantId);
+    const exists = await this.categories.exist({ where: { tenantId, name: category } });
+    if (!exists) throw new BadRequestException('类别不存在，请先在类别管理中新增');
+  }
 
   // 批量解析 userId→昵称(防 N+1)。查不到回退短 id。
   private async resolveNicknames(tenantId: string, ids: string[]): Promise<Map<string, string>> {
@@ -192,6 +354,7 @@ export class QuestionService {
     courseId: string | undefined,
   ): Promise<{ imported: number; failed: ImportFailure[] }> {
     if (!file?.buffer?.length) throw new BadRequestException('请上传题库文件');
+    await this.assertCategoryExists(admin.tenantId, category);
     const name = file.originalname.toLowerCase();
     if (name.endsWith('.pdf')) {
       const rows = await this.parsePdfRows(file.buffer);
@@ -266,7 +429,10 @@ export class QuestionService {
         }),
       );
     }
-    if (toSave.length) await this.questions.save(toSave);
+    if (toSave.length) {
+      await this.questions.save(toSave);
+      this.clearQuestionListCountCache(admin.tenantId);
+    }
     return { imported: toSave.length, failed };
   }
 
@@ -473,22 +639,55 @@ export class QuestionService {
   ): Promise<{ items: Array<Omit<Question, 'answer' | 'analysis'>>; total: number; page: number; pageSize: number }> {
     const page = q.page ?? 1;
     const pageSize = q.pageSize ?? 20;
-    const where: Record<string, unknown> = { tenantId: user.tenantId };
-    // 学习视图(usage=study)应同时看到「两者都进(both)」的题;同理考试含 both。
-    if (q.usage) where.usage = In([q.usage, 'both']);
-    if (q.category) where.category = q.category;
-    if (q.courseId) where.courseId = q.courseId;
-    // 题干关键词搜索:在当前范围内模糊匹配(用户选择按当前科目搜索)。
-    if (q.keyword?.trim()) where.stem = Like(`%${q.keyword.trim()}%`);
+    {
+      const baseQb = this.questions.createQueryBuilder('q').where('q.tenantId = :tenantId', {
+        tenantId: user.tenantId,
+      });
+      // 学习视图(usage=study)同时包含 both；考试视图同理。
+      if (q.usage) {
+        const usages = q.usage === 'both' ? ['both'] : [q.usage, 'both'];
+        baseQb.andWhere('q.usage IN (:...usages)', { usages });
+      }
+      if (q.category) baseQb.andWhere('q.category = :category', { category: q.category });
+      if (q.courseId) baseQb.andWhere('q.courseId = :courseId', { courseId: q.courseId });
+      if (q.keyword?.trim()) baseQb.andWhere('q.stem LIKE :keyword', { keyword: `%${q.keyword.trim()}%` });
 
-    const [rows, total] = await this.questions.findAndCount({
-      where,
-      order: { order: 'ASC' },
-      skip: (page - 1) * pageSize,
-      take: pageSize,
-    });
-    const items = rows.map(({ answer: _a, analysis: _an, ...rest }) => rest);
-    return { items, total, page, pageSize };
+      const rowsQb = baseQb
+        .clone()
+        // 列表页不下发 answer/analysis,也不从数据库读取这两个大字段,降低 App 高并发刷题列表压力。
+        .select([
+          'q.id',
+          'q.tenantId',
+          'q.category',
+          'q.courseId',
+          'q.type',
+          'q.stem',
+          'q.options',
+          'q.imageUrls',
+          'q.usage',
+          'q.order',
+          'q.createdAt',
+        ])
+        .orderBy('q.order', 'ASC')
+        .skip((page - 1) * pageSize)
+        .take(pageSize);
+      const dbType = this.questions.manager.connection.options.type;
+      if (dbType === 'mysql' || dbType === 'mariadb') rowsQb.useIndex(this.questionListIndex(q));
+
+      const countCacheKey = [
+        user.tenantId,
+        q.usage ?? '',
+        q.category ?? '',
+        q.courseId ?? '',
+        q.keyword?.trim() ?? '',
+      ].join('|');
+      const [rows, total] = await Promise.all([
+        rowsQb.getMany(),
+        this.cachedQuestionListTotal(countCacheKey, () => baseQb.clone().getCount()),
+      ]);
+      const items = rows.map(({ answer: _a, analysis: _an, ...rest }) => rest);
+      return { items, total, page, pageSize };
+    }
   }
 
   // 查看答案:单独端点,返回正确答案 + 解析。
@@ -570,6 +769,7 @@ export class QuestionService {
     if (!ids.length) return { deleted: 0 };
     await this.comments.delete({ tenantId: user.tenantId, questionId: In(ids) });
     await this.questions.delete({ tenantId: user.tenantId, category });
+    this.clearQuestionListCountCache(user.tenantId);
     return { deleted: ids.length };
   }
 
@@ -577,7 +777,88 @@ export class QuestionService {
   async deleteOne(user: AuthUser, id: string): Promise<{ deleted: number }> {
     await this.comments.delete({ tenantId: user.tenantId, questionId: id });
     const r = await this.questions.delete({ tenantId: user.tenantId, id });
+    if ((r.affected ?? 0) > 0) this.clearQuestionListCountCache(user.tenantId);
     return { deleted: r.affected ?? 0 };
+  }
+
+  // 原来后台只支持删题；这里补单题修改，便于导入后修正题干、选项、答案和解析。
+  async updateOne(user: AuthUser, id: string, dto: UpdateQuestionDto): Promise<Question> {
+    const q = await this.questions.findOne({ where: { tenantId: user.tenantId, id } });
+    if (!q) throw new NotFoundException('题目不存在');
+
+    const patch: Partial<Question> = {};
+    if (dto.category !== undefined) {
+      const category = dto.category.trim();
+      await this.assertCategoryExists(user.tenantId, category);
+      patch.category = category;
+    }
+    if (dto.type !== undefined) patch.type = dto.type;
+    if (dto.stem !== undefined) {
+      const stem = dto.stem.trim();
+      if (!stem) throw new BadRequestException('题干不能为空');
+      patch.stem = stem;
+    }
+    if (dto.options !== undefined) {
+      const options = this.normalizeOptions(dto.options);
+      if (options.length < 2) throw new BadRequestException('至少需要 2 个选项');
+      patch.options = options;
+    }
+    if (dto.answer !== undefined) {
+      const options = patch.options ?? q.options;
+      const answer = this.normalizeAnswer(dto.answer, options);
+      const type = patch.type ?? q.type;
+      if (type === 'single' && answer.length !== 1) {
+        throw new BadRequestException('单选题只能有 1 个正确答案');
+      }
+      patch.answer = answer;
+    }
+    if (dto.answer === undefined && (patch.options || patch.type)) {
+      const answer = this.normalizeAnswer(q.answer, patch.options ?? q.options);
+      const type = patch.type ?? q.type;
+      if (type === 'single' && answer.length !== 1) {
+        throw new BadRequestException('单选题只能有 1 个正确答案');
+      }
+    }
+    if (dto.analysis !== undefined) patch.analysis = dto.analysis.trim();
+    if (dto.usage !== undefined) patch.usage = dto.usage;
+
+    Object.assign(q, patch);
+    const saved = await this.questions.save(q);
+    this.clearQuestionListCountCache(user.tenantId);
+    return saved;
+  }
+
+  private normalizeOptions(options: QuestionOption[]): QuestionOption[] {
+    const seen = new Set<string>();
+    return options
+      .map((o) => ({
+        key: String(o?.key ?? '').trim().toUpperCase(),
+        text: String(o?.text ?? '').trim(),
+      }))
+      .filter((o) => o.key && o.text)
+      .map((o) => {
+        if (!/^[A-H]$/.test(o.key)) throw new BadRequestException('选项编号只能是 A-H');
+        if (seen.has(o.key)) throw new BadRequestException(`选项 ${o.key} 重复`);
+        seen.add(o.key);
+        return o;
+      })
+      .sort((a, b) => a.key.localeCompare(b.key));
+  }
+
+  private normalizeAnswer(answer: string, options: QuestionOption[]): string {
+    const validKeys = new Set(options.map((o) => o.key));
+    const normalized = answer
+      .toUpperCase()
+      .replace(/[^A-H]/g, '')
+      .split('')
+      .filter((c, i, a) => a.indexOf(c) === i)
+      .sort()
+      .join('');
+    if (!normalized) throw new BadRequestException('答案不能为空或非法');
+    for (const c of normalized) {
+      if (!validKeys.has(c)) throw new BadRequestException(`答案 ${c} 不在选项内`);
+    }
+    return normalized;
   }
 
   // 管理端列题:按科目精确 + 题干关键词模糊,分页。含答案/解析(管理可见,不下发学员)。
@@ -605,6 +886,7 @@ export class QuestionService {
     if (!ids.length) return { deleted: 0 };
     await this.comments.delete({ tenantId: user.tenantId, questionId: In(ids) });
     const r = await this.questions.delete({ tenantId: user.tenantId, id: In(ids) });
+    if ((r.affected ?? 0) > 0) this.clearQuestionListCountCache(user.tenantId);
     return { deleted: r.affected ?? 0 };
   }
 
@@ -651,6 +933,26 @@ export class QuestionAdminController {
     return this.svc.statsByCategory(admin);
   }
 
+  @Get('categories')
+  categories(@CurrentUser() admin: AuthUser) {
+    return this.svc.listManagedCategories(admin);
+  }
+
+  @Post('categories')
+  createCategory(@CurrentUser() admin: AuthUser, @Body() dto: CreateCategoryDto) {
+    return this.svc.createCategory(admin, dto.name);
+  }
+
+  @Post('categories/:id')
+  renameCategory(@CurrentUser() admin: AuthUser, @Param('id') id: string, @Body() dto: RenameCategoryDto) {
+    return this.svc.renameCategory(admin, id, dto.name);
+  }
+
+  @Delete('categories/:id')
+  deleteCategory(@CurrentUser() admin: AuthUser, @Param('id') id: string) {
+    return this.svc.deleteCategory(admin, id);
+  }
+
   // 管理端列题:按科目 + 关键词搜索(进入科目删单个/多个用)。
   @Get('list')
   adminList(@CurrentUser() admin: AuthUser, @Query() q: AdminListQuery) {
@@ -670,6 +972,11 @@ export class QuestionAdminController {
     return this.svc.purgeByCategory(admin, category);
   }
 
+  @Patch(':id')
+  updateOne(@CurrentUser() admin: AuthUser, @Param('id') id: string, @Body() dto: UpdateQuestionDto) {
+    return this.svc.updateOne(admin, id, dto);
+  }
+
   @Delete(':id')
   deleteOne(@CurrentUser() admin: AuthUser, @Param('id') id: string) {
     return this.svc.deleteOne(admin, id);
@@ -684,8 +991,8 @@ export class QuestionController {
 
   // 科目列表(固定枚举),前端下拉用。静态路由,置于 :id 之前避免被参数路由吞掉。
   @Get('categories')
-  categories(): readonly string[] {
-    return QUESTION_CATEGORIES;
+  categories(@CurrentUser() user: AuthUser): Promise<string[]> {
+    return this.svc.listCategoryNames(user.tenantId);
   }
 
   @Get()
@@ -729,7 +1036,7 @@ export class QuestionImageController {
 }
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Question, Comment, User])],
+  imports: [TypeOrmModule.forFeature([Question, QuestionCategoryEntity, Comment, User])],
   controllers: [QuestionAdminController, QuestionController, QuestionImageController],
   providers: [QuestionService],
 })

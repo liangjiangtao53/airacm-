@@ -37,7 +37,15 @@ import {
   User,
   Wallet,
 } from '../entities';
-import { AuthUser, CurrentUser, JwtAuthGuard, Roles, RolesGuard } from '../common';
+import {
+  AuthUser,
+  CurrentUser,
+  JwtAuthGuard,
+  PASSWORD_COMPLEXITY_MESSAGE,
+  PASSWORD_COMPLEXITY_RE,
+  Roles,
+  RolesGuard,
+} from '../common';
 import { WalletModule, WalletService } from './wallet';
 
 // 中国大陆手机号(与 auth 模块一致)。
@@ -61,8 +69,9 @@ class CreateAdminDto {
   phone!: string;
 
   @IsString()
-  @MinLength(8, { message: '密码至少 8 位' })
+  @MinLength(10, { message: '密码至少 10 位' })
   @MaxLength(64, { message: '密码过长' })
+  @Matches(PASSWORD_COMPLEXITY_RE, { message: PASSWORD_COMPLEXITY_MESSAGE })
   password!: string;
 
   @IsString()

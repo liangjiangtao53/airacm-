@@ -1,4 +1,4 @@
-import { MigrationInterface, QueryRunner } from 'typeorm';
+import { MigrationInterface, QueryRunner, TableColumn } from 'typeorm';
 
 export class AddQuestionImageUrls1766570400000 implements MigrationInterface {
   name = 'AddQuestionImageUrls1766570400000';
@@ -6,12 +6,19 @@ export class AddQuestionImageUrls1766570400000 implements MigrationInterface {
   async up(queryRunner: QueryRunner): Promise<void> {
     if (!(await queryRunner.hasTable('question'))) return;
     if (await queryRunner.hasColumn('question', 'imageUrls')) return;
-    await queryRunner.query('ALTER TABLE "question" ADD "imageUrls" text');
+    await queryRunner.addColumn(
+      'question',
+      new TableColumn({
+        name: 'imageUrls',
+        type: 'text',
+        isNullable: true,
+      }),
+    );
   }
 
   async down(queryRunner: QueryRunner): Promise<void> {
     if (!(await queryRunner.hasTable('question'))) return;
     if (!(await queryRunner.hasColumn('question', 'imageUrls'))) return;
-    await queryRunner.query('ALTER TABLE "question" DROP COLUMN "imageUrls"');
+    await queryRunner.dropColumn('question', 'imageUrls');
   }
 }

@@ -5,7 +5,7 @@
 |---|---|
 | 后端 | NestJS 10 + TypeScript |
 | ORM | TypeORM 0.3 |
-| 数据库 | PostgreSQL(生产) / better-sqlite3(测试),DB_TYPE 切换 |
+| 数据库 | MySQL(生产) / better-sqlite3(测试),DB_TYPE 切换 |
 | 认证 | JWT(@nestjs/jwt) |
 | 缓存 | 可降级:Redis(ioredis) / 进程内内存 |
 | 限流 | @nestjs/throttler |
@@ -60,7 +60,7 @@ exam_answer, wrong_book, forum_topic, post
 | 读缓存 | TTL 缓存 list/detail 的**共享内容**;owns/locked **每请求按用户算**(避免串用户) |
 | 缓存失效 | admin 写课程/章节/课时后主动 cacheInvalidate + 30s TTL 兜底 |
 | **进度写缓冲** | 上报先入内存 Map(同课时合并最新),每 3s 批量 upsert 落库;读时缓冲优先 |
-| 连接池 | pg max 20(可配)+ 连接/空闲超时 + 慢查询日志(>1s) |
+| 连接池 | MySQL connectionLimit 20(可配)+ 连接超时 + 慢查询日志(>1s) |
 | 限流 | login 5/分、send-code 3/分、全局 120/分,均可配 |
 | 缓存可降级 | REDIS_URL 配置则多实例共享,否则内存;接口 async,业务无感 |
 | 学习分页 | 学习端支持 10/20/30 每页,默认 10;后端分页返回 total/page/pageSize |

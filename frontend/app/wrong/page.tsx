@@ -5,9 +5,12 @@ import { useRouter } from 'next/navigation';
 import { api, assetUrl, getToken, type WrongBookItem } from '@/lib/api';
 import Comments from '@/components/Comments';
 
+type WrongTab = 'study' | 'exam';
+
 export default function WrongBookPage() {
   const router = useRouter();
   const [items, setItems] = useState<WrongBookItem[]>([]);
+  const [tab, setTab] = useState<WrongTab>('study');
   const [err, setErr] = useState('');
   const [loading, setLoading] = useState(true);
 
@@ -24,7 +27,7 @@ export default function WrongBookPage() {
   }, [router]);
 
   function remove(questionId: string) {
-    setItems((l) => l.filter((i) => i.questionId !== questionId));
+    setItems((l) => l.filter((i) => !(i.questionId === questionId && i.source === tab)));
   }
 
   if (loading) {
@@ -38,18 +41,42 @@ export default function WrongBookPage() {
       </a>
       <h1 className="mb-1 mt-1 text-3xl font-semibold tracking-tight text-ink">错题本</h1>
       <p className="mb-6 text-sm text-ink/55">
-        考试答错的题自动收集到这里。先自己作答,再查看答案核对;掌握后标记移出。
+        顺序学习和模拟考试答错的题会分别收集,可查看答案和评论。
       </p>
+      <div className="mb-6 grid grid-cols-2 gap-3">
+        {([
+          ['study', '顺序学习'],
+          ['exam', '模拟考试'],
+        ] as const).map(([value, label]) => {
+          const count = items.filter((item) => item.source === value).length;
+          return (
+            <button
+              key={value}
+              onClick={() => setTab(value)}
+              className={`rounded-2xl px-4 py-3 text-left transition ${
+                tab === value
+                  ? 'bg-sky/10 font-semibold text-ink ring-1 ring-sky/30'
+                  : 'bg-white/60 text-ink/60 ring-1 ring-white/55 hover:text-ink'
+              }`}
+            >
+              <span>{label}</span>
+              <span className="ml-2 text-sm text-ink/45">{count} 题</span>
+            </button>
+          );
+        })}
+      </div>
       {err && <p className="mb-4 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-600">{err}</p>}
-      {items.length === 0 && !err && (
+      {items.filter((item) => item.source === tab).length === 0 && !err && (
         <p className="rounded-2xl bg-white/60 backdrop-blur-xl p-8 text-center text-ink/50 shadow-sm ring-1 ring-white/55">
-          错题本是空的。去考试练练吧。
+          {tab === 'study' ? '顺序学习暂无错题。' : '模拟考试暂无错题。'}
         </p>
       )}
       <div className="space-y-4">
-        {items.map((q, i) => (
-          <WrongCard key={q.questionId} q={q} index={i + 1} onMaster={() => remove(q.questionId)} />
-        ))}
+        {items
+          .filter((item) => item.source === tab)
+          .map((q, i) => (
+            <WrongCard key={`${q.source}:${q.questionId}`} q={q} index={i + 1} onMaster={() => remove(q.questionId)} />
+          ))}
       </div>
     </main>
   );
@@ -64,19 +91,12 @@ function WrongCard({
   index: number;
   onMaster: () => void;
 }) {
-  const [picked, setPicked] = useState<string[]>([]);
   const [revealed, setRevealed] = useState(false);
   const [showComments, setShowComments] = useState(false);
 
-  function toggle(key: string) {
-    if (revealed) return;
-    if (q.type === 'single') setPicked([key]);
-    else setPicked((p) => (p.includes(key) ? p.filter((k) => k !== key) : [...p, key]));
-  }
-
   async function master() {
     try {
-      await api.masterWrong(q.questionId);
+      await api.masterWrong(q.questionId, q.source);
       onMaster();
     } catch {
       /* 失败可重试 */
@@ -84,8 +104,6 @@ function WrongCard({
   }
 
   const correctSet = new Set(q.answer.split(''));
-  const pickedKey = [...picked].sort().join('');
-  const isRight = revealed && pickedKey === q.answer;
 
   return (
     <section className="rounded-2xl bg-white/60 backdrop-blur-xl p-6 shadow-sm ring-1 ring-white/55">
@@ -104,32 +122,22 @@ function WrongCard({
         </span>
       </div>
 
-      <div className="space-y-2">
+      {revealed && <div className="space-y-2">
         {q.options.map((o) => {
-          const chosen = picked.includes(o.key);
-          const correct = revealed && correctSet.has(o.key);
-          const cls = revealed
-            ? correct
-              ? 'border-sky/50 bg-sky/5 text-ink'
-              : chosen
-                ? 'border-red-300 bg-red-50 text-red-600'
-                : 'border-ink/10 text-ink/60'
-            : chosen
-              ? 'border-steel bg-steel/5 text-ink'
-              : 'border-ink/10 text-ink/70 hover:border-steel/40';
+          const correct = correctSet.has(o.key);
+          const cls = correct ? 'border-sky/50 bg-sky/5 text-ink' : 'border-ink/10 text-ink/60';
           return (
-            <button
+            <div
               key={o.key}
-              onClick={() => toggle(o.key)}
               className={`flex w-full items-center gap-3 rounded-lg border px-3 py-2 text-left transition ${cls}`}
             >
               <span className="font-mono text-sm">{o.key}</span>
               <span className="text-sm">{o.text}</span>
-              {revealed && correct && <span className="ml-auto text-xs text-sky">正确答案</span>}
-            </button>
+              {correct && <span className="ml-auto text-xs text-sky">正确答案</span>}
+            </div>
           );
         })}
-      </div>
+      </div>}
 
       <div className="mt-4 flex flex-wrap items-center gap-3">
         {!revealed ? (
@@ -141,9 +149,7 @@ function WrongCard({
           </button>
         ) : (
           <>
-            <span className={`text-sm font-medium ${isRight ? 'text-sky' : 'text-red-500'}`}>
-              {picked.length ? (isRight ? '回答正确' : '回答错误') : '正确答案'} · {q.answer}
-            </span>
+            <span className="text-sm font-medium text-sky">正确答案 · {q.answer}</span>
             <button
               onClick={master}
               className="rounded-lg border border-sky/40 px-4 py-1.5 text-sm font-medium text-sky hover:bg-sky/5"

@@ -7,6 +7,7 @@ const categories = ref<string[]>([]);
 const category = ref('');
 const keyword = ref('');
 const questions = ref<QuestionItem[]>([]);
+const picked = ref<Record<string, string[]>>({});
 const answers = ref<Record<string, { answer: string; analysis: string }>>({});
 const page = ref(1);
 const jumpValue = ref('1');
@@ -58,20 +59,45 @@ async function loadQuestions(reset = false) {
 async function reveal(id: string) {
   if (answers.value[id]) return;
   try {
-    answers.value[id] = await api.questionAnswer(id);
+    const result = await api.questionAnswer(id);
+    answers.value[id] = result;
+    const pickedKey = [...(picked.value[id] || [])].sort().join('');
+    if (pickedKey && pickedKey !== result.answer) {
+      await api.recordStudyWrong(id, pickedKey);
+    }
   } catch (e) {
     toast((e as Error).message);
   }
 }
 
+function toggle(q: QuestionItem, key: string) {
+  if (answers.value[q.id]) return;
+  const cur = picked.value[q.id] || [];
+  if (q.type === 'single') {
+    picked.value[q.id] = [key];
+    return;
+  }
+  picked.value[q.id] = cur.includes(key) ? cur.filter((item) => item !== key) : [...cur, key].sort();
+}
+
+function isCorrect(id: string, key: string) {
+  return Boolean(answers.value[id]?.answer.includes(key));
+}
+
+function openExam() {
+  uni.switchTab({ url: '/pages/exam/index' });
+}
+
 function changeCategory(e: { detail: { value: number } }) {
   category.value = categories.value[Number(e.detail.value)] || '';
+  picked.value = {};
   answers.value = {};
   loadQuestions(true);
 }
 
 function changePageSize(e: { detail: { value: number } }) {
   pageSize.value = pageSizeOptions[Number(e.detail.value)] || pageSize.value;
+  picked.value = {};
   answers.value = {};
   loadQuestions(true);
 }
@@ -82,6 +108,7 @@ function nextPage(delta: number) {
   if (next === page.value) return;
   page.value = next;
   jumpValue.value = String(next);
+  picked.value = {};
   answers.value = {};
   loadQuestions();
 }
@@ -92,6 +119,7 @@ function jumpPage() {
   jumpValue.value = String(next);
   if (next === page.value) return;
   page.value = next;
+  picked.value = {};
   answers.value = {};
   loadQuestions();
 }
@@ -133,7 +161,18 @@ onShow(async () => {
   <view class="page study-page">
     <view class="header">
       <text class="title">专题学习</text>
-      <text class="subtitle">按科目刷题,需要时查看答案与解析。</text>
+      <text class="subtitle">顺序学习与模拟考试。</text>
+    </view>
+
+    <view class="subprojects">
+      <view class="subproject active">
+        <text class="subproject-title">顺序学习</text>
+        <text class="subproject-desc">按科目顺序刷题,答错后进入错题本。</text>
+      </view>
+      <view class="subproject" @tap="openExam">
+        <text class="subproject-title">模拟考试</text>
+        <text class="subproject-desc">进入模拟考试,开始考试部分保持不变。</text>
+      </view>
     </view>
 
     <view class="card filters">
@@ -168,7 +207,17 @@ onShow(async () => {
           />
         </view>
         <view class="options">
-          <view v-for="option in q.options" :key="option.key" class="option">
+          <view
+            v-for="option in q.options"
+            :key="option.key"
+            :class="[
+              'option',
+              (picked[q.id] || []).includes(option.key) && 'chosen',
+              answers[q.id] && isCorrect(q.id, option.key) && 'correct',
+              answers[q.id] && (picked[q.id] || []).includes(option.key) && !isCorrect(q.id, option.key) && 'wrong',
+            ]"
+            @tap="toggle(q, option.key)"
+          >
             <text class="option-key">{{ option.key }}</text>
             <text class="option-text">{{ option.text }}</text>
           </view>
@@ -218,6 +267,7 @@ onShow(async () => {
 .list-meta,
 .question-card,
 .options,
+.subprojects,
 .answer-box,
 .comment-box {
   display: flex;
@@ -226,6 +276,34 @@ onShow(async () => {
 
 .study-page {
   gap: 26rpx;
+}
+
+.subprojects {
+  gap: 18rpx;
+}
+
+.subproject {
+  background: rgba(255, 255, 255, 0.7);
+  border: 2rpx solid rgba(255, 255, 255, 0.7);
+  border-radius: 24rpx;
+  padding: 24rpx;
+}
+
+.subproject.active {
+  background: rgba(31, 111, 235, 0.08);
+  border-color: rgba(31, 111, 235, 0.28);
+}
+
+.subproject-title {
+  color: #111827;
+  font-size: 30rpx;
+  font-weight: 700;
+}
+
+.subproject-desc {
+  color: rgba(17, 24, 39, 0.55);
+  font-size: 24rpx;
+  margin-top: 8rpx;
 }
 
 .header,
@@ -307,10 +385,25 @@ onShow(async () => {
 
 .option {
   background: rgba(255, 255, 255, 0.62);
+  border: 2rpx solid transparent;
   border-radius: 16rpx;
   display: flex;
   gap: 16rpx;
   padding: 18rpx;
+}
+
+.option.chosen {
+  border-color: #38577a;
+}
+
+.option.correct {
+  background: rgba(31, 111, 235, 0.08);
+  border-color: rgba(31, 111, 235, 0.35);
+}
+
+.option.wrong {
+  background: #fee2e2;
+  border-color: #fca5a5;
 }
 
 .option-key,

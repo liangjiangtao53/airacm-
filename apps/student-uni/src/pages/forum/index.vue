@@ -68,6 +68,10 @@ async function submit() {
   }
 }
 
+function changeDraftTopic(e: { detail: { value: number } }) {
+  draftTopic.value = topics.value[Number(e.detail.value)]?.id || '';
+}
+
 onShow(() => load());
 </script>
 
@@ -99,7 +103,7 @@ onShow(() => load());
           mode="selector"
           :range="topics"
           range-key="name"
-          @change="(e) => (draftTopic = topics[Number(e.detail.value)]?.id || '')"
+          @change="changeDraftTopic"
         >
           <text class="topic-select">{{ topicName(draftTopic) || '选择主题' }}</text>
         </picker>

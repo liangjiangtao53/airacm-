@@ -19,6 +19,7 @@ import { IsInt, IsNotEmpty, IsOptional, IsString, Max, MaxLength, Min } from 'cl
 import { Type } from 'class-transformer';
 import { ForumTopic, Post, PostReply, User } from '../entities';
 import { AuthUser, CurrentUser, JwtAuthGuard, Roles, RolesGuard } from '../common';
+import { env } from '../config';
 
 class CreatePostDto {
   @IsString()
@@ -155,14 +156,14 @@ export class ForumService {
   // ===== 帖子 =====
   // 列表(新到旧),带回复数+昵称。可按 topicId 过滤。聚合查回复数与昵称,避免 N+1。
   async list(
-    user: AuthUser,
+    tenantId: string,
     q: ListQuery,
   ): Promise<{ items: PostView[]; total: number; page: number; pageSize: number }> {
     const page = q.page ?? 1;
     const pageSize = q.pageSize ?? 20;
     const where = q.topicId
-      ? { tenantId: user.tenantId, topicId: q.topicId }
-      : { tenantId: user.tenantId };
+      ? { tenantId, topicId: q.topicId }
+      : { tenantId };
     const [rows, total] = await this.posts.findAndCount({
       where,
       order: { createdAt: 'DESC' },
@@ -175,13 +176,13 @@ export class ForumService {
         .createQueryBuilder('r')
         .select('r.postId', 'postId')
         .addSelect('COUNT(*)', 'c')
-        .where('r.tenantId = :t', { t: user.tenantId })
+        .where('r.tenantId = :t', { t: tenantId })
         .andWhere('r.postId IN (:...ids)', { ids: rows.map((p) => p.id) })
         .groupBy('r.postId')
         .getRawMany<{ postId: string; c: string }>();
       raw.forEach((x) => countMap.set(x.postId, Number(x.c)));
     }
-    const nickMap = await this.resolveNicknames(user.tenantId, rows.map((p) => p.userId));
+    const nickMap = await this.resolveNicknames(tenantId, rows.map((p) => p.userId));
     const items = rows.map((p) => ({
       id: p.id,
       topicId: p.topicId,
@@ -214,15 +215,15 @@ export class ForumService {
     };
   }
 
-  async listReplies(user: AuthUser, postId: string): Promise<ReplyView[]> {
-    const post = await this.posts.findOne({ where: { tenantId: user.tenantId, id: postId } });
+  async listReplies(tenantId: string, postId: string): Promise<ReplyView[]> {
+    const post = await this.posts.findOne({ where: { tenantId, id: postId } });
     if (!post) throw new NotFoundException('帖子不存在');
     const rows = await this.replies.find({
-      where: { tenantId: user.tenantId, postId },
+      where: { tenantId, postId },
       order: { createdAt: 'ASC' },
       take: 500,
     });
-    const nickMap = await this.resolveNicknames(user.tenantId, rows.map((r) => r.userId));
+    const nickMap = await this.resolveNicknames(tenantId, rows.map((r) => r.userId));
     return rows.map((r) => ({
       id: r.id,
       postId: r.postId,
@@ -253,15 +254,13 @@ export class ForumService {
   }
 }
 
-// 主题列表:任意登录用户可见(发帖要选)。
-@UseGuards(JwtAuthGuard)
 @Controller('forum')
 export class ForumTopicController {
   constructor(private readonly svc: ForumService) {}
 
   @Get('topics')
-  topics(@CurrentUser() user: AuthUser) {
-    return this.svc.listTopics(user.tenantId);
+  topics() {
+    return this.svc.listTopics(env.defaultTenantId);
   }
 }
 
@@ -288,27 +287,28 @@ export class ForumAdminController {
   }
 }
 
-@UseGuards(JwtAuthGuard)
 @Controller('posts')
 export class ForumController {
   constructor(private readonly svc: ForumService) {}
 
   @Get()
-  list(@CurrentUser() user: AuthUser, @Query() q: ListQuery) {
-    return this.svc.list(user, q);
+  list(@Query() q: ListQuery) {
+    return this.svc.list(env.defaultTenantId, q);
   }
 
   @HttpPost()
+  @UseGuards(JwtAuthGuard)
   create(@CurrentUser() user: AuthUser, @Body() dto: CreatePostDto) {
     return this.svc.create(user, dto.content, dto.topicId);
   }
 
   @Get(':id/replies')
-  replies(@CurrentUser() user: AuthUser, @Param('id') id: string) {
-    return this.svc.listReplies(user, id);
+  replies(@Param('id') id: string) {
+    return this.svc.listReplies(env.defaultTenantId, id);
   }
 
   @HttpPost(':id/replies')
+  @UseGuards(JwtAuthGuard)
   addReply(@CurrentUser() user: AuthUser, @Param('id') id: string, @Body() dto: CreateReplyDto) {
     return this.svc.addReply(user, id, dto.content);
   }

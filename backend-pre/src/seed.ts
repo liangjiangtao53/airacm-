@@ -9,6 +9,8 @@ import {
   Lesson,
   LessonAccess,
   Post,
+  QuestionCategoryEntity,
+  QUESTION_CATEGORIES,
   RechargeCode,
   Tenant,
   User,
@@ -86,7 +88,13 @@ async function run(): Promise<void> {
   ): Promise<void> => {
     const existing = await userRepo.findOne({ where: { tenantId, phone } });
     if (existing) {
-      if (existing.role !== role) await userRepo.update(existing.id, { role });
+      const patch: Partial<User> = {};
+      if (existing.role !== role) patch.role = role;
+      if (existing.nickname !== nickname) patch.nickname = nickname;
+      if (!(await bcrypt.compare(password, existing.passwordHash))) {
+        patch.passwordHash = await bcrypt.hash(password, 10);
+      }
+      if (Object.keys(patch).length > 0) await userRepo.update(existing.id, patch);
       return;
     }
     const u = await userRepo.save(
@@ -105,6 +113,12 @@ async function run(): Promise<void> {
   await ensureAdmin(env.bootstrapBizAdmin.phone, env.bootstrapBizAdmin.password, 'admin', '业务管理员');
 
   // 论坛默认主题(幂等):确保"综合讨论"存在,并回填无主题的旧帖,满足"发帖必选主题"约束。
+  const categoryRepo = ds.getRepository(QuestionCategoryEntity);
+  for (const [order, name] of QUESTION_CATEGORIES.entries()) {
+    const exists = await categoryRepo.findOne({ where: { tenantId, name } });
+    if (!exists) await categoryRepo.save(categoryRepo.create({ tenantId, name, order }));
+  }
+
   const topicRepo = ds.getRepository(ForumTopic);
   let general = await topicRepo.findOne({ where: { tenantId, name: '综合讨论' } });
   if (!general) {

@@ -4,6 +4,7 @@ import { ref } from 'vue';
 import { api, clearToken, getToken, type Me } from '@/utils/api';
 
 const me = ref<Me | null>(null);
+const logoUrl = '/static/maintenance-wing-logo.jpg';
 
 type Tile = {
   title: string;
@@ -29,7 +30,7 @@ const h5Tiles: Tile[] = [
     type: 'page',
   },
   {
-    title: '专升本',
+    title: '学历提升',
     desc: '咨询报读与资料领取',
     url: '/pages/upgrade/index',
     type: 'page',
@@ -39,16 +40,10 @@ const h5Tiles: Tile[] = [
 const appTiles: Tile[] = [
   {
     title: '专题学习',
-    desc: '按 M1 等科目刷题,查看答案与解析',
+    desc: '顺序学习与模拟考试都在这里进入',
     url: '/pages/study/index',
     type: 'tab',
     large: true,
-  },
-  {
-    title: '在线考试',
-    desc: '各科目按比例组卷,自动判分',
-    url: '/pages/exam/index',
-    type: 'tab',
   },
   {
     title: '考试回顾',
@@ -69,7 +64,7 @@ const appTiles: Tile[] = [
     type: 'tab',
   },
   {
-    title: '专升本',
+    title: '学历提升',
     desc: '咨询报读与资料领取',
     url: '/pages/upgrade/index',
     type: 'page',
@@ -86,7 +81,7 @@ isAppShell = typeof location !== 'undefined' && new URLSearchParams(location.sea
 // #endif
 const isH5 = !isAppShell;
 const tiles = isH5 ? h5Tiles : appTiles;
-const subtitle = isH5 ? '交流 · App 下载 · 专升本' : '专题学习 · 在线考试 · 考试回顾 · 错题本 · 交流 · 专升本';
+const subtitle = isH5 ? '交流 · App 下载 · 学历提升' : '专题学习 · 考试回顾 · 错题本 · 交流 · 学历提升';
 
 function roleLabel(role?: Me['role']) {
   if (role === 'super') return '超级管理员';
@@ -127,9 +122,12 @@ onShow(load);
 <template>
   <view class="page home-page">
     <view class="header">
-      <view>
-        <text class="title">维修翼站</text>
-        <text class="subtitle">{{ subtitle }}</text>
+      <view class="brand-row">
+        <image class="logo" :src="logoUrl" mode="aspectFill" />
+        <view>
+          <text class="title">维修翼站</text>
+          <text class="subtitle">{{ subtitle }}</text>
+        </view>
       </view>
       <view class="profile" v-if="me">
         <text>{{ me.nickname || roleLabel(me.role) }}</text>
@@ -172,6 +170,21 @@ onShow(load);
 .header .subtitle {
   display: block;
   margin-top: 16rpx;
+}
+
+.brand-row {
+  align-items: center;
+  display: flex;
+  gap: 22rpx;
+  min-width: 0;
+}
+
+.logo {
+  border-radius: 24rpx;
+  box-shadow: 0 10rpx 28rpx rgba(31, 55, 82, 0.12);
+  flex-shrink: 0;
+  height: 112rpx;
+  width: 112rpx;
 }
 
 .profile {

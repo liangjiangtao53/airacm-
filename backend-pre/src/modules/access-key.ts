@@ -43,6 +43,14 @@ class GenKeysDto {
   ttlDays?: number;
 }
 
+class UpdateKeyDto {
+  // 从现在开始重新计算有效期天数。只改有效期，不改卡密本身，避免已发出的登录码失效。
+  @IsInt()
+  @Min(1)
+  @Max(3650)
+  ttlDays!: number;
+}
+
 class KeyLoginDto {
   @IsString()
   key!: string;
@@ -184,6 +192,15 @@ export class AccessKeyService {
     return { ok: true };
   }
 
+  async updateExpiresAt(tenantId: string, id: string, ttlDays: number): Promise<AccessKey> {
+    const k = await this.keys.findOne({ where: { tenantId, id } });
+    if (!k) throw new NotFoundException('卡密不存在');
+    if (k.status === 'revoked') throw new BadRequestException('已作废卡密不能修改有效期');
+    const expiresAt = new Date(Date.now() + ttlDays * DAY_MS);
+    await this.keys.update(k.id, { expiresAt });
+    return { ...k, expiresAt };
+  }
+
   // 清理:删除已过期 + 已作废的卡密("删除用过/失效的")。
   async cleanup(tenantId: string): Promise<{ deleted: number }> {
     const r1 = await this.keys.delete({ tenantId, expiresAt: LessThan(new Date()) });
@@ -223,6 +240,11 @@ export class AccessKeyAdminController {
   @Post(':id/revoke')
   revoke(@CurrentUser() admin: AuthUser, @Param('id') id: string) {
     return this.svc.revoke(admin.tenantId, id);
+  }
+
+  @Post(':id')
+  update(@CurrentUser() admin: AuthUser, @Param('id') id: string, @Body() dto: UpdateKeyDto) {
+    return this.svc.updateExpiresAt(admin.tenantId, id, dto.ttlDays);
   }
 }
 

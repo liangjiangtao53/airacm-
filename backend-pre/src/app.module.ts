@@ -19,7 +19,6 @@ import { AccessKeyModule } from './modules/access-key';
 import { ForumModule } from './modules/forum';
 import { AppReleaseModule } from './modules/app-release';
 
-// 健康检查:容器/网关探活用,无需鉴权。
 @Controller()
 class HealthController {
   @Get('health')
@@ -31,11 +30,9 @@ class HealthController {
 @Module({
   imports: [
     TypeOrmModule.forRoot(buildDataSourceOptions()),
-    // 全局 JWT:各模块 JwtAuthGuard 可解析 JwtService。
     JwtModule.register({ global: true, secret: env.jwtSecret }),
-    // 全局限流:默认 60s 内 120 次(防爆破/刷接口)。敏感端点用 @Throttle 收紧。
-    ThrottlerModule.forRoot([{ ttl: 60_000, limit: 120 }]),
-    // 全局单点登录:JwtAuthGuard 注入 SessionService(各模块无需自备 User 仓库)。
+    // Original limit was hard-coded as 60s/120. Deployment tests need this configurable.
+    ThrottlerModule.forRoot([{ ttl: env.throttleTtlMs, limit: env.throttleLimit }]),
     SessionModule,
     AuthModule,
     WalletModule,

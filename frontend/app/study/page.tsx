@@ -77,7 +77,21 @@ export default function StudyPage() {
       <a href="/" className="text-sm font-bold text-ink hover:text-sky">
         ← 返回首页
       </a>
-      <h1 className="mb-6 mt-1 text-3xl font-semibold tracking-tight text-ink">专题学习</h1>
+      <h1 className="mb-4 mt-1 text-3xl font-semibold tracking-tight text-ink">专题学习</h1>
+
+      <div className="mb-6 grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <section className="rounded-2xl border border-sky/30 bg-sky/10 p-4">
+          <p className="text-base font-semibold text-ink">顺序学习</p>
+          <p className="mt-1 text-sm text-ink/55">按科目顺序刷题,答错后进入错题本。</p>
+        </section>
+        <a
+          href="/exam"
+          className="rounded-2xl bg-white/60 p-4 shadow-sm ring-1 ring-white/55 transition hover:-translate-y-0.5 hover:ring-sky/30"
+        >
+          <p className="text-base font-semibold text-ink">模拟考试</p>
+          <p className="mt-1 text-sm text-ink/55">进入模拟考试,开始考试部分保持不变。</p>
+        </a>
+      </div>
 
       <div className="flex flex-col gap-6 sm:flex-row">
         {/* 左侧顺序轴:垂直科目导航,点击切换 */}
@@ -217,7 +231,12 @@ function QuestionCard({ q, index }: { q: QuestionItem; index: number }) {
 
   async function reveal() {
     try {
-      setAnswer(await api.questionAnswer(q.id));
+      const result = await api.questionAnswer(q.id);
+      setAnswer(result);
+      const pickedKey = [...picked].sort().join('');
+      if (pickedKey && pickedKey !== result.answer) {
+        await api.recordStudyWrong(q.id, pickedKey);
+      }
     } catch {
       /* 静默:答案获取失败不致命,用户可重试 */
     }

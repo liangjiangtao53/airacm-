@@ -13,7 +13,7 @@ public class MainActivity extends Activity {
   @Override
   protected void onCreate(Bundle savedInstanceState) {
     super.onCreate(savedInstanceState);
-    // 原来没有限制系统截图/录屏; Android 端用 FLAG_SECURE 防止学习与考试内容被截图、录屏或显示在最近任务缩略图中。
+    // QA 截图通过后重新开启: 防止学习/考试内容被系统截图、录屏或显示在最近任务缩略图中。
     getWindow().setFlags(WindowManager.LayoutParams.FLAG_SECURE, WindowManager.LayoutParams.FLAG_SECURE);
 
     WebView webView = new WebView(this);
@@ -36,7 +36,7 @@ public class MainActivity extends Activity {
     });
     webView.setWebViewClient(new WebViewClient());
     setContentView(webView);
-    // 原来使用 Android 模拟器访问宿主机的 10.0.2.2; 局域网测试包改为直接连接当前服务器 IP。
-    webView.loadUrl("file:///android_asset/www/index.html?platform=app&apiBase=http%3A%2F%2F192.168.2.7%3A8770#/pages/index/index");
+    // 生产包统一走公网域名,由 nginx 将 /api 反向代理到后端,避免 App 继续依赖内网 IP。
+    webView.loadUrl("file:///android_asset/www/index.html?platform=app&apiBase=https%3A%2F%2Fnickjian.dpdns.org%2Fapi&downloadBase=https%3A%2F%2Fnickjian.dpdns.org#/pages/index/index");
   }
 }

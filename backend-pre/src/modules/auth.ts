@@ -16,7 +16,14 @@ import { IsOptional, IsString, Length, Matches, MaxLength, MinLength } from 'cla
 import { Throttle } from '@nestjs/throttler';
 import * as bcrypt from 'bcryptjs';
 import { Tenant, User, Wallet } from '../entities';
-import { AuthUser, CurrentUser, JwtAuthGuard, signToken } from '../common';
+import {
+  AuthUser,
+  CurrentUser,
+  JwtAuthGuard,
+  PASSWORD_COMPLEXITY_MESSAGE,
+  PASSWORD_COMPLEXITY_RE,
+  signToken,
+} from '../common';
 import { SessionService } from '../session';
 import { env } from '../config';
 import { SmsModule, SmsService } from './sms';
@@ -58,6 +65,18 @@ class LoginDto {
   @IsString()
   @MaxLength(64)
   password!: string;
+}
+
+class ChangePasswordDto {
+  @IsString()
+  @MaxLength(64)
+  oldPassword!: string;
+
+  @IsString()
+  @MinLength(10, { message: '新密码至少 10 位' })
+  @MaxLength(64, { message: '新密码过长' })
+  @Matches(PASSWORD_COMPLEXITY_RE, { message: PASSWORD_COMPLEXITY_MESSAGE })
+  newPassword!: string;
 }
 
 class WechatLoginDto {
@@ -129,6 +148,22 @@ export class AuthService {
     return { token: await this.issue({ userId: user.id, tenantId, role: user.role }), userId: user.id };
   }
 
+  async changePassword(
+    user: AuthUser,
+    oldPassword: string,
+    newPassword: string,
+  ): Promise<{ ok: true }> {
+    const u = await this.users.findOne({ where: { tenantId: user.tenantId, id: user.userId } });
+    if (!u || !u.passwordHash || !(await bcrypt.compare(oldPassword, u.passwordHash))) {
+      throw new BadRequestException('原密码错误');
+    }
+    if (await bcrypt.compare(newPassword, u.passwordHash)) {
+      throw new BadRequestException('新密码不能与原密码相同');
+    }
+    await this.users.update(u.id, { passwordHash: await bcrypt.hash(newPassword, 10) });
+    return { ok: true };
+  }
+
   // 微信登录:code 换 openid。dev 桩用 code 直接当 openid;生产调微信 jscode2session。
   async wechatLogin(dto: WechatLoginDto): Promise<{ token: string; userId: string }> {
     const tenantId = env.defaultTenantId;
@@ -163,29 +198,37 @@ export class AuthService {
   }
 }
 
-// 认证端点更严限流:防撞库/爆破,60s 内 10 次。
-@Throttle({ default: { ttl: 60_000, limit: 10 } })
 @Controller('auth')
 export class AuthController {
   constructor(private readonly svc: AuthService) {}
 
-  // 发送注册短信验证码。限流随父级 @Throttle(60s/10) 收紧防轰炸。
+  // 发送注册短信验证码。保留更严限流防短信轰炸。
   @Throttle({ default: { ttl: 60_000, limit: 3 } })
   @Post('send-code')
   sendCode(@Body() dto: SendCodeDto) {
     return this.svc.sendCode(dto.phone);
   }
 
+  @Throttle({ default: { ttl: 60_000, limit: 10 } })
   @Post('register')
   register(@Body() dto: RegisterDto) {
     return this.svc.register(dto);
   }
 
+  @Throttle({ default: { ttl: 60_000, limit: 10 } })
   @Post('login')
   login(@Body() dto: LoginDto) {
     return this.svc.login(dto);
   }
 
+  @UseGuards(JwtAuthGuard)
+  @Throttle({ default: { ttl: 60_000, limit: 10 } })
+  @Post('password')
+  changePassword(@CurrentUser() user: AuthUser, @Body() dto: ChangePasswordDto) {
+    return this.svc.changePassword(user, dto.oldPassword, dto.newPassword);
+  }
+
+  @Throttle({ default: { ttl: 60_000, limit: 10 } })
   @Post('wechat')
   wechat(@Body() dto: WechatLoginDto) {
     return this.svc.wechatLogin(dto);

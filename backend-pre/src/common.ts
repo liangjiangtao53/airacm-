@@ -22,6 +22,9 @@ import { SessionService } from './session';
 // user 普通学员 / admin 业务管理员 / super 超级管理员(全权,自动满足任意 @Roles)。
 export type UserRole = 'user' | 'admin' | 'super';
 
+export const PASSWORD_COMPLEXITY_RE = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9]).+$/;
+export const PASSWORD_COMPLEXITY_MESSAGE = '密码必须包含大小写字母、数字和特殊字符';
+
 // 登录态:JWT payload 解出的当前用户。tenantId 随 token 走,后端查询统一带上(D4)。
 export interface AuthUser {
   userId: string;

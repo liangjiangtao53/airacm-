@@ -7,6 +7,7 @@ const phone = ref('');
 const password = ref('');
 const key = ref('');
 const loading = ref(false);
+const logoUrl = '/static/maintenance-wing-logo.jpg';
 
 function goHome() {
   uni.switchTab({ url: '/pages/index/index' });
@@ -48,6 +49,7 @@ async function submit() {
 <template>
   <view class="page login-page">
     <view class="brand">
+      <image class="logo" :src="logoUrl" mode="aspectFill" />
       <text class="eyebrow">维修翼站</text>
       <text class="title">登录学员端</text>
       <text class="subtitle">使用卡密或手机号登录后进入学习和交流。</text>
@@ -80,10 +82,20 @@ async function submit() {
 }
 
 .brand {
+  align-items: center;
   display: flex;
   flex-direction: column;
   gap: 18rpx;
   margin-bottom: 42rpx;
+  text-align: center;
+}
+
+.logo {
+  border-radius: 32rpx;
+  box-shadow: 0 12rpx 34rpx rgba(31, 55, 82, 0.14);
+  height: 148rpx;
+  margin-bottom: 8rpx;
+  width: 148rpx;
 }
 
 .eyebrow {

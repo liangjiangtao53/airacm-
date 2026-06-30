@@ -13,7 +13,7 @@ import {
 import { InjectRepository, TypeOrmModule } from '@nestjs/typeorm';
 import { In, QueryFailedError, Repository } from 'typeorm';
 import { IsInt, IsObject, IsOptional, IsString, Max, Min } from 'class-validator';
-import { ExamAttempt, Question, QuestionOption, WrongQuestion } from '../entities';
+import { ExamAttempt, Question, QuestionOption, WrongQuestion, WrongQuestionSource } from '../entities';
 import { AuthUser, CurrentUser, JwtAuthGuard } from '../common';
 
 const DEFAULT_COUNT = 10;
@@ -40,6 +40,20 @@ class SubmitExamDto {
   // {questionId: 'A' | 'AC'}。内层键值在 service 里规范化校验。
   @IsObject()
   answers!: Record<string, string>;
+}
+
+class StudyWrongDto {
+  @IsString()
+  questionId!: string;
+
+  @IsString()
+  answer!: string;
+}
+
+class MasterWrongDto {
+  @IsOptional()
+  @IsString()
+  source?: WrongQuestionSource;
 }
 
 // 卷面题目(不含答案/解析)。
@@ -72,6 +86,7 @@ interface WrongBookItem {
   answer: string;
   analysis: string;
   wrongCount: number;
+  source: WrongQuestionSource;
   lastWrongAt: Date;
 }
 
@@ -197,22 +212,27 @@ export class ExamService {
   ): Promise<void> {
     const now = new Date();
     for (const qid of wrongIds) {
-      await this.recordWrong(user, qid, now);
+      await this.recordWrong(user, qid, 'exam', now);
     }
     if (correctIds.length > 0) {
-      // 答对则标记已掌握(仅影响本中已有记录)。
+      // 模拟考试答对则标记该来源已掌握(仅影响本中已有记录)。
       await this.wrongBookRepo.update(
-        { tenantId: user.tenantId, userId: user.userId, questionId: In(correctIds), status: 'open' },
+        { tenantId: user.tenantId, userId: user.userId, questionId: In(correctIds), source: 'exam', status: 'open' },
         { status: 'mastered' },
       );
     }
   }
 
   // 录入/累加单条错题。首次插入若撞唯一索引(并发交卷),回退为计数更新,避免 500。
-  private async recordWrong(user: AuthUser, questionId: string, now: Date): Promise<void> {
+  private async recordWrong(
+    user: AuthUser,
+    questionId: string,
+    source: WrongQuestionSource,
+    now: Date,
+  ): Promise<void> {
     const bump = async (): Promise<boolean> => {
       const row = await this.wrongBookRepo.findOne({
-        where: { tenantId: user.tenantId, userId: user.userId, questionId },
+        where: { tenantId: user.tenantId, userId: user.userId, questionId, source },
       });
       if (!row) return false;
       await this.wrongBookRepo.update(row.id, {
@@ -229,19 +249,29 @@ export class ExamService {
           tenantId: user.tenantId,
           userId: user.userId,
           questionId,
+          source,
           wrongCount: 1,
           status: 'open',
           lastWrongAt: now,
         }),
       );
     } catch (e) {
-      // 并发已插入同一 (tenant,user,question):唯一冲突 → 回退为计数更新。
+      // 并发已插入同一 (tenant,user,question,source):唯一冲突 → 回退为计数更新。
       if (e instanceof QueryFailedError) {
         await bump();
       } else {
         throw e;
       }
     }
+  }
+
+  // 顺序学习答错后录入错题本。服务端复核答案,避免客户端误报或伪造错题。
+  async recordStudyWrong(user: AuthUser, questionId: string, answer: string): Promise<{ ok: true; recorded: boolean }> {
+    const q = await this.questions.findOne({ where: { tenantId: user.tenantId, id: questionId } });
+    if (!q) throw new NotFoundException('题目不存在');
+    if (normalize(answer) === q.answer) return { ok: true, recorded: false };
+    await this.recordWrong(user, questionId, 'study', new Date());
+    return { ok: true, recorded: true };
   }
 
   // 错题本列表:默认只看未掌握(open),带题目详情供复习。
@@ -269,6 +299,7 @@ export class ExamService {
         answer: q.answer,
         analysis: q.analysis,
         wrongCount: r.wrongCount,
+        source: r.source,
         lastWrongAt: r.lastWrongAt,
       });
     }
@@ -276,9 +307,9 @@ export class ExamService {
   }
 
   // 手动标记已掌握:从错题本移出。
-  async master(user: AuthUser, questionId: string): Promise<{ ok: boolean }> {
+  async master(user: AuthUser, questionId: string, source: WrongQuestionSource = 'exam'): Promise<{ ok: boolean }> {
     const row = await this.wrongBookRepo.findOne({
-      where: { tenantId: user.tenantId, userId: user.userId, questionId },
+      where: { tenantId: user.tenantId, userId: user.userId, questionId, source },
     });
     if (!row) throw new NotFoundException('错题不存在');
     await this.wrongBookRepo.update(row.id, { status: 'mastered' });
@@ -401,10 +432,16 @@ export class ExamController {
     return this.svc.wrongBook(user);
   }
 
+  // 顺序学习答错时录入错题本。
+  @Post('wrong-book/study')
+  recordStudyWrong(@CurrentUser() user: AuthUser, @Body() dto: StudyWrongDto) {
+    return this.svc.recordStudyWrong(user, dto.questionId, dto.answer);
+  }
+
   // 标记某题已掌握,移出错题本。
   @Post('wrong-book/:questionId/master')
-  master(@CurrentUser() user: AuthUser, @Param('questionId') questionId: string) {
-    return this.svc.master(user, questionId);
+  master(@CurrentUser() user: AuthUser, @Param('questionId') questionId: string, @Body() dto: MasterWrongDto) {
+    return this.svc.master(user, questionId, dto.source);
   }
 }
 

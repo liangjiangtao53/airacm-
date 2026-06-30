@@ -2,7 +2,7 @@
 
 航空机务培训学习平台。顺序学习 · 专题学习(M1-M9 题库) · 在线考试 · 错题本 · 交流。
 
-- **后端**:NestJS 10 + TypeORM(Postgres 生产 / better-sqlite3 开发) + JWT
+- **后端**:NestJS 10 + TypeORM(MySQL 生产 / better-sqlite3 测试) + JWT
 - **前端**:Next.js 14 (App Router, Tailwind)
 - **部署**:Docker Compose 一键起,Nginx 反代 + TLS 统一入口
 
@@ -92,7 +92,7 @@ docker compose up -d
 docker compose ps                 # 状态
 docker compose logs -f api        # 后端日志
 docker compose up -d --build api  # 仅重建后端
-docker compose down               # 停止(保留数据卷 pgdata)
+docker compose down               # 停止服务(数据库使用外部 MySQL)
 ```
 
 ---
@@ -116,7 +116,7 @@ docker compose down               # 停止(保留数据卷 pgdata)
 - [ ] `ADMIN_PASSWORD` / `BIZ_ADMIN_PASSWORD` 在 seed 前设成强密码(默认占位是弱密码)
 - [ ] 防火墙只开 80/443
 - [ ] 生产关闭短信 dev 模式(`SMS_DEV_MODE=false`)
-- [ ] Postgres 定时备份(`pgdata` 卷)
+- [ ] MySQL 定时备份(`mysqldump` 或云数据库快照)
 
 ### 待办(P1)
 

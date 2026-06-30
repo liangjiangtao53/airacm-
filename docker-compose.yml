@@ -12,31 +12,23 @@
 #   默认管理员: 超管 13259858973 / 业务管理员 13772066855(密码=.env 对应项)
 
 services:
-  db:
-    image: postgres:16-alpine
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: ${DB_USER:-airacm}
-      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD required}
-      POSTGRES_DB: ${DB_DATABASE:-airacm}
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-    healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -U ${DB_USER:-airacm}']
-      interval: 5s
-      timeout: 3s
-      retries: 10
-    # 不暴露 5432;仅容器网络内访问。
 
   api:
     build: ./backend-pre
     restart: unless-stopped
     environment:
       NODE_ENV: production
-      DB_TYPE: postgres
-      DATABASE_URL: postgres://${DB_USER:-airacm}:${DB_PASSWORD}@db:5432/${DB_DATABASE:-airacm}
+      DB_TYPE: ${DB_TYPE:-mysql}
+      DB_HOST: ${DB_HOST:-192.168.22.10}
+      DB_PORT: ${DB_PORT:-3306}
+      DB_USER: ${DB_USER:-airacm}
+      DB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD required}
+      DB_DATABASE: ${DB_DATABASE:-airacm}
       DB_SYNC: ${DB_SYNC:-false}            # 首次建表设 true,之后改 false
       DB_MIGRATIONS_RUN: ${DB_MIGRATIONS_RUN:-true}
+      DB_POOL_MAX: ${DB_POOL_MAX:-20}
+      THROTTLE_TTL_MS: ${THROTTLE_TTL_MS:-60000}
+      THROTTLE_LIMIT: ${THROTTLE_LIMIT:-120}
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET required}
       JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-7d}
       CORS_ORIGINS: ${CORS_ORIGINS:-}       # 同域反代可留空
@@ -56,9 +48,6 @@ services:
     volumes:
       - ${APP_UPLOAD_DIR:-./uploads/app}:/app/uploads/app
       - ${QUESTION_IMAGE_DIR:-./uploads/question-images}:/app/uploads/question-images
-    depends_on:
-      db:
-        condition: service_healthy
     expose:
       - '8770'                              # 仅内网,不映射到宿主
 
@@ -90,6 +79,3 @@ services:
     depends_on:
       - api
       - frontend
-
-volumes:
-  pgdata:

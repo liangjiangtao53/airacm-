@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import { onShow } from '@dcloudio/uni-app';
-import { ref } from 'vue';
-import { api, assetUrl, requireLogin, type CommentItem, type WrongBookItem } from '@/utils/api';
+import { computed, ref } from 'vue';
+import { api, assetUrl, requireLogin, type CommentItem, type WrongBookItem, type WrongQuestionSource } from '@/utils/api';
 
 const items = ref<WrongBookItem[]>([]);
-const picked = ref<Record<string, string[]>>({});
 const revealed = ref<Record<string, boolean>>({});
+const tab = ref<WrongQuestionSource>('study');
 const loading = ref(false);
 const commentOpen = ref<Record<string, boolean>>({});
 const commentInputs = ref<Record<string, string>>({});
@@ -13,6 +13,14 @@ const commentLists = ref<Record<string, CommentItem[]>>({});
 
 function toast(message: string) {
   uni.showToast({ title: message, icon: 'none' });
+}
+
+const filteredItems = computed(() => items.value.filter((item) => item.source === tab.value));
+const studyCount = computed(() => items.value.filter((item) => item.source === 'study').length);
+const examCount = computed(() => items.value.filter((item) => item.source === 'exam').length);
+
+function itemKey(q: WrongBookItem) {
+  return `${q.source}:${q.questionId}`;
 }
 
 async function load() {
@@ -27,24 +35,14 @@ async function load() {
   }
 }
 
-function toggle(q: WrongBookItem, key: string) {
-  if (revealed.value[q.questionId]) return;
-  const cur = picked.value[q.questionId] || [];
-  if (q.type === 'single') {
-    picked.value[q.questionId] = [key];
-    return;
-  }
-  picked.value[q.questionId] = cur.includes(key) ? cur.filter((k) => k !== key) : [...cur, key].sort();
-}
-
 function isCorrect(q: WrongBookItem, key: string) {
   return q.answer.includes(key);
 }
 
-async function master(questionId: string) {
+async function master(questionId: string, source: WrongQuestionSource) {
   try {
-    await api.masterWrong(questionId);
-    items.value = items.value.filter((item) => item.questionId !== questionId);
+    await api.masterWrong(questionId, source);
+    items.value = items.value.filter((item) => !(item.questionId === questionId && item.source === source));
   } catch (e) {
     toast((e as Error).message);
   }
@@ -79,47 +77,57 @@ onShow(load);
   <view class="page wrong-page">
     <view class="header">
       <text class="title">错题本</text>
-      <text class="subtitle">考试答错的题会自动收集,掌握后可移出。</text>
+      <text class="subtitle">顺序学习和模拟考试错题分开查看。</text>
+    </view>
+
+    <view class="tabs">
+      <view :class="['tab', tab === 'study' && 'active']" @tap="tab = 'study'">
+        <text>顺序学习</text>
+        <text class="tab-count">{{ studyCount }} 题</text>
+      </view>
+      <view :class="['tab', tab === 'exam' && 'active']" @tap="tab = 'exam'">
+        <text>模拟考试</text>
+        <text class="tab-count">{{ examCount }} 题</text>
+      </view>
     </view>
 
     <view v-if="loading" class="empty">加载中...</view>
-    <view v-else-if="items.length === 0" class="empty">错题本是空的。去考试练练吧。</view>
+    <view v-else-if="filteredItems.length === 0" class="empty">
+      {{ tab === 'study' ? '顺序学习暂无错题。' : '模拟考试暂无错题。' }}
+    </view>
 
     <view class="wrong-list">
-      <view v-for="(q, index) in items" :key="q.questionId" class="card wrong-card">
+      <view v-for="(q, index) in filteredItems" :key="`${q.source}:${q.questionId}`" class="card wrong-card">
         <view class="question-head">
           <text class="badge">{{ index + 1 }} · {{ q.type === 'single' ? '单选' : '多选' }}</text>
           <text class="wrong-count">错 {{ q.wrongCount }} 次</text>
         </view>
         <text class="stem">{{ q.stem }}</text>
         <image v-for="url in q.imageUrls || []" :key="url" :src="assetUrl(url)" mode="widthFix" class="question-image" />
-        <view class="options">
+        <view v-if="revealed[itemKey(q)]" class="options">
           <view
             v-for="option in q.options"
             :key="option.key"
             :class="[
               'option',
-              (picked[q.questionId] || []).includes(option.key) && 'chosen',
-              revealed[q.questionId] && isCorrect(q, option.key) && 'correct',
-              revealed[q.questionId] && (picked[q.questionId] || []).includes(option.key) && !isCorrect(q, option.key) && 'wrong',
+              revealed[itemKey(q)] && isCorrect(q, option.key) && 'correct',
             ]"
-            @tap="toggle(q, option.key)"
           >
             <text class="option-key">{{ option.key }}</text>
             <text class="option-text">{{ option.text }}</text>
           </view>
         </view>
         <view class="actions">
-          <button v-if="!revealed[q.questionId]" class="btn" @tap="revealed[q.questionId] = true">查看答案</button>
+          <button v-if="!revealed[itemKey(q)]" class="btn" @tap="revealed[itemKey(q)] = true">查看答案</button>
           <template v-else>
             <text class="answer">正确答案: {{ q.answer }}</text>
-            <button class="btn secondary master" @tap="master(q.questionId)">已掌握</button>
+            <button class="btn secondary master" @tap="master(q.questionId, q.source)">已掌握</button>
           </template>
           <button class="btn secondary master" @tap="toggleComments(q.questionId)">
             {{ commentOpen[q.questionId] ? '收起评论' : '评论' }}
           </button>
         </view>
-        <text v-if="revealed[q.questionId] && q.analysis" class="analysis">解析: {{ q.analysis }}</text>
+        <text v-if="revealed[itemKey(q)] && q.analysis" class="analysis">解析: {{ q.analysis }}</text>
         <view v-if="commentOpen[q.questionId]" class="comment-box">
           <view class="comment-form">
             <input v-model="commentInputs[q.questionId]" class="comment-input" placeholder="写下你的想法..." />
@@ -141,6 +149,7 @@ onShow(load);
 .wrong-list,
 .wrong-card,
 .options,
+.tabs,
 .comment-box {
   display: flex;
   flex-direction: column;
@@ -162,6 +171,36 @@ onShow(load);
   font-size: 28rpx;
   padding: 48rpx 0;
   text-align: center;
+}
+
+.tabs {
+  display: grid;
+  gap: 16rpx;
+  grid-template-columns: 1fr 1fr;
+}
+
+.tab {
+  background: rgba(255, 255, 255, 0.7);
+  border: 2rpx solid rgba(255, 255, 255, 0.7);
+  border-radius: 22rpx;
+  color: rgba(17, 24, 39, 0.58);
+  font-size: 28rpx;
+  font-weight: 700;
+  padding: 22rpx;
+}
+
+.tab.active {
+  background: rgba(31, 111, 235, 0.08);
+  border-color: rgba(31, 111, 235, 0.3);
+  color: #111827;
+}
+
+.tab-count {
+  color: rgba(17, 24, 39, 0.42);
+  display: block;
+  font-size: 22rpx;
+  font-weight: 500;
+  margin-top: 8rpx;
 }
 
 .question-head {

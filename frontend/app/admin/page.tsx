@@ -9,10 +9,10 @@ import {
   type AppApkStatus,
   type ForumTopic,
   type ImportResult,
+  type ManagedQuestionCategory,
   type QuestionUsage,
   type UserRole,
 } from '@/lib/api';
-import CategoryManager from '@/components/CategoryManager';
 
 function Card(props: { title: string; children: React.ReactNode }) {
   return (
@@ -27,11 +27,21 @@ const input =
   'w-full rounded-lg border border-ink/15 px-3 py-2 outline-none focus:border-sky focus:ring-2 focus:ring-sky/20';
 const btn =
   'rounded-lg bg-steel px-5 py-2 font-medium text-white hover:bg-ink disabled:opacity-50';
+const logoUrl = '/images/maintenance-wing-logo.jpg';
+type AccessKeyRow = { id: string; key: string; status: string; expiresAt: string; createdAt: string };
+type AdminSheet = 'operations' | 'questions' | 'users' | 'security';
+const sheets: Array<{ key: AdminSheet; label: string }> = [
+  { key: 'questions', label: '学习资料' },
+  { key: 'operations', label: '运营配置' },
+  { key: 'users', label: '用户社区' },
+  { key: 'security', label: '账号安全' },
+];
 
 export default function AdminPage() {
   const router = useRouter();
   const [ready, setReady] = useState(false);
   const [err, setErr] = useState('');
+  const [activeSheet, setActiveSheet] = useState<AdminSheet>('questions');
 
   // 发码(仅 super)
   const [count, setCount] = useState('5');
@@ -56,9 +66,10 @@ export default function AdminPage() {
   const [importFile, setImportFile] = useState<File | null>(null);
   const [importUsage, setImportUsage] = useState<QuestionUsage>('both');
   const [importCategory, setImportCategory] = useState('');
-  const [importCourseId, setImportCourseId] = useState('');
   const [importResult, setImportResult] = useState<ImportResult | null>(null);
   const [categories, setCategories] = useState<string[]>([]);
+  const [managedCategories, setManagedCategories] = useState<ManagedQuestionCategory[]>([]);
+  const [newCategory, setNewCategory] = useState('');
 
   // App 安装包上传(admin + super)
   const [apkFile, setApkFile] = useState<File | null>(null);
@@ -67,11 +78,9 @@ export default function AdminPage() {
 
   // 数据维护
   const [stats, setStats] = useState<Array<{ category: string; count: number }>>([]);
-  const [activeCategory, setActiveCategory] = useState<string | null>(null);
-  const [keys, setKeys] = useState<Array<{ id: string; key: string; status: string; expiresAt: string }>>([]);
+  const [keys, setKeys] = useState<AccessKeyRow[]>([]);
   const [genCount, setGenCount] = useState('20');
   const [genTtl, setGenTtl] = useState('30');
-  const [genKeysOut, setGenKeysOut] = useState<string[]>([]);
   const [maintMsg, setMaintMsg] = useState('');
 
   // 用户管理
@@ -88,6 +97,13 @@ export default function AdminPage() {
   const [adminNick, setAdminNick] = useState('');
   const [adminMsg, setAdminMsg] = useState('');
 
+  // 当前管理员修改自己的登录密码。
+  const [oldPassword, setOldPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [passwordMsg, setPasswordMsg] = useState('');
+  const [passwordErr, setPasswordErr] = useState('');
+
   const isSuper = meRole === 'super';
 
   useEffect(() => {
@@ -101,6 +117,7 @@ export default function AdminPage() {
         setMeRole(u.role);
         setReady(true);
         api.categories().then(setCategories).catch(() => undefined);
+        api.managedCategories().then(setManagedCategories).catch(() => undefined);
         api.questionStats().then(setStats).catch(() => undefined);
         api.appApkStatus().then(setApkStatus).catch(() => undefined);
         api.users().then(setUsers).catch(() => undefined);
@@ -123,6 +140,11 @@ export default function AdminPage() {
   }
 
   const refreshStats = async () => setStats(await api.questionStats());
+  const refreshCategories = async () => {
+    const [names, managed] = await Promise.all([api.categories(), api.managedCategories()]);
+    setCategories(names);
+    setManagedCategories(managed);
+  };
 
   const genCodes = wrap(async () => {
     const r = await api.adminGenCodes(Number(count), Math.round(Number(codeAmount) * 100));
@@ -156,11 +178,38 @@ export default function AdminPage() {
       importFile,
       importUsage,
       importCategory || undefined,
-      importCourseId.trim() || undefined,
     );
     setImportResult(r);
     await refreshStats();
+    await refreshCategories();
   });
+
+  const addQuestionCategory = wrap(async () => {
+    await api.createQuestionCategory(newCategory.trim());
+    setNewCategory('');
+    await refreshCategories();
+  });
+
+  const renameQuestionCategory = (category: ManagedQuestionCategory) =>
+    wrap(async () => {
+      const next = window.prompt('请输入新的类别名称', category.name)?.trim();
+      if (!next || next === category.name) return;
+      await api.renameQuestionCategory(category.id, next);
+      if (importCategory === category.name) setImportCategory(next);
+      await refreshCategories();
+      await refreshStats();
+    })();
+
+  const deleteQuestionCategory = (category: ManagedQuestionCategory) =>
+    wrap(async () => {
+      if (category.count > 0) {
+        throw new Error('该类别下还有题目，请先在“题库(按科目)”里删除题目');
+      }
+      if (!window.confirm(`确认删除类别「${category.name}」？`)) return;
+      await api.deleteQuestionCategory(category.id);
+      if (importCategory === category.name) setImportCategory('');
+      await refreshCategories();
+    })();
 
   function inferImportCategory(file: File): string {
     const name = file.name.toLowerCase();
@@ -207,21 +256,42 @@ export default function AdminPage() {
       if (!window.confirm(`确认删除「${label}」科目下全部题目?此操作不可恢复。`)) return;
       const r = await api.purgeQuestions(category);
       setMaintMsg(`已删除 ${label} 下 ${r.deleted} 题`);
-      if (activeCategory === category) setActiveCategory(null);
       await refreshStats();
+      await refreshCategories();
     })();
 
   const doGenKeys = wrap(async () => {
     const r = await api.generateKeys(Number(genCount) || 20, Number(genTtl) || 30);
-    setGenKeysOut(r.keys);
     setMaintMsg(`已生成 ${r.keys.length} 个卡密,有效期至 ${new Date(r.expiresAt).toLocaleDateString()}`);
     setKeys(await api.accessKeys());
   });
+
+  const genKeysWithTtl = (ttlDays: number) =>
+    wrap(async () => {
+      setGenTtl(String(ttlDays));
+      const r = await api.generateKeys(Number(genCount) || 20, ttlDays);
+      setMaintMsg(`已生成 ${r.keys.length} 个${ttlDays === 90 ? '三个月' : '一个月'}卡密,有效期至 ${new Date(r.expiresAt).toLocaleDateString()}`);
+      setKeys(await api.accessKeys());
+    })();
 
   const revokeKey = (id: string) =>
     wrap(async () => {
       await api.revokeKey(id);
       setKeys(await api.accessKeys());
+    })();
+
+  const editKeyTtl = (key: AccessKeyRow) =>
+    wrap(async () => {
+      const remainingDays = Math.max(1, Math.ceil((new Date(key.expiresAt).getTime() - Date.now()) / 86_400_000));
+      const raw = window.prompt('请输入新的有效期天数(从现在开始计算,如 30 或 90)', String(remainingDays));
+      if (!raw) return;
+      const ttlDays = Number(raw);
+      if (!Number.isInteger(ttlDays) || ttlDays < 1 || ttlDays > 3650) {
+        throw new Error('有效期天数必须是 1-3650 的整数');
+      }
+      const updated = await api.updateKey(key.id, ttlDays);
+      setKeys(await api.accessKeys());
+      setMaintMsg(`已修改卡密 ${updated.key} 的有效期至 ${new Date(updated.expiresAt).toLocaleDateString()}`);
     })();
 
   const cleanupKeys = wrap(async () => {
@@ -274,6 +344,22 @@ export default function AdminPage() {
     setAdminNick('');
   });
 
+  async function changeMyPassword() {
+    setErr('');
+    setPasswordMsg('');
+    setPasswordErr('');
+    try {
+      if (newPassword !== confirmPassword) throw new Error('两次输入的新密码不一致');
+      await api.changePassword(oldPassword, newPassword);
+      setOldPassword('');
+      setNewPassword('');
+      setConfirmPassword('');
+      setPasswordMsg('密码已修改,下次登录请使用新密码');
+    } catch (e) {
+      setPasswordErr((e as Error).message);
+    }
+  }
+
   const roleLabel = (r: UserRole) =>
     r === 'super' ? '超级管理员' : r === 'admin' ? '业务管理员' : '学员';
 
@@ -289,10 +375,35 @@ export default function AdminPage() {
       <a href="/" className="text-sm font-bold text-ink hover:text-sky">
         ← 返回工作台
       </a>
-      <h1 className="mb-6 mt-1 text-3xl font-semibold tracking-tight text-ink">管理后台</h1>
+      <div className="mb-6 mt-2 flex items-center gap-3">
+        <img
+          src={logoUrl}
+          alt="维修翼站 logo"
+          className="h-12 w-12 rounded-xl object-cover shadow-sm"
+        />
+        <h1 className="text-3xl font-semibold tracking-tight text-ink">管理后台</h1>
+      </div>
       {err && <p className="mb-4 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-600">{err}</p>}
 
+      <nav className="mb-5 flex gap-2 overflow-x-auto rounded-xl bg-white/55 p-2 ring-1 ring-white/60">
+        {sheets.map((sheet) => (
+          <button
+            key={sheet.key}
+            onClick={() => setActiveSheet(sheet.key)}
+            className={`shrink-0 rounded-lg px-4 py-2 text-sm font-medium transition ${
+              activeSheet === sheet.key
+                ? 'bg-steel text-white'
+                : 'text-ink/60 hover:bg-mist hover:text-ink'
+            }`}
+          >
+            {sheet.label}
+          </button>
+        ))}
+      </nav>
+
       <div className="space-y-5">
+        {activeSheet === 'operations' && (
+          <>
         {/* 充值码 / 手动充值 / 建课程:仅超级管理员 */}
         {isSuper && (
           <Card title="生成充值码">
@@ -432,7 +543,11 @@ export default function AdminPage() {
             {apkMsg && <p className="text-sm text-sky">{apkMsg}</p>}
           </div>
         </Card>
+          </>
+        )}
 
+        {activeSheet === 'questions' && (
+          <>
         {/* 导入题库:admin + super */}
         <Card title="导入题库(Excel/PDF)">
           <div className="space-y-3">
@@ -462,15 +577,6 @@ export default function AdminPage() {
                   <option value="both">考试+学习</option>
                   <option value="exam">仅考试</option>
                 </select>
-              </div>
-              <div className="flex-1">
-                <label className="mb-1 block text-xs text-ink/60">关联课程 ID(可选)</label>
-                <input
-                  className={input}
-                  placeholder="留空则为独立题库"
-                  value={importCourseId}
-                  onChange={(e) => setImportCourseId(e.target.value)}
-                />
               </div>
             </div>
             <input
@@ -515,6 +621,48 @@ export default function AdminPage() {
             {maintMsg && <p className="rounded-lg bg-sky/10 px-3 py-2 text-sm text-sky">{maintMsg}</p>}
 
             <div>
+              <h3 className="mb-2 text-sm font-medium text-ink/80">类别管理</h3>
+              <div className="mb-3 flex gap-3">
+                <input
+                  className={input}
+                  placeholder="新增类别名称"
+                  value={newCategory}
+                  maxLength={50}
+                  onChange={(e) => setNewCategory(e.target.value)}
+                />
+                <button className={btn + ' whitespace-nowrap'} onClick={addQuestionCategory} disabled={!newCategory.trim()}>
+                  新增
+                </button>
+              </div>
+              {managedCategories.length === 0 ? (
+                <p className="text-sm text-ink/40">暂无类别</p>
+              ) : (
+                <ul className="space-y-1">
+                  {managedCategories.map((c) => (
+                    <li key={c.id} className="flex items-center justify-between rounded-lg bg-mist px-3 py-2 text-sm">
+                      <span className="text-ink/75">
+                        {c.name} · {c.count} 题
+                      </span>
+                      <span className="flex items-center gap-3">
+                        <button onClick={() => renameQuestionCategory(c)} className="text-xs font-medium text-sky hover:underline">
+                          改名
+                        </button>
+                        <button
+                          onClick={() => deleteQuestionCategory(c)}
+                          className="text-xs text-red-500 hover:underline disabled:text-ink/30 disabled:no-underline"
+                          disabled={c.count > 0}
+                          title={c.count > 0 ? '该类别下还有题目，请先删除题目' : undefined}
+                        >
+                          删除
+                        </button>
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+
+            <div>
               <h3 className="mb-2 text-sm font-medium text-ink/80">题库(按科目)</h3>
               {stats.length === 0 ? (
                 <p className="text-sm text-ink/40">暂无题目</p>
@@ -522,7 +670,6 @@ export default function AdminPage() {
                 <ul className="space-y-1">
                   {stats.map((s) => {
                     const realCat = s.category === '(未分类)' ? '' : s.category;
-                    const open = activeCategory === realCat;
                     return (
                       <li key={s.category} className="rounded-lg bg-mist">
                         <div className="flex items-center justify-between px-3 py-2 text-sm">
@@ -530,12 +677,14 @@ export default function AdminPage() {
                             {s.category} · {s.count} 题
                           </span>
                           <span className="flex items-center gap-3">
-                            <button
-                              onClick={() => setActiveCategory(open ? null : realCat)}
+                            <a
+                              href={`/admin/questions?category=${encodeURIComponent(realCat)}`}
+                              target="_blank"
+                              rel="noreferrer"
                               className="text-xs font-medium text-sky hover:underline"
                             >
-                              {open ? '收起' : '进入'}
-                            </button>
+                              打开
+                            </a>
                             <button
                               onClick={() => purgeCategory(realCat)}
                               className="text-xs text-red-500 hover:underline"
@@ -544,11 +693,6 @@ export default function AdminPage() {
                             </button>
                           </span>
                         </div>
-                        {open && (
-                          <div className="px-3 pb-3">
-                            <CategoryManager category={realCat} onChanged={refreshStats} />
-                          </div>
-                        )}
                       </li>
                     );
                   })}
@@ -571,51 +715,77 @@ export default function AdminPage() {
                   <button className={btn} onClick={doGenKeys}>
                     生成卡密
                   </button>
+                  <button className={btn} onClick={() => genKeysWithTtl(30)}>
+                    生成一个月
+                  </button>
+                  <button className={btn} onClick={() => genKeysWithTtl(90)}>
+                    生成三个月
+                  </button>
                   <button onClick={cleanupKeys} className="text-sm text-red-500 hover:underline">
                     清理过期/作废
                   </button>
                 </div>
 
-                {genKeysOut.length > 0 && (
-                  <div className="mb-3 grid grid-cols-2 gap-2 rounded-lg bg-mist p-3 font-mono text-xs text-ink/70">
-                    {genKeysOut.map((k) => (
-                      <span key={k}>{k}</span>
-                    ))}
-                  </div>
-                )}
-
-                <p className="mb-1 text-xs text-ink/50">现有卡密 {keys.length} 个(最多显示 500)</p>
-                <ul className="max-h-60 space-y-1 overflow-y-auto">
-                  {keys.map((k) => {
-                    const expired = new Date(k.expiresAt).getTime() < Date.now();
-                    const dead = k.status === 'revoked' || expired;
-                    return (
-                      <li
-                        key={k.id}
-                        className="flex items-center justify-between rounded-lg bg-mist px-3 py-1.5 text-xs"
-                      >
-                        <span className={`font-mono ${dead ? 'text-ink/35 line-through' : 'text-ink/75'}`}>
-                          {k.key}
-                        </span>
-                        <span className="flex items-center gap-2">
-                          <span className="text-ink/40">
-                            {k.status === 'revoked' ? '已作废' : expired ? '已过期' : '有效'}
-                          </span>
-                          {!dead && (
-                            <button onClick={() => revokeKey(k.id)} className="text-red-500 hover:underline">
-                              作废
-                            </button>
-                          )}
-                        </span>
-                      </li>
-                    );
-                  })}
-                </ul>
+                <p className="mb-1 text-xs text-ink/50">卡密列表 {keys.length} 个(最多显示 500)</p>
+                <div className="max-h-72 overflow-auto rounded-lg bg-mist">
+                  <table className="min-w-full text-left text-xs">
+                    <thead className="sticky top-0 bg-mist text-ink/45">
+                      <tr>
+                        <th className="px-3 py-2 font-medium">卡密</th>
+                        <th className="px-3 py-2 font-medium">状态</th>
+                        <th className="px-3 py-2 font-medium">有效期</th>
+                        <th className="px-3 py-2 font-medium">已使用天数</th>
+                        <th className="px-3 py-2 font-medium">剩余天数</th>
+                        <th className="px-3 py-2 text-right font-medium">操作</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-white/70">
+                      {keys.map((k) => {
+                        const createdMs = new Date(k.createdAt).getTime();
+                        const expiresMs = new Date(k.expiresAt).getTime();
+                        const now = Date.now();
+                        // 三个天数字段必须口径一致:刚生成 30 天卡密应显示 30/0/30,而不是因毫秒取整变成 31/0/30。
+                        const remainingDays = Math.max(0, Math.ceil((expiresMs - now) / 86_400_000));
+                        const usedDays = Math.max(0, Math.floor((Math.min(now, expiresMs) - createdMs) / 86_400_000));
+                        const validDays = usedDays + remainingDays;
+                        const expired = expiresMs < now;
+                        const dead = k.status === 'revoked' || expired;
+                        return (
+                          <tr key={k.id} className={dead ? 'text-ink/35' : 'text-ink/75'}>
+                            <td className={`px-3 py-2 font-mono ${dead ? 'line-through' : ''}`}>{k.key}</td>
+                            <td className="px-3 py-2">
+                              {k.status === 'revoked' ? '已作废' : expired ? '已过期' : '有效'}
+                            </td>
+                            <td className="px-3 py-2">{validDays} 天</td>
+                            <td className="px-3 py-2">{usedDays} 天</td>
+                            <td className="px-3 py-2">{remainingDays} 天</td>
+                            <td className="px-3 py-2 text-right">
+                              {!dead && (
+                                <span className="inline-flex items-center gap-2">
+                                  <button onClick={() => editKeyTtl(k)} className="text-sky hover:underline">
+                                    改有效期
+                                  </button>
+                                  <button onClick={() => revokeKey(k.id)} className="text-red-500 hover:underline">
+                                    作废
+                                  </button>
+                                </span>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
               </div>
             )}
           </div>
         </Card>
+          </>
+        )}
 
+        {activeSheet === 'users' && (
+          <>
         {/* 新增业务管理员:仅超管 */}
         {isSuper && (
           <Card title="添加业务管理员">
@@ -639,14 +809,14 @@ export default function AdminPage() {
                 <input
                   className={input}
                   type="password"
-                  placeholder="登录密码(至少 8 位)"
+                  placeholder="登录密码(至少 10 位,含大小写/数字/符号)"
                   value={adminPwd}
                   onChange={(e) => setAdminPwd(e.target.value)}
                 />
                 <button
                   className={btn + ' whitespace-nowrap'}
                   onClick={createAdmin}
-                  disabled={!adminPhone.trim() || adminPwd.length < 8 || !adminNick.trim()}
+                  disabled={!adminPhone.trim() || adminPwd.length < 10 || !adminNick.trim()}
                 >
                   添加
                 </button>
@@ -736,6 +906,47 @@ export default function AdminPage() {
             </ul>
           )}
         </Card>
+          </>
+        )}
+
+        {activeSheet === 'security' && (
+          <>
+        <Card title="修改密码">
+          <div className="space-y-3">
+            <input
+              className={input}
+              type="password"
+              placeholder="原密码"
+              value={oldPassword}
+              onChange={(e) => setOldPassword(e.target.value)}
+            />
+            <input
+              className={input}
+              type="password"
+              placeholder="新密码(至少 10 位,含大小写/数字/符号)"
+              value={newPassword}
+              onChange={(e) => setNewPassword(e.target.value)}
+            />
+            <input
+              className={input}
+              type="password"
+              placeholder="再次输入新密码"
+              value={confirmPassword}
+              onChange={(e) => setConfirmPassword(e.target.value)}
+            />
+            <button
+              className={btn}
+              onClick={changeMyPassword}
+              disabled={!oldPassword || newPassword.length < 10 || !confirmPassword}
+            >
+              修改密码
+            </button>
+            {passwordErr && <p className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-600">{passwordErr}</p>}
+            {passwordMsg && <p className="rounded-lg bg-sky/10 px-3 py-2 text-sm text-sky">{passwordMsg}</p>}
+          </div>
+        </Card>
+          </>
+        )}
       </div>
     </main>
   );

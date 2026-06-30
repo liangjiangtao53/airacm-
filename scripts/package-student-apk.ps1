@@ -1,6 +1,8 @@
 param(
   [string]$AndroidHome = "D:\AndroidLab\android-sdk",
-  [string]$OutDir = "D:\AndroidLab\apk"
+  [string]$OutDir = "D:\AndroidLab\apk",
+  [string]$ApiBase = "https://nickjian.dpdns.org/api",
+  [string]$DownloadBase = "https://nickjian.dpdns.org"
 )
 
 $ErrorActionPreference = "Stop"
@@ -33,9 +35,25 @@ New-Item -ItemType Directory -Force $workDir, $OutDir | Out-Null
 
 Push-Location $uniDir
 try {
+  $prevApiBase = $env:VITE_API_BASE
+  $prevDownloadBase = $env:VITE_DOWNLOAD_BASE
+  # 生产 APK 即使启动 query 丢失,也不能回退到本地 127.0.0.1。
+  $env:VITE_API_BASE = $ApiBase
+  $env:VITE_DOWNLOAD_BASE = $DownloadBase
   npm run build:h5 -- --base ./
 } finally {
+  $env:VITE_API_BASE = $prevApiBase
+  $env:VITE_DOWNLOAD_BASE = $prevDownloadBase
   Pop-Location
+}
+
+$h5Dir = Join-Path $uniDir "dist\build\h5"
+Get-ChildItem -Recurse -File $h5Dir -Include "*.js","*.html","*.css" | ForEach-Object {
+  $content = Get-Content -Raw -Encoding UTF8 $_.FullName
+  $next = $content.Replace("http://127.0.0.1:8770", $ApiBase).Replace("http://127.0.0.1:3000", $DownloadBase)
+  if ($next -ne $content) {
+    Set-Content -Encoding UTF8 -NoNewline -Path $_.FullName -Value $next
+  }
 }
 
 $apkRoot = Join-Path $workDir "apk-root"

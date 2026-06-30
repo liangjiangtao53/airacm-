@@ -43,6 +43,7 @@ export interface ForumTopic {
 }
 
 export type QuestionUsage = 'study' | 'exam' | 'both';
+export type WrongQuestionSource = 'study' | 'exam';
 
 export interface QuestionOption {
   key: string;
@@ -110,6 +111,7 @@ export interface WrongBookItem {
   answer: string;
   analysis: string;
   wrongCount: number;
+  source: WrongQuestionSource;
   lastWrongAt: string;
 }
 
@@ -151,7 +153,7 @@ export function requireLogin(): boolean {
 
 function request<T>(
   path: string,
-  opts: { method?: 'GET' | 'POST' | 'DELETE' | 'PATCH'; data?: unknown; auth?: boolean } = {},
+  opts: { method?: 'GET' | 'POST' | 'DELETE'; data?: string | AnyObject | ArrayBuffer; auth?: boolean } = {},
 ): Promise<T> {
   const header: Record<string, string> = {};
   if (opts.auth !== false) {
@@ -207,8 +209,10 @@ export const api = {
   examHistory: () => request<ExamAttemptSummary[]>('/exams/history'),
   examReview: (attemptId: string) => request<ExamResult & { submittedAt: string | null }>(`/exams/${attemptId}/review`),
   wrongBook: () => request<WrongBookItem[]>('/exams/wrong-book'),
-  masterWrong: (questionId: string) =>
-    request<{ ok: boolean }>(`/exams/wrong-book/${questionId}/master`, { method: 'POST' }),
+  recordStudyWrong: (questionId: string, answer: string) =>
+    request<{ ok: true; recorded: boolean }>('/exams/wrong-book/study', { method: 'POST', data: { questionId, answer } }),
+  masterWrong: (questionId: string, source: WrongQuestionSource = 'exam') =>
+    request<{ ok: boolean }>(`/exams/wrong-book/${questionId}/master`, { method: 'POST', data: { source } }),
   comments: (questionId: string) => request<CommentItem[]>(`/questions/${questionId}/comments`),
   addComment: (questionId: string, content: string) =>
     request<CommentItem>(`/questions/${questionId}/comments`, { method: 'POST', data: { content } }),

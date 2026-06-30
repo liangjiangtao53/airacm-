@@ -11,10 +11,10 @@ import {
 // 约定:所有金额字段以「分」(integer)存储,避免浮点误差;前端展示再除 100。
 // 所有业务表带 tenant_id(行级多租户,D4),复合索引 (tenant_id, user_id)。
 
-// 时间列类型按驱动切换:Postgres 用 timestamptz,SQLite(dev/测试)用 datetime。
+// Timestamp column type is driver-specific: Postgres uses timestamptz, MySQL/SQLite use datetime.
 // CreateDateColumn/UpdateDateColumn 由 TypeORM 自动按驱动选型,无需处理。
 const TS_TYPE: 'timestamptz' | 'datetime' =
-  (process.env.DB_TYPE ?? (process.env.NODE_ENV === 'production' ? 'postgres' : 'better-sqlite3')) ===
+  (process.env.DB_TYPE ?? (process.env.NODE_ENV === 'production' ? 'mysql' : 'better-sqlite3')) ===
   'postgres'
     ? 'timestamptz'
     : 'datetime';
@@ -29,6 +29,7 @@ export type ProgressStatus = 'not_started' | 'in_progress' | 'done';
 export type QuestionType = 'single' | 'multiple';
 // 题目用途:仅学习刷题 / 仅考试 / 两者都进。Excel 导入时整批指定。
 export type QuestionUsage = 'study' | 'exam' | 'both';
+export type WrongQuestionSource = 'study' | 'exam';
 
 export interface QuestionOption {
   key: string; // A / B / C / D
@@ -48,6 +49,25 @@ export const QUESTION_CATEGORIES = [
   '无人机',
 ] as const;
 export type QuestionCategory = (typeof QUESTION_CATEGORIES)[number];
+
+@Entity('question_category')
+@Index(['tenantId', 'name'], { unique: true })
+export class QuestionCategoryEntity {
+  @PrimaryGeneratedColumn('uuid')
+  id!: string;
+
+  @Column()
+  tenantId!: string;
+
+  @Column()
+  name!: string;
+
+  @Column({ type: 'integer', default: 0 })
+  order!: number;
+
+  @CreateDateColumn()
+  createdAt!: Date;
+}
 
 @Entity('tenant')
 export class Tenant {
@@ -117,7 +137,7 @@ export class Wallet {
 @Entity('wallet_txn')
 @Index(['tenantId', 'walletId'])
 // 幂等键:同租户同类型同业务引用只入一笔。微信回调重发(同 transactionId 作 refId)靠它去重。
-@Index(['tenantId', 'type', 'refId'], { unique: true, where: '"refId" IS NOT NULL' })
+@Index(['tenantId', 'type', 'refId'], { unique: true })
 export class WalletTxn {
   @PrimaryGeneratedColumn('uuid')
   id!: string;
@@ -249,7 +269,7 @@ export class Lesson {
 
 @Entity('order')
 @Index(['tenantId', 'userId'])
-@Index(['transactionId'], { unique: true, where: '"transactionId" IS NOT NULL' })
+@Index(['transactionId'], { unique: true })
 export class Order {
   @PrimaryGeneratedColumn('uuid')
   id!: string;
@@ -287,7 +307,7 @@ export class Order {
 @Entity('recharge_order')
 @Index(['tenantId', 'userId'])
 @Index(['outTradeNo'], { unique: true })
-@Index(['transactionId'], { unique: true, where: '"transactionId" IS NOT NULL' })
+@Index(['transactionId'], { unique: true })
 export class RechargeOrder {
   @PrimaryGeneratedColumn('uuid')
   id!: string;
@@ -371,8 +391,12 @@ export class Progress {
 // 题库:学习刷题 / 考试组卷共用。usage 区分用途,courseId 可空(独立题库)。
 @Entity('question')
 @Index(['tenantId', 'usage'])
+@Index(['tenantId', 'usage', 'order'])
+@Index('IDX_question_tenant_order', ['tenantId', 'order'])
 @Index(['tenantId', 'courseId'])
+@Index('IDX_question_tenant_course_order', ['tenantId', 'courseId', 'order'])
 @Index(['tenantId', 'category'])
+@Index('IDX_question_tenant_category_order', ['tenantId', 'category', 'order'])
 export class Question {
   @PrimaryGeneratedColumn('uuid')
   id!: string;
@@ -402,7 +426,7 @@ export class Question {
   @Column()
   answer!: string;
 
-  @Column({ type: 'text', default: '' })
+  @Column({ type: 'text' })
   analysis!: string; // 解析/答案说明
 
   // 题目配图 URL。Excel/WPS 单元格图片导入后写入,学习/考试/错题复盘共用。
@@ -463,9 +487,9 @@ export class ExamAttempt {
   submittedAt!: Date | null;
 }
 
-// 错题本:学员答错的题。唯一 (tenantId,userId,questionId),答对后置 mastered。
+// 错题本:学员答错的题。按来源区分顺序学习/模拟考试,同一题可分别累计。
 @Entity('wrong_question')
-@Index(['tenantId', 'userId', 'questionId'], { unique: true })
+@Index(['tenantId', 'userId', 'questionId', 'source'], { unique: true })
 @Index(['tenantId', 'userId', 'status'])
 export class WrongQuestion {
   @PrimaryGeneratedColumn('uuid')
@@ -479,6 +503,9 @@ export class WrongQuestion {
 
   @Column()
   questionId!: string;
+
+  @Column({ type: 'varchar', default: 'exam' })
+  source!: WrongQuestionSource;
 
   // 累计答错次数。
   @Column({ type: 'integer', default: 1 })
@@ -626,6 +653,7 @@ export const ALL_ENTITIES = [
   Entitlement,
   Progress,
   Question,
+  QuestionCategoryEntity,
   Comment,
   ExamAttempt,
   WrongQuestion,

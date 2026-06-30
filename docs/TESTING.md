@@ -143,3 +143,115 @@ node benchpost.js $tok <lessonId> 200 10   # 进度写压测
 npm --prefix backend-pre run gen:keys
 # 自定义：生成 50 个，有效期 90 天
 npm --prefix backend-pre run gen:keys -- 50 90
+
+## 7. 2026-06-29 200 并发复测与部署容量建议
+
+### 7.1 本地复测条件
+- 后端: NestJS 单进程,端口 8781。
+- 数据库: better-sqlite3 本地文件,用于压测参考;生产已切换为独立 MySQL 服务。
+- 限流: `THROTTLE_LIMIT=100000`,避免测到限流而不是服务容量。
+- 每个接口: 4000 次请求,200 并发。
+
+### 7.2 结果
+| 接口 | 成功率 | QPS | p99 |
+|---|---:|---:|---:|
+| `/health` | 4000/4000 | 4516.5 | 116.0ms |
+| `/auth/me` | 4000/4000 | 2048.0 | 116.6ms |
+| `/courses` | 4000/4000 | 2050.4 | 159.9ms |
+| `/questions?page=1&pageSize=20` | 4000/4000 | 660.6 | 360.5ms |
+| `/forum/topics` | 4000/4000 | 2199.3 | 105.5ms |
+
+### 7.3 结论
+- 200 并发在当前业务量下可以承载,瓶颈主要在题库分页读取。
+- 线上不要用 sqlite。生产数据库使用独立 MySQL,连接池建议从 `DB_POOL_MAX=20` 起步。
+- 200 并发不是 200 QPS。学习类 App 通常 200 人同时在线的真实请求峰值约 20-80 QPS,考试开始/提交时可能短时冲到 100-200 QPS。
+- 云服务器起步建议:应用 2C4G + 数据库 2C4G;更稳妥建议:应用 4C8G + 数据库 4C8G,数据盘 SSD 100GB 起。
+- 如果数据库和应用放同一台机器,建议至少 4C8G;如果需要留出后续增长和导入题库余量,建议 8C16G。
+- 2026-06-29 首次切换 MySQL 配置后,本机连接 `192.168.2.222:3306` 超时,真实 MySQL 压测需先放通网络/防火墙/MySQL 监听。
+
+## 8. 2026-06-29 App 接口压测
+
+### 8.1 条件
+- 后端:当前代码单进程,端口 8785。
+- 数据库:better-sqlite3 本地文件,仅作 App API 基准;真实 MySQL 压测曾被 `192.168.2.222:3306` 超时阻塞。
+- 读接口:4000 次请求,200 并发。
+- 登录/考试开始:800 次请求,50 并发。
+- 发帖/评论写入:100 次请求,10 并发,避免污染测试库。
+
+### 8.2 结果
+| App 接口 | 成功率 | QPS | p99 |
+|---|---:|---:|---:|
+| `POST /auth/login` | 9/800,其余 429 | 736.0 | 764.7ms |
+| `GET /auth/me` | 4000/4000 | 1746.4 | 298.5ms |
+| `GET /questions/categories` | 4000/4000 | 1365.8 | 322.8ms |
+| `GET /questions?usage=study&page=1&pageSize=20` | 4000/4000 | 534.5 | 508.6ms |
+| `GET /questions/:id/answer` | 4000/4000 | 2078.4 | 123.6ms |
+| `GET /exams/history` | 4000/4000 | 2023.6 | 132.1ms |
+| `GET /exams/wrong-book` | 4000/4000 | 1557.9 | 169.4ms |
+| `GET /questions/:id/comments` | 4000/4000 | 2272.8 | 103.6ms |
+| `GET /forum/topics` | 4000/4000 | 2270.5 | 105.6ms |
+| `GET /posts?page=1&pageSize=20` | 4000/4000 | 1237.1 | 214.8ms |
+| `POST /exams/start` | 799/800,1 次 sqlite 500 | 63.2 | 2223.9ms |
+| `POST /posts` | 100/100 | 75.7 | 169.1ms |
+| `POST /questions/:id/comments` | 100/100 | 79.9 | 137.7ms |
+
+### 8.3 结论
+- App 高频读接口整体能覆盖 200 并发;最慢读接口是题目分页,p99 约 509ms。
+- 登录接口命中安全限流,429 是预期结果,不按吞吐能力评价。
+- 考试开始接口最重,会随机抽题并写入考试记录;sqlite 下 50 并发出现 1 次磁盘 I/O 错误。生产必须用 MySQL 后复测。
+- 当前容量建议仍按 MySQL 独立部署:应用 4C8G + MySQL 4C8G 更稳;预算紧张可应用 2C4G + MySQL 2C4G 起步。
+
+## 9. 2026-06-29 真实 MySQL App 接口压测
+
+### 9.1 条件
+- MySQL: `192.168.22.10:3306`, MySQL 8.0.30, database `airacm`。
+- 后端:当前代码单进程,端口 8786,`DB_TYPE=mysql`,`DB_POOL_MAX=20`。
+- 数据量:临时插入 3000 条 `perf-` 题目用于压测;压测结束后已删除临时题目和考试尝试记录。
+- 限流:测试服务调高 `THROTTLE_LIMIT`,避免测到限流。
+
+### 9.2 结果
+| App 接口 | 并发 | 成功率 | QPS | p99 |
+|---|---:|---:|---:|---:|
+| `GET /questions?usage=study&page=1&pageSize=20` | 50 | 1000/1000 | 194.7 | 373.5ms |
+| `GET /questions?usage=study&page=10&pageSize=20` | 50 | 1000/1000 | 180.9 | 430.5ms |
+| `GET /questions?usage=study&page=1&pageSize=20` | 100 | 1000/1000 | 165.2 | 846.6ms |
+| `GET /questions?usage=study&page=10&pageSize=20` | 100 | 1000/1000 | 163.1 | 911.1ms |
+| `GET /questions?usage=study&page=1&pageSize=20` | 200 | 1000/1000 | 199.1 | 1111.0ms |
+| `GET /questions?usage=study&page=10&pageSize=20` | 200 | 1000/1000 | 182.5 | 1313.5ms |
+| `GET /questions/:id/answer` | 200 | 2000/2000 | 1860.4 | 144.9ms |
+| `POST /exams/start` | 50 | 200/200 | 43.2 | 1677.7ms |
+
+### 9.3 调整
+- 题目列表接口不再从数据库读取 `answer/analysis` 两个字段。
+- 新增 `question(tenantId, usage, order)` 和 `question(tenantId, order)` 索引。
+- `EXPLAIN` 已确认列表分页改走 `IDX_question_tenant_order`,不再 `Using filesort`。
+
+### 9.4 服务器评估
+- 4核 CPU、4GB 内存可以作为起步机型,但建议只承担应用服务或轻量应用+MySQL 同机部署。
+- 如果 App 和 MySQL 同机,4C4G 在 200 个同时请求题目分页时已经接近上限,p99 约 1.1-1.3s;真实 200 在线用户通常低于这个压力,可以先用,但余量不大。
+- 更稳妥生产配置:应用 4C4G/4C8G + MySQL 4C8G 分开部署;如果必须单机,建议 4C8G 起步,数据盘用 SSD/NVMe。
+
+## 10. 2026-06-29 题目列表 SQL 优化复测
+
+### 10.1 优化内容
+- 题目列表不再使用 `findAndCount`,改为轻量分页查询 + 总数短 TTL 缓存。
+- 总数缓存增加 in-flight 合并,避免缓存过期瞬间 200 个请求同时打 `COUNT(*)`。
+- MySQL 下题目分页显式使用 `USE INDEX`,避免优化器误选 `tenantId+category` 后 `Using filesort`。
+- 新增筛选分页索引:`question(tenantId, category, order)` 和 `question(tenantId, courseId, order)`。
+
+### 10.2 真实 MySQL 结果
+| App 接口 | 并发 | 成功率 | QPS | p99 |
+|---|---:|---:|---:|---:|
+| `GET /questions?usage=study&page=1&pageSize=20` | 50 | 1000/1000 | 814.7 | 167.4ms |
+| `GET /questions?usage=study&page=10&pageSize=20` | 50 | 1000/1000 | 1279.0 | 48.6ms |
+| `GET /questions?usage=study&category=M1&page=1&pageSize=20` | 50 | 1000/1000 | 1260.4 | 52.5ms |
+| `GET /questions?usage=study&page=1&pageSize=20` | 100 | 1000/1000 | 1124.2 | 156.9ms |
+| `GET /questions?usage=study&page=10&pageSize=20` | 100 | 1000/1000 | 1258.3 | 103.4ms |
+| `GET /questions?usage=study&category=M1&page=1&pageSize=20` | 100 | 1000/1000 | 1072.1 | 143.9ms |
+| `GET /questions?usage=study&page=1&pageSize=20` | 200 | 1000/1000 | 849.4 | 386.5ms |
+| `GET /questions?usage=study&page=10&pageSize=20` | 200 | 1000/1000 | 1069.6 | 221.2ms |
+
+### 10.3 结论
+- 优化前 200 并发题目分页 p99 约 1.1-1.3s;优化后 p99 约 0.22-0.39s。
+- 4C4G 服务器作为应用服务或轻量同机部署更可行;如果题库继续增长到数万题,仍建议 MySQL 独立 4C8G。
+- 关键字搜索仍是潜在瓶颈,因为 `%关键词%` 无法使用普通 BTree 索引;后续题量大时应考虑 MySQL ngram fulltext 或搜索服务。

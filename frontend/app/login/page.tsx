@@ -7,6 +7,7 @@ import { api, setToken } from '@/lib/api';
 const input =
   'w-full rounded-lg border border-ink/15 px-3 py-2 outline-none focus:border-sky focus:ring-2 focus:ring-sky/20';
 const btn = 'rounded-lg bg-steel px-5 py-2 font-medium text-white hover:bg-ink disabled:opacity-50';
+const logoUrl = '/images/maintenance-wing-logo.jpg';
 
 export default function LoginPage() {
   const router = useRouter();
@@ -111,6 +112,14 @@ export default function LoginPage() {
 
   return (
     <main className="mx-auto max-w-md px-6 py-16">
+      <div className="mb-6 flex flex-col items-center text-center">
+        <img
+          src={logoUrl}
+          alt="维修翼站 logo"
+          className="h-24 w-24 rounded-3xl object-cover shadow-sm"
+        />
+        <h1 className="mt-4 text-3xl font-semibold tracking-tight text-ink">维修翼站</h1>
+      </div>
       <div className="mt-3 rounded-2xl bg-white/60 backdrop-blur-xl p-7 shadow-sm ring-1 ring-white/55">
         {needProfile ? (
           <div className="space-y-3">

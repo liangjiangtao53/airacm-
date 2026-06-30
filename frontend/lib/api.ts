@@ -12,6 +12,7 @@ export function assetUrl(path: string): string {
 export type LessonType = 'video' | 'text';
 export type LessonAccess = 'free' | 'paid' | 'vip' | 'password';
 export type QuestionUsage = 'study' | 'exam' | 'both';
+export type WrongQuestionSource = 'study' | 'exam';
 
 export interface Lesson {
   id: string;
@@ -80,8 +81,13 @@ export interface AdminQuestionItem {
   options: QuestionOption[];
   imageUrls?: string[];
   answer: string;
+  analysis: string;
   usage: QuestionUsage;
 }
+
+export type AdminQuestionPatch = Partial<
+  Pick<AdminQuestionItem, 'category' | 'type' | 'stem' | 'options' | 'answer' | 'analysis' | 'usage'>
+>;
 
 export type UserRole = 'user' | 'admin' | 'super';
 
@@ -99,6 +105,12 @@ export interface AdminUser {
   role: UserRole;
   source?: 'key' | 'wechat' | 'register'; // 来源:卡密/微信/手机号注册
   createdAt: string;
+}
+
+export interface ManagedQuestionCategory {
+  id: string;
+  name: string;
+  count: number;
 }
 
 // 考试卷面题目(不含答案)。
@@ -153,6 +165,7 @@ export interface WrongBookItem {
   answer: string;
   analysis: string;
   wrongCount: number;
+  source: WrongQuestionSource;
   lastWrongAt: string;
 }
 
@@ -277,6 +290,8 @@ export const api = {
       body: { phone, nickname },
     }),
   me: () => req<Me>('/auth/me'),
+  changePassword: (oldPassword: string, newPassword: string) =>
+    req<{ ok: true }>('/auth/password', { method: 'POST', body: { oldPassword, newPassword } }),
 
   // ---- 课程 / 学习 ----
   courses: () => req<Course[]>('/courses'),
@@ -306,26 +321,30 @@ export const api = {
   examReview: (attemptId: string) =>
     req<ExamResult & { submittedAt: string | null }>(`/exams/${attemptId}/review`),
   wrongBook: () => req<WrongBookItem[]>('/exams/wrong-book'),
-  masterWrong: (questionId: string) =>
-    req<{ ok: boolean }>(`/exams/wrong-book/${questionId}/master`, { method: 'POST' }),
+  recordStudyWrong: (questionId: string, answer: string) =>
+    req<{ ok: true; recorded: boolean }>('/exams/wrong-book/study', { method: 'POST', body: { questionId, answer } }),
+  masterWrong: (questionId: string, source: WrongQuestionSource = 'exam') =>
+    req<{ ok: boolean }>(`/exams/wrong-book/${questionId}/master`, { method: 'POST', body: { source } }),
   comments: (id: string) => req<CommentItem[]>(`/questions/${id}/comments`),
   addComment: (id: string, content: string) =>
     req<CommentItem>(`/questions/${id}/comments`, { method: 'POST', body: { content } }),
 
   // ---- 交流 ----
   // 论坛主题(任意登录用户可见)。
-  forumTopics: () => req<ForumTopic[]>('/forum/topics'),
+  forumTopics: () => req<ForumTopic[]>('/forum/topics', { auth: false }),
   posts: (params: { topicId?: string; page?: number; pageSize?: number } = {}) => {
     const qs = new URLSearchParams();
     if (params.topicId) qs.set('topicId', params.topicId);
     if (params.page) qs.set('page', String(params.page));
     if (params.pageSize) qs.set('pageSize', String(params.pageSize));
     const suffix = qs.toString() ? `?${qs}` : '';
-    return req<{ items: PostItem[]; total: number; page: number; pageSize: number }>(`/posts${suffix}`);
+    return req<{ items: PostItem[]; total: number; page: number; pageSize: number }>(`/posts${suffix}`, {
+      auth: false,
+    });
   },
   createPost: (content: string, topicId: string) =>
     req<PostItem>('/posts', { method: 'POST', body: { content, topicId } }),
-  postReplies: (id: string) => req<PostReplyItem[]>(`/posts/${id}/replies`),
+  postReplies: (id: string) => req<PostReplyItem[]>(`/posts/${id}/replies`, { auth: false }),
   addPostReply: (id: string, content: string) =>
     req<PostReplyItem>(`/posts/${id}/replies`, { method: 'POST', body: { content } }),
 
@@ -363,10 +382,9 @@ export const api = {
   uploadAppApk: (file: File) => upload<AppApkStatus>('/admin/app/apk', file),
 
   // 题库 Excel 导入:整批指定 usage(仅学习/仅考试/两者)。
-  importQuestions: (file: File, usage: QuestionUsage, category?: string, courseId?: string) => {
+  importQuestions: (file: File, usage: QuestionUsage, category?: string) => {
     const qs = new URLSearchParams({ usage });
     if (category) qs.set('category', category);
-    if (courseId) qs.set('courseId', courseId);
     return upload<ImportResult>(`/admin/questions/import?${qs}`, file);
   },
   // 模板下载地址(GET,浏览器直接打开)。
@@ -374,6 +392,13 @@ export const api = {
 
   // ---- 管理员数据维护 ----
   questionStats: () => req<Array<{ category: string; count: number }>>('/admin/questions/stats'),
+  managedCategories: () => req<ManagedQuestionCategory[]>('/admin/questions/categories'),
+  createQuestionCategory: (name: string) =>
+    req<ManagedQuestionCategory>('/admin/questions/categories', { method: 'POST', body: { name } }),
+  renameQuestionCategory: (id: string, name: string) =>
+    req<ManagedQuestionCategory>(`/admin/questions/categories/${id}`, { method: 'POST', body: { name } }),
+  deleteQuestionCategory: (id: string) =>
+    req<{ deleted: number }>(`/admin/questions/categories/${id}`, { method: 'DELETE' }),
 
   // 进入科目:按关键词搜题(管理端,含答案),分页。
   adminListQuestions: (params: { category?: string; keyword?: string; page?: number; pageSize?: number }) => {
@@ -390,6 +415,8 @@ export const api = {
     req<{ deleted: number }>(`/admin/questions?category=${encodeURIComponent(category)}`, {
       method: 'DELETE',
     }),
+  updateQuestion: (id: string, patch: AdminQuestionPatch) =>
+    req<AdminQuestionItem>(`/admin/questions/${id}`, { method: 'PATCH', body: patch }),
   deleteQuestion: (id: string) =>
     req<{ deleted: number }>(`/admin/questions/${id}`, { method: 'DELETE' }),
 
@@ -400,9 +427,14 @@ export const api = {
       body: { count, ttlDays },
     }),
   accessKeys: () =>
-    req<Array<{ id: string; key: string; status: string; expiresAt: string }>>('/admin/access-keys'),
+    req<Array<{ id: string; key: string; status: string; expiresAt: string; createdAt: string }>>('/admin/access-keys'),
   revokeKey: (id: string) =>
     req<{ ok: boolean }>(`/admin/access-keys/${id}/revoke`, { method: 'POST' }),
+  updateKey: (id: string, ttlDays: number) =>
+    req<{ id: string; key: string; status: string; expiresAt: string; createdAt: string }>(`/admin/access-keys/${id}`, {
+      method: 'POST',
+      body: { ttlDays },
+    }),
   cleanupKeys: () => req<{ deleted: number }>('/admin/access-keys/cleanup', { method: 'DELETE' }),
 
   // 用户管理(超管看全部,业务管理员只看普通用户)
