@@ -495,23 +495,23 @@ export class WrongQuestion {
   @PrimaryGeneratedColumn('uuid')
   id!: string;
 
-  @Column()
+  @Column({ length: 64 })
   tenantId!: string;
 
-  @Column()
+  @Column({ length: 64 })
   userId!: string;
 
-  @Column()
+  @Column({ length: 64 })
   questionId!: string;
 
-  @Column({ type: 'varchar', default: 'exam' })
+  @Column({ type: 'varchar', length: 16, default: 'exam' })
   source!: WrongQuestionSource;
 
   // 累计答错次数。
   @Column({ type: 'integer', default: 1 })
   wrongCount!: number;
 
-  @Column({ type: 'varchar', default: 'open' })
+  @Column({ type: 'varchar', length: 16, default: 'open' })
   status!: 'open' | 'mastered';
 
   @Column({ type: TS_TYPE })
