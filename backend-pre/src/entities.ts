@@ -506,6 +506,45 @@ export class ExamAttempt {
   submittedAt!: Date | null;
 }
 
+// 用户题目练习记录:专题学习和模拟考试都会写入,用于新题/原题/错题混合出题。
+@Entity('question_practice')
+@Index(['tenantId', 'userId', 'questionId'], { unique: true })
+@Index(['tenantId', 'userId', 'lastSeenAt'])
+export class QuestionPractice {
+  @PrimaryGeneratedColumn('uuid')
+  id!: string;
+
+  @Column({ length: 64 })
+  tenantId!: string;
+
+  @Column({ length: 64 })
+  userId!: string;
+
+  @Column({ length: 64 })
+  questionId!: string;
+
+  @Column({ type: 'integer', default: 0 })
+  seenCount!: number;
+
+  @Column({ type: 'integer', default: 0 })
+  correctCount!: number;
+
+  @Column({ type: 'integer', default: 0 })
+  wrongCount!: number;
+
+  @Column({ type: TS_TYPE, nullable: true })
+  lastSeenAt!: Date | null;
+
+  @Column({ type: TS_TYPE, nullable: true })
+  lastCorrectAt!: Date | null;
+
+  @Column({ type: TS_TYPE, nullable: true })
+  lastWrongAt!: Date | null;
+
+  @UpdateDateColumn()
+  updatedAt!: Date;
+}
+
 // 错题本:学员答错的题。按来源区分顺序学习/模拟考试,同一题可分别累计。
 @Entity('wrong_question')
 @Index(['tenantId', 'userId', 'questionId', 'source'], { unique: true })
@@ -676,6 +715,7 @@ export const ALL_ENTITIES = [
   QuestionCategoryEntity,
   Comment,
   ExamAttempt,
+  QuestionPractice,
   WrongQuestion,
   AccessKey,
   Post,

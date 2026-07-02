@@ -19,7 +19,7 @@ import request from 'supertest';
 import * as XLSX from 'xlsx';
 import { AppModule } from '../src/app.module';
 import { AuthUser, signToken } from '../src/common';
-import { AccessKey, Question, QuestionUsage, User, Wallet } from '../src/entities';
+import { AccessKey, Question, QuestionPractice, QuestionUsage, User, Wallet, WrongQuestion } from '../src/entities';
 import { SmsService } from '../src/modules/sms';
 
 const TENANT = 't1';
@@ -409,6 +409,179 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
       expect(hist.status).toBe(200);
       expect(hist.body.data).toHaveLength(1);
       expect(hist.body.data[0].score).toBe(100);
+    });
+  });
+
+  describe('adaptive question picking', () => {
+    async function seedQuestions(prefix: string, count: number, usage: QuestionUsage, category: string, courseId: string | null) {
+      const repo = ds.getRepository(Question);
+      return repo.save(
+        Array.from({ length: count }, (_, i) =>
+          repo.create({
+            tenantId: TENANT,
+            courseId,
+            category,
+            type: 'single',
+            stem: `${prefix}-${i + 1}`,
+            options: [
+              { key: 'A', text: 'A' },
+              { key: 'B', text: 'B' },
+            ],
+            answer: 'A',
+            analysis: `${prefix} analysis`,
+            usage,
+            order: i + 1,
+          }),
+        ),
+      );
+    }
+
+    function countByPrefix(rows: Array<{ stem: string }>, prefix: string): number {
+      return rows.filter((q) => q.stem.startsWith(prefix)).length;
+    }
+
+    it('exam start mixes new, review, and wrong questions instead of pure random', async () => {
+      const admin = await makeUser('admin');
+      const user = await makeUser('user');
+      const category = `ADAPTIVE-EXAM-${phoneSeq++}`;
+      const courseId = `adaptive-course-${phoneSeq++}`;
+      const fresh = await seedQuestions('EXAM-NEW', 12, 'exam', category, courseId);
+      const review = await seedQuestions('EXAM-REVIEW', 5, 'exam', category, courseId);
+      const wrong = await seedQuestions('EXAM-WRONG', 3, 'exam', category, courseId);
+      const now = new Date();
+
+      await ds.getRepository(QuestionPractice).save(
+        review.map((q) =>
+          ds.getRepository(QuestionPractice).create({
+            tenantId: TENANT,
+            userId: user.user.userId,
+            questionId: q.id,
+            seenCount: 1,
+            correctCount: 1,
+            wrongCount: 0,
+            lastSeenAt: now,
+            lastCorrectAt: now,
+            lastWrongAt: null,
+          }),
+        ),
+      );
+      await ds.getRepository(WrongQuestion).save(
+        wrong.map((q, i) =>
+          ds.getRepository(WrongQuestion).create({
+            tenantId: TENANT,
+            userId: user.user.userId,
+            questionId: q.id,
+            source: 'exam',
+            wrongCount: i + 1,
+            status: 'open',
+            lastWrongAt: now,
+          }),
+        ),
+      );
+
+      await request(app.getHttpServer())
+        .patch('/admin/exam/rule')
+        .set('Authorization', `Bearer ${admin.token}`)
+        .send({ totalCount: 10 });
+      const start = await request(app.getHttpServer())
+        .post('/exams/start')
+        .set('Authorization', `Bearer ${user.token}`)
+        .send({ category });
+      await request(app.getHttpServer())
+        .patch('/admin/exam/rule')
+        .set('Authorization', `Bearer ${admin.token}`)
+        .send({ totalCount: 100 });
+
+      const questions = start.body.data.questions as Array<{ stem: string }>;
+      expect(start.status).toBe(201);
+      expect(questions).toHaveLength(10);
+      expect(countByPrefix(questions, 'EXAM-NEW')).toBe(6);
+      expect(countByPrefix(questions, 'EXAM-REVIEW')).toBe(3);
+      expect(countByPrefix(questions, 'EXAM-WRONG')).toBe(1);
+      expect(fresh).toHaveLength(12);
+    });
+
+    it('study list uses the same mix but stays inside the selected category', async () => {
+      const user = await makeUser('user');
+      const category = `ADAPTIVE-STUDY-${phoneSeq++}`;
+      const otherCategory = `ADAPTIVE-STUDY-OTHER-${phoneSeq++}`;
+      await seedQuestions('STUDY-NEW', 12, 'study', category, null);
+      const review = await seedQuestions('STUDY-REVIEW', 5, 'study', category, null);
+      const wrong = await seedQuestions('STUDY-WRONG', 3, 'study', category, null);
+      await seedQuestions('STUDY-OTHER', 5, 'study', otherCategory, null);
+      const now = new Date();
+
+      await ds.getRepository(QuestionPractice).save(
+        review.map((q) =>
+          ds.getRepository(QuestionPractice).create({
+            tenantId: TENANT,
+            userId: user.user.userId,
+            questionId: q.id,
+            seenCount: 1,
+            correctCount: 1,
+            wrongCount: 0,
+            lastSeenAt: now,
+            lastCorrectAt: now,
+            lastWrongAt: null,
+          }),
+        ),
+      );
+      await ds.getRepository(WrongQuestion).save(
+        wrong.map((q, i) =>
+          ds.getRepository(WrongQuestion).create({
+            tenantId: TENANT,
+            userId: user.user.userId,
+            questionId: q.id,
+            source: 'study',
+            wrongCount: i + 1,
+            status: 'open',
+            lastWrongAt: now,
+          }),
+        ),
+      );
+
+      const res = await request(app.getHttpServer())
+        .get(`/questions?usage=study&category=${encodeURIComponent(category)}&pageSize=10`)
+        .set('Authorization', `Bearer ${user.token}`);
+
+      const items = res.body.data.items as Array<{ stem: string; category: string }>;
+      expect(res.status).toBe(200);
+      expect(items).toHaveLength(10);
+      expect(items.every((q) => q.category === category)).toBe(true);
+      expect(countByPrefix(items, 'STUDY-NEW')).toBe(6);
+      expect(countByPrefix(items, 'STUDY-REVIEW')).toBe(3);
+      expect(countByPrefix(items, 'STUDY-WRONG')).toBe(1);
+      expect(countByPrefix(items, 'STUDY-OTHER')).toBe(0);
+    });
+
+    it('study answer tracking accumulates repeated answers on one practice row', async () => {
+      const user = await makeUser('user');
+      const category = `ADAPTIVE-TRACK-${phoneSeq++}`;
+      const [q] = await seedQuestions('STUDY-TRACK', 1, 'study', category, null);
+
+      const [first, second] = await Promise.all([
+        request(app.getHttpServer())
+          .post('/exams/wrong-book/study')
+          .set('Authorization', `Bearer ${user.token}`)
+          .send({ questionId: q.id, answer: 'A' }),
+        request(app.getHttpServer())
+          .post('/exams/wrong-book/study')
+          .set('Authorization', `Bearer ${user.token}`)
+          .send({ questionId: q.id, answer: 'A' }),
+      ]);
+
+      expect(first.status).toBe(201);
+      expect(second.status).toBe(201);
+      const rows = await ds.getRepository(QuestionPractice).find({
+        where: { tenantId: TENANT, userId: user.user.userId, questionId: q.id },
+      });
+      expect(rows).toHaveLength(1);
+      expect(rows[0].seenCount).toBe(2);
+      expect(rows[0].correctCount).toBe(2);
+      expect(rows[0].wrongCount).toBe(0);
+      expect(rows[0].lastSeenAt).toBeTruthy();
+      expect(rows[0].lastCorrectAt).toBeTruthy();
+      expect(rows[0].lastWrongAt).toBeNull();
     });
   });
 

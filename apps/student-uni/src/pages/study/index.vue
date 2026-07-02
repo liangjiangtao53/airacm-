@@ -62,7 +62,7 @@ async function reveal(id: string) {
     const result = await api.questionAnswer(id);
     answers.value[id] = result;
     const pickedKey = [...(picked.value[id] || [])].sort().join('');
-    if (pickedKey && pickedKey !== result.answer) {
+    if (pickedKey) {
       await api.recordStudyWrong(id, pickedKey);
     }
   } catch (e) {

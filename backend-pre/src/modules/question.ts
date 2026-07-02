@@ -29,15 +29,19 @@ import { basename, extname, join } from 'path';
 import * as XLSX from 'xlsx';
 import {
   Comment,
+  ExamAttempt,
   Question,
   QuestionCategoryEntity,
   QuestionOption,
+  QuestionPractice,
   QuestionUsage,
   QUESTION_CATEGORIES,
   User,
+  WrongQuestion,
 } from '../entities';
 import { AuthUser, CurrentUser, JwtAuthGuard, Roles, RolesGuard } from '../common';
 import { env } from '../config';
+import { AdaptiveQuestionState, orderAdaptiveQuestions } from './question-picking';
 
 // 上传文件最小形状(避免引入 @types/multer)。FileInterceptor 默认内存存储提供 buffer。
 interface UploadedQuestionFile {
@@ -221,6 +225,9 @@ export class QuestionService {
     private readonly categories: Repository<QuestionCategoryEntity>,
     @InjectRepository(Comment) private readonly comments: Repository<Comment>,
     @InjectRepository(User) private readonly users: Repository<User>,
+    @InjectRepository(ExamAttempt) private readonly attempts: Repository<ExamAttempt>,
+    @InjectRepository(WrongQuestion) private readonly wrongBookRepo: Repository<WrongQuestion>,
+    @InjectRepository(QuestionPractice) private readonly practices: Repository<QuestionPractice>,
   ) {}
 
   private clearQuestionListCountCache(tenantId: string): void {
@@ -653,28 +660,19 @@ export class QuestionService {
       if (q.courseId) baseQb.andWhere('q.courseId = :courseId', { courseId: q.courseId });
       if (q.keyword?.trim()) baseQb.andWhere('q.stem LIKE :keyword', { keyword: `%${q.keyword.trim()}%` });
 
-      const rowsQb = baseQb
-        .clone()
-        // 列表页不下发 answer/analysis,也不从数据库读取这两个大字段,降低 App 高并发刷题列表压力。
-        .select([
-          'q.id',
-          'q.tenantId',
-          'q.category',
-          'q.courseId',
-          'q.type',
-          'q.stem',
-          'q.options',
-          'q.imageUrls',
-          'q.usage',
-          'q.order',
-          'q.createdAt',
-        ])
-        .orderBy('q.order', 'ASC')
-        .skip((page - 1) * pageSize)
-        .take(pageSize);
-      const dbType = this.questions.manager.connection.options.type;
-      if (dbType === 'mysql' || dbType === 'mariadb') rowsQb.useIndex(this.questionListIndex(q));
-
+      const publicSelect = [
+        'q.id',
+        'q.tenantId',
+        'q.category',
+        'q.courseId',
+        'q.type',
+        'q.stem',
+        'q.options',
+        'q.imageUrls',
+        'q.usage',
+        'q.order',
+        'q.createdAt',
+      ];
       const countCacheKey = [
         user.tenantId,
         q.usage ?? '',
@@ -682,13 +680,53 @@ export class QuestionService {
         q.courseId ?? '',
         q.keyword?.trim() ?? '',
       ].join('|');
-      const [rows, total] = await Promise.all([
-        rowsQb.getMany(),
-        this.cachedQuestionListTotal(countCacheKey, () => baseQb.clone().getCount()),
-      ]);
+      const total = await this.cachedQuestionListTotal(countCacheKey, () => baseQb.clone().getCount());
+
+      if (q.usage === 'study' && q.category && !q.keyword?.trim()) {
+        const allRowsQb = baseQb.clone().select(publicSelect).orderBy('q.order', 'ASC');
+        const dbType = this.questions.manager.connection.options.type;
+        if (dbType === 'mysql' || dbType === 'mariadb') allRowsQb.useIndex(this.questionListIndex(q));
+        const allRows = await allRowsQb.getMany();
+        const state = await this.loadAdaptiveQuestionState(user, allRows);
+        const rows = orderAdaptiveQuestions(allRows, state).slice((page - 1) * pageSize, page * pageSize);
+        const items = rows.map(({ answer: _a, analysis: _an, ...rest }) => rest);
+        return { items, total, page, pageSize };
+      }
+
+      const rowsQb = baseQb
+        .clone()
+        // 列表页不下发 answer/analysis,也不从数据库读取这两个大字段,降低 App 高并发刷题列表压力。
+        .select(publicSelect)
+        .orderBy('q.order', 'ASC')
+        .skip((page - 1) * pageSize)
+        .take(pageSize);
+      const dbType = this.questions.manager.connection.options.type;
+      if (dbType === 'mysql' || dbType === 'mariadb') rowsQb.useIndex(this.questionListIndex(q));
+
+      const rows = await rowsQb.getMany();
       const items = rows.map(({ answer: _a, analysis: _an, ...rest }) => rest);
       return { items, total, page, pageSize };
     }
+  }
+
+  // 读取用户历史练习/考试/错题状态,用于专题学习按新题/原题/错题混合排序。
+  private async loadAdaptiveQuestionState(user: AuthUser, pool: Question[]): Promise<AdaptiveQuestionState> {
+    const ids = pool.map((q) => q.id);
+    if (ids.length === 0) return { attempts: [], practices: [], wrongs: [] };
+    const [attempts, practices, wrongs] = await Promise.all([
+      this.attempts.find({
+        where: { tenantId: user.tenantId, userId: user.userId, status: 'submitted' },
+        order: { submittedAt: 'DESC' },
+        take: 50,
+      }),
+      this.practices.find({
+        where: { tenantId: user.tenantId, userId: user.userId, questionId: In(ids) },
+      }),
+      this.wrongBookRepo.find({
+        where: { tenantId: user.tenantId, userId: user.userId, questionId: In(ids) },
+      }),
+    ]);
+    return { attempts, practices, wrongs };
   }
 
   // 查看答案:单独端点,返回正确答案 + 解析。
@@ -1038,7 +1076,7 @@ export class QuestionImageController {
 }
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Question, QuestionCategoryEntity, Comment, User])],
+  imports: [TypeOrmModule.forFeature([Question, QuestionCategoryEntity, Comment, User, ExamAttempt, WrongQuestion, QuestionPractice])],
   controllers: [QuestionAdminController, QuestionController, QuestionImageController],
   providers: [QuestionService],
 })
