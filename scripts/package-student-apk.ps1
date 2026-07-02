@@ -1,8 +1,8 @@
 param(
   [string]$AndroidHome = "D:\AndroidLab\android-sdk",
   [string]$OutDir = "D:\AndroidLab\apk",
-  [string]$ApiBase = "https://nickjian.dpdns.org/api",
-  [string]$DownloadBase = "https://nickjian.dpdns.org"
+  [string]$ApiBase = "http://49.235.145.149/api",
+  [string]$DownloadBase = "http://49.235.145.149"
 )
 
 $ErrorActionPreference = "Stop"

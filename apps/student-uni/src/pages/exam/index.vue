@@ -5,7 +5,6 @@ import { api, assetUrl, requireLogin, type ExamResult, type PaperQuestion } from
 
 const categories = ref<string[]>([]);
 const category = ref('');
-const count = ref('10');
 const phase = ref<'idle' | 'taking' | 'result'>('idle');
 const attemptId = ref('');
 const questions = ref<PaperQuestion[]>([]);
@@ -31,8 +30,7 @@ async function start() {
   if (!requireLogin()) return;
   busy.value = true;
   try {
-    const n = Math.max(1, Math.min(100, Number(count.value) || 10));
-    const paper = await api.startExam(category.value || undefined, n);
+    const paper = await api.startExam(category.value || undefined);
     attemptId.value = paper.attemptId;
     questions.value = paper.questions;
     answers.value = {};
@@ -92,7 +90,6 @@ onShow(() => {
       <picker mode="selector" :range="['全部科目', ...categories]" @change="changeCategory">
         <view class="select">{{ category || '全部科目' }}</view>
       </picker>
-      <input v-model="count" class="input" type="number" placeholder="题目数量" />
       <button class="btn" :loading="busy" @tap="start">开始考试</button>
     </view>
 

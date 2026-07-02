@@ -31,6 +31,25 @@ export type QuestionType = 'single' | 'multiple';
 export type QuestionUsage = 'study' | 'exam' | 'both';
 export type WrongQuestionSource = 'study' | 'exam';
 
+@Entity('exam_paper_rule')
+@Index(['tenantId'], { unique: true })
+export class ExamPaperRule {
+  @PrimaryGeneratedColumn('uuid')
+  id!: string;
+
+  @Column()
+  tenantId!: string;
+
+  @Column({ type: 'integer', default: 100 })
+  totalCount!: number;
+
+  @CreateDateColumn()
+  createdAt!: Date;
+
+  @UpdateDateColumn()
+  updatedAt!: Date;
+}
+
 export interface QuestionOption {
   key: string; // A / B / C / D
   text: string;
@@ -653,6 +672,7 @@ export const ALL_ENTITIES = [
   Entitlement,
   Progress,
   Question,
+  ExamPaperRule,
   QuestionCategoryEntity,
   Comment,
   ExamAttempt,

@@ -10,7 +10,6 @@ type Phase = 'idle' | 'taking' | 'result';
 export default function ExamPage() {
   const router = useRouter();
   const [phase, setPhase] = useState<Phase>('idle');
-  const [count, setCount] = useState('10');
   const [categories, setCategories] = useState<string[]>([]);
   const [category, setCategory] = useState('');
   const [attemptId, setAttemptId] = useState('');
@@ -32,7 +31,7 @@ export default function ExamPage() {
     setErr('');
     setBusy(true);
     try {
-      const r = await api.startExam(undefined, Number(count) || 10, category || undefined);
+      const r = await api.startExam(undefined, category || undefined);
       setAttemptId(r.attemptId);
       setQuestions(r.questions);
       setAnswers({});
@@ -97,15 +96,6 @@ export default function ExamPage() {
                   </option>
                 ))}
               </select>
-            </div>
-            <div className="w-28">
-              <label className="mb-1 block text-xs text-ink/60">题目数量</label>
-              <input
-                className="w-full rounded-lg border border-ink/15 px-3 py-2 outline-none focus:border-sky"
-                value={count}
-                onChange={(e) => setCount(e.target.value)}
-                inputMode="numeric"
-              />
             </div>
             <button
               onClick={start}

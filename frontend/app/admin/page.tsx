@@ -7,6 +7,7 @@ import {
   getToken,
   type AdminUser,
   type AppApkStatus,
+  type ExamPaperRule,
   type ForumTopic,
   type ImportResult,
   type ManagedQuestionCategory,
@@ -76,6 +77,11 @@ export default function AdminPage() {
   const [apkStatus, setApkStatus] = useState<AppApkStatus | null>(null);
   const [apkMsg, setApkMsg] = useState('');
 
+  // 模拟考试组卷规则(admin + super)
+  const [examRule, setExamRule] = useState<ExamPaperRule | null>(null);
+  const [examRuleCount, setExamRuleCount] = useState('100');
+  const [examRuleMsg, setExamRuleMsg] = useState('');
+
   // 数据维护
   const [stats, setStats] = useState<Array<{ category: string; count: number }>>([]);
   const [keys, setKeys] = useState<AccessKeyRow[]>([]);
@@ -120,6 +126,10 @@ export default function AdminPage() {
         api.managedCategories().then(setManagedCategories).catch(() => undefined);
         api.questionStats().then(setStats).catch(() => undefined);
         api.appApkStatus().then(setApkStatus).catch(() => undefined);
+        api.examRule().then((r) => {
+          setExamRule(r);
+          setExamRuleCount(String(r.totalCount));
+        }).catch(() => undefined);
         api.users().then(setUsers).catch(() => undefined);
         api.forumTopics().then(setTopics).catch(() => undefined);
         // 卡密仅 super 可见
@@ -234,6 +244,17 @@ export default function AdminPage() {
     setApkStatus(status);
     setApkFile(null);
     setApkMsg('App 安装包已上传');
+  });
+
+  const saveExamRule = wrap(async () => {
+    const totalCount = Number(examRuleCount);
+    if (!Number.isInteger(totalCount) || totalCount < 1 || totalCount > 100) {
+      throw new Error('模拟考试题目数必须是 1-100 的整数');
+    }
+    const saved = await api.updateExamRule(totalCount);
+    setExamRule(saved);
+    setExamRuleCount(String(saved.totalCount));
+    setExamRuleMsg(`组卷规则已保存:每次模拟考试 ${saved.totalCount} 道题`);
   });
 
   // 模板下载:端点需鉴权,普通 <a> 不带 token,改为带鉴权头取 blob 下载。
@@ -505,6 +526,31 @@ export default function AdminPage() {
             </div>
           </Card>
         )}
+
+        <Card title="模拟考试组卷规则">
+          <div className="space-y-3">
+            <div className="rounded-lg bg-mist p-3 text-sm text-ink/70">
+              当前规则:每次模拟考试{' '}
+              <span className="font-semibold text-ink">{examRule?.totalCount ?? 100}</span> 道题。
+            </div>
+            <div className="flex flex-wrap items-end gap-3">
+              <div className="w-36">
+                <label className="mb-1 block text-xs text-ink/60">题目数</label>
+                <input
+                  className={input}
+                  value={examRuleCount}
+                  inputMode="numeric"
+                  onChange={(e) => setExamRuleCount(e.target.value)}
+                />
+              </div>
+              <button className={btn} onClick={saveExamRule}>
+                保存规则
+              </button>
+            </div>
+            <p className="text-xs text-ink/45">用户端不能修改题目数;没有配置时默认 100 道题。</p>
+            {examRuleMsg && <p className="text-sm text-sky">{examRuleMsg}</p>}
+          </div>
+        </Card>
 
         {/* App 安装包:admin + super */}
         <Card title="App 安装包">

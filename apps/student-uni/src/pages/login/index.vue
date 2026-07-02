@@ -17,6 +17,21 @@ function toast(message: string) {
   uni.showToast({ title: message, icon: 'none' });
 }
 
+function pasteKey() {
+  uni.getClipboardData({
+    success: (res) => {
+      const text = String(res.data || '').trim();
+      if (!text) {
+        toast('剪贴板为空');
+        return;
+      }
+      key.value = text;
+      toast('已粘贴卡密');
+    },
+    fail: () => toast('无法读取剪贴板'),
+  });
+}
+
 async function submit() {
   if (loading.value) return;
   loading.value = true;
@@ -62,7 +77,10 @@ async function submit() {
       </view>
 
       <view v-if="mode === 'key'" class="fields">
-        <input v-model="key" class="input" placeholder="请输入卡密" />
+        <view class="key-row">
+          <input v-model="key" class="input key-input" placeholder="请输入卡密" />
+          <button class="paste-btn" @tap="pasteKey">粘贴</button>
+        </view>
       </view>
       <view v-else class="fields">
         <input v-model="phone" class="input" type="number" placeholder="手机号" />
@@ -136,6 +154,31 @@ async function submit() {
   display: flex;
   flex-direction: column;
   gap: 20rpx;
+}
+
+.key-row {
+  align-items: center;
+  display: flex;
+  gap: 16rpx;
+}
+
+.key-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.paste-btn {
+  align-items: center;
+  background: rgba(31, 111, 235, 0.1);
+  border-radius: 18rpx;
+  color: #1f6feb;
+  display: flex;
+  flex: 0 0 132rpx;
+  font-size: 28rpx;
+  font-weight: 700;
+  justify-content: center;
+  min-height: 88rpx;
+  padding: 0;
 }
 
 .submit {

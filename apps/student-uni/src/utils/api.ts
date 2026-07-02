@@ -175,7 +175,7 @@ function request<T>(
         }
         resolve(env.data as T);
       },
-      fail: (err) => reject(new Error(err.errMsg || '网络请求失败')),
+      fail: (err) => reject(new Error(`网络连接失败: ${err.errMsg || '请检查服务器地址或网络'}`)),
     });
   });
 }
@@ -202,8 +202,8 @@ export const api = {
     return request<{ items: QuestionItem[]; total: number; page: number; pageSize: number }>(`/questions${qs}`);
   },
   questionAnswer: (id: string) => request<{ answer: string; analysis: string }>(`/questions/${id}/answer`),
-  startExam: (category?: string, count?: number) =>
-    request<ExamStart>('/exams/start', { method: 'POST', data: { category, count } }),
+  startExam: (category?: string) =>
+    request<ExamStart>('/exams/start', { method: 'POST', data: { category } }),
   submitExam: (attemptId: string, answers: Record<string, string>) =>
     request<ExamResult>(`/exams/${attemptId}/submit`, { method: 'POST', data: { answers } }),
   examHistory: () => request<ExamAttemptSummary[]>('/exams/history'),

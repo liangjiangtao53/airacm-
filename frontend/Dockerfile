@@ -2,7 +2,7 @@
 FROM node:22-slim AS builder
 WORKDIR /app
 COPY package*.json ./
-RUN npm ci
+RUN npm config set registry https://registry.npmmirror.com && npm ci
 COPY . .
 # NEXT_PUBLIC_* 在构建时嵌入产物;同域反代下 API 走 /api。
 ARG NEXT_PUBLIC_API_BASE=/api

@@ -335,6 +335,41 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
       expect(sub.body.data.details.every((d: { isCorrect: boolean }) => d.isCorrect)).toBe(true);
     });
 
+    it('admin can set exam rule, users cannot, and client count is ignored', async () => {
+      const admin = await makeUser('admin');
+      const user = await makeUser('user');
+
+      const denied = await request(app.getHttpServer())
+        .patch('/admin/exam/rule')
+        .set('Authorization', `Bearer ${user.token}`)
+        .send({ totalCount: 2 });
+      expect(denied.status).toBe(401);
+
+      const saved = await request(app.getHttpServer())
+        .patch('/admin/exam/rule')
+        .set('Authorization', `Bearer ${admin.token}`)
+        .send({ totalCount: 2 });
+      expect(saved.status).toBe(200);
+      expect(saved.body.data.totalCount).toBe(2);
+
+      const current = await request(app.getHttpServer())
+        .get('/admin/exam/rule')
+        .set('Authorization', `Bearer ${admin.token}`);
+      expect(current.body.data.totalCount).toBe(2);
+
+      const start = await request(app.getHttpServer())
+        .post('/exams/start')
+        .set('Authorization', `Bearer ${user.token}`)
+        .send({ courseId: COURSE, count: 1 });
+      expect(start.status).toBe(201);
+      expect(start.body.data.questions).toHaveLength(2);
+
+      await request(app.getHttpServer())
+        .patch('/admin/exam/rule')
+        .set('Authorization', `Bearer ${admin.token}`)
+        .send({ totalCount: 100 });
+    });
+
     it('全错得 0,且不可重复交卷', async () => {
       const { token } = await makeUser('user');
       const start = await request(app.getHttpServer())

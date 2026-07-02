@@ -36,7 +36,7 @@ public class MainActivity extends Activity {
     });
     webView.setWebViewClient(new WebViewClient());
     setContentView(webView);
-    // 生产包统一走公网域名,由 nginx 将 /api 反向代理到后端,避免 App 继续依赖内网 IP。
-    webView.loadUrl("file:///android_asset/www/index.html?platform=app&apiBase=https%3A%2F%2Fnickjian.dpdns.org%2Fapi&downloadBase=https%3A%2F%2Fnickjian.dpdns.org#/pages/index/index");
+    // 域名 HTTPS 当前被云侧拦截,App 临时走公网 IP 的 HTTP;域名放行后再切回 HTTPS 域名。
+    webView.loadUrl("file:///android_asset/www/index.html?platform=app&apiBase=http%3A%2F%2F49.235.145.149%2Fapi&downloadBase=http%3A%2F%2F49.235.145.149#/pages/index/index");
   }
 }

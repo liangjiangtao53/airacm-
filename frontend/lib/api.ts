@@ -113,6 +113,10 @@ export interface ManagedQuestionCategory {
   count: number;
 }
 
+export interface ExamPaperRule {
+  totalCount: number;
+}
+
 // 考试卷面题目(不含答案)。
 export interface PaperQuestion {
   id: string;
@@ -313,8 +317,8 @@ export const api = {
   questionAnswer: (id: string) => req<{ answer: string; analysis: string }>(`/questions/${id}/answer`),
 
   // ---- 考试 ----
-  startExam: (courseId?: string, count?: number, category?: string) =>
-    req<ExamStart>('/exams/start', { method: 'POST', body: { courseId, count, category } }),
+  startExam: (courseId?: string, category?: string) =>
+    req<ExamStart>('/exams/start', { method: 'POST', body: { courseId, category } }),
   submitExam: (attemptId: string, answers: Record<string, string>) =>
     req<ExamResult>(`/exams/${attemptId}/submit`, { method: 'POST', body: { answers } }),
   examHistory: () => req<ExamAttemptSummary[]>('/exams/history'),
@@ -380,6 +384,10 @@ export const api = {
 
   appApkStatus: () => req<AppApkStatus>('/admin/app/apk'),
   uploadAppApk: (file: File) => upload<AppApkStatus>('/admin/app/apk', file),
+
+  examRule: () => req<ExamPaperRule>('/admin/exam/rule'),
+  updateExamRule: (totalCount: number) =>
+    req<ExamPaperRule>('/admin/exam/rule', { method: 'PATCH', body: { totalCount } }),
 
   // 题库 Excel 导入:整批指定 usage(仅学习/仅考试/两者)。
   importQuestions: (file: File, usage: QuestionUsage, category?: string) => {

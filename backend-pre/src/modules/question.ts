@@ -909,7 +909,8 @@ export class QuestionAdminController {
   constructor(private readonly svc: QuestionService) {}
 
   @Post('import')
-  @UseInterceptors(FileInterceptor('file'))
+  // 题库文件可能包含大量图片,与 nginx 的导入上传上限保持一致。
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 150 * 1024 * 1024 } }))
   import(
     @CurrentUser() admin: AuthUser,
     @UploadedFile() file: UploadedQuestionFile,

@@ -2,7 +2,8 @@
 FROM node:22-slim AS builder
 WORKDIR /app
 COPY package*.json ./
-RUN npm ci --omit=optional
+# better-sqlite3 只用于本地/测试路径；生产镜像构建不需要运行它的 native install 脚本。
+RUN npm config set registry https://registry.npmmirror.com && npm ci --omit=optional --ignore-scripts
 COPY tsconfig*.json nest-cli.json ./
 COPY src ./src
 RUN npm run build
@@ -13,7 +14,7 @@ WORKDIR /app
 ENV NODE_ENV=production
 # 仅装生产依赖,跳过 optional(better-sqlite3,生产用 pg 无需原生编译)。
 COPY package*.json ./
-RUN npm ci --omit=dev --omit=optional && npm cache clean --force
+RUN npm config set registry https://registry.npmmirror.com && npm ci --omit=dev --omit=optional && npm cache clean --force
 COPY --from=builder /app/dist ./dist
 # 以非 root 运行(node 镜像内置 node 用户)。
 USER node

@@ -5,6 +5,7 @@ import {
   Injectable,
   Module,
   Param,
+  Patch,
   Post,
   UseGuards,
   BadRequestException,
@@ -13,10 +14,10 @@ import {
 import { InjectRepository, TypeOrmModule } from '@nestjs/typeorm';
 import { In, QueryFailedError, Repository } from 'typeorm';
 import { IsInt, IsObject, IsOptional, IsString, Max, Min } from 'class-validator';
-import { ExamAttempt, Question, QuestionOption, WrongQuestion, WrongQuestionSource } from '../entities';
-import { AuthUser, CurrentUser, JwtAuthGuard } from '../common';
+import { ExamAttempt, ExamPaperRule, Question, QuestionOption, WrongQuestion, WrongQuestionSource } from '../entities';
+import { AuthUser, CurrentUser, JwtAuthGuard, Roles, RolesGuard } from '../common';
 
-const DEFAULT_COUNT = 10;
+const DEFAULT_COUNT = 100;
 const MAX_COUNT = 100;
 
 class StartExamDto {
@@ -33,7 +34,15 @@ class StartExamDto {
   @IsInt()
   @Min(1)
   @Max(MAX_COUNT)
+  // Kept only for old clients; start() ignores it and uses the admin rule.
   count?: number;
+}
+
+class UpdateExamRuleDto {
+  @IsInt()
+  @Min(1)
+  @Max(MAX_COUNT)
+  totalCount!: number;
 }
 
 class SubmitExamDto {
@@ -107,23 +116,28 @@ export class ExamService {
     @InjectRepository(Question) private readonly questions: Repository<Question>,
     @InjectRepository(ExamAttempt) private readonly attempts: Repository<ExamAttempt>,
     @InjectRepository(WrongQuestion) private readonly wrongBookRepo: Repository<WrongQuestion>,
+    @InjectRepository(ExamPaperRule) private readonly rules: Repository<ExamPaperRule>,
   ) {}
+
+  async getRule(tenantId: string): Promise<{ totalCount: number }> {
+    const row = await this.rules.findOne({ where: { tenantId } });
+    return { totalCount: row?.totalCount ?? DEFAULT_COUNT };
+  }
+
+  async updateRule(user: AuthUser, totalCount: number): Promise<{ totalCount: number }> {
+    // 原来是先查再新增；首次并发保存可能撞 tenantId 唯一索引，这里改成数据库 upsert。
+    await this.rules.upsert({ tenantId: user.tenantId, totalCount }, ['tenantId']);
+    return this.getRule(user.tenantId);
+  }
 
   // 组卷:从 usage 含 exam 的题池随机抽 count 道,建作答记录,返回不含答案的卷面。
   async start(
     user: AuthUser,
     dto: StartExamDto,
   ): Promise<{ attemptId: string; total: number; questions: PaperQuestion[] }> {
-    const where: Record<string, unknown> = { tenantId: user.tenantId, usage: In(['exam', 'both']) };
-    if (dto.courseId) where.courseId = dto.courseId;
-    if (dto.category) where.category = dto.category;
-
-    const pool = await this.questions.find({ where });
-    if (pool.length === 0) throw new BadRequestException('暂无考试题目');
-
-    const count = dto.count ?? DEFAULT_COUNT;
-    // 指定了科目→就从该科目随机抽;未指定→按各科目(M1 等)比例跨专题抽样。
-    const picked = dto.category ? this.shuffle(pool).slice(0, count) : this.sampleByCategory(pool, count);
+    const { totalCount } = await this.getRule(user.tenantId);
+    const picked = await this.pickExamQuestions(user.tenantId, dto, totalCount);
+    if (picked.length === 0) throw new BadRequestException('暂无考试题目');
     const attempt = await this.attempts.save(
       this.attempts.create({
         tenantId: user.tenantId,
@@ -140,6 +154,24 @@ export class ExamService {
       total: picked.length,
       questions: picked.map((q) => ({ id: q.id, type: q.type, stem: q.stem, options: q.options, imageUrls: q.imageUrls ?? [] })),
     };
+  }
+
+  private async pickExamQuestions(
+    tenantId: string,
+    dto: Pick<StartExamDto, 'courseId' | 'category'>,
+    count: number,
+  ): Promise<Question[]> {
+    const qb = this.questions
+      .createQueryBuilder('q')
+      .where('q.tenantId = :tenantId', { tenantId })
+      .andWhere('q.usage IN (:...usages)', { usages: ['exam', 'both'] });
+    if (dto.courseId) qb.andWhere('q.courseId = :courseId', { courseId: dto.courseId });
+    if (dto.category) qb.andWhere('q.category = :category', { category: dto.category });
+    return qb.orderBy(this.randomOrderSql()).take(Math.max(1, Math.min(MAX_COUNT, count))).getMany();
+  }
+
+  private randomOrderSql(): string {
+    return this.questions.manager.connection.options.type === 'mysql' ? 'RAND()' : 'RANDOM()';
   }
 
   // 交卷判分:按锁定的 questionIds 逐题比对,算分(百分制),落库,返回逐题对错 + 正确答案。
@@ -445,9 +477,26 @@ export class ExamController {
   }
 }
 
+@UseGuards(JwtAuthGuard, RolesGuard)
+@Roles('admin')
+@Controller('admin/exam/rule')
+export class ExamRuleAdminController {
+  constructor(private readonly svc: ExamService) {}
+
+  @Get()
+  get(@CurrentUser() admin: AuthUser) {
+    return this.svc.getRule(admin.tenantId);
+  }
+
+  @Patch()
+  update(@CurrentUser() admin: AuthUser, @Body() dto: UpdateExamRuleDto) {
+    return this.svc.updateRule(admin, dto.totalCount);
+  }
+}
+
 @Module({
-  imports: [TypeOrmModule.forFeature([Question, ExamAttempt, WrongQuestion])],
-  controllers: [ExamController],
+  imports: [TypeOrmModule.forFeature([Question, ExamAttempt, WrongQuestion, ExamPaperRule])],
+  controllers: [ExamController, ExamRuleAdminController],
   providers: [ExamService],
 })
 export class ExamModule {}
