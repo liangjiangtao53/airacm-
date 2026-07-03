@@ -24,17 +24,24 @@ $stamp = Get-Date -Format "yyyyMMddHHmmss"
 $release = "airacm-$sha-$stamp"
 $package = "$release.tar.gz"
 $remote = "$User@$HostName"
+$backupScript = Join-Path $repo "scripts\backup-db.sh"
+if (-not (Test-Path -LiteralPath $backupScript)) {
+  throw "Missing backup script: $backupScript"
+}
 
 Run git @("archive", "--format=tar.gz", "-o", $package, "HEAD")
 try {
   Run ssh @("-i", $KeyPath, "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=no", $remote, "mkdir -p $BaseDir/releases")
   Run scp @("-i", $KeyPath, "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=no", $package, "${remote}:$BaseDir/releases/$package")
+  Run scp @("-i", $KeyPath, "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=no", $backupScript, "${remote}:/tmp/airacm-backup-db-$release.sh")
 
   $remoteScript = @"
 set -euo pipefail
 BASE="$BaseDir"
 PKG="$package"
 REL="$release"
+mkdir -p "`$BASE/bin"
+install -m 700 "/tmp/airacm-backup-db-$release.sh" "`$BASE/bin/backup-db.sh"
 cd "`$BASE/releases"
 if [ -e "`$REL" ]; then
   echo "Release already exists: `$REL" >&2
@@ -56,6 +63,15 @@ else
   mkdir -p uploads/app uploads/question-images
 fi
 echo "release=`$PWD"
+"@
+
+  $remoteScript += @"
+echo "running predeploy database backup..."
+if [ ! -x "`$BASE/bin/backup-db.sh" ]; then
+  echo "Missing database backup script: `$BASE/bin/backup-db.sh" >&2
+  exit 1
+fi
+"`$BASE/bin/backup-db.sh" predeploy
 "@
 
   if (-not $SkipMigration) {

@@ -21,7 +21,9 @@ import { AppModule } from '../src/app.module';
 import { AuthUser, signToken } from '../src/common';
 import {
   AccessKey,
+  AdminOperationLog,
   Question,
+  QuestionImportBatch,
   QuestionPractice,
   QuestionUsage,
   StudyQuestionProgress,
@@ -231,10 +233,21 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
       expect(res.status).toBe(201);
       expect(res.body.data.imported).toBe(2);
       expect(res.body.data.failed).toHaveLength(1);
+      expect(res.body.data.batchId).toBeTruthy();
+      const batch = await ds.getRepository(QuestionImportBatch).findOneOrFail({
+        where: { tenantId: TENANT, id: res.body.data.batchId },
+      });
+      expect(batch.imported).toBe(2);
+      expect(batch.failed).toBe(1);
+      const importLog = await ds.getRepository(AdminOperationLog).findOne({
+        where: { tenantId: TENANT, action: 'question_import', targetId: batch.id },
+      });
+      expect(importLog).toBeTruthy();
       expect(res.body.data.failed[0].row).toBe(4); // 含表头第 4 行
 
       const saved = await ds.getRepository(Question).find({ where: { tenantId: TENANT, usage: 'both' } });
       expect(saved).toHaveLength(2);
+      expect(saved.every((q) => q.importBatchId === batch.id)).toBe(true);
       const multi = saved.find((q) => q.answer === 'AC');
       expect(multi?.type).toBe('multiple'); // 多字母答案识别为多选
     });
@@ -618,6 +631,49 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
         .set('Authorization', `Bearer ${user.token}`)
         .send({ courseId });
       expect(afterDelete.status).toBe(400);
+    });
+
+    it('admin import preview validates rows without saving questions', async () => {
+      const { token } = await makeUser('admin');
+      const category = '';
+      await ds.getRepository(Question).save(
+        ds.getRepository(Question).create({
+          tenantId: TENANT,
+          category,
+          courseId: null,
+          type: 'single',
+          stem: 'PREVIEW-DUP',
+          options: [
+            { key: 'A', text: 'A' },
+            { key: 'B', text: 'B' },
+          ],
+          answer: 'A',
+          analysis: '',
+          usage: 'study',
+          order: 1,
+        }),
+      );
+      const before = await ds.getRepository(Question).count({ where: { tenantId: TENANT, category } });
+      const res = await request(app.getHttpServer())
+        .post('/admin/questions/import/preview?usage=study')
+        .set('Authorization', `Bearer ${token}`)
+        .attach(
+          'file',
+          buildXlsx([
+            ['PREVIEW-DUP', 'A', 'B', '', '', 'A', ''],
+            ['PREVIEW-DUP', 'A', 'B', '', '', 'A', ''],
+            ['PREVIEW-BAD', 'A', 'B', '', '', '', ''],
+          ]),
+          'preview.xlsx',
+        );
+      expect(res.status).toBe(201);
+      expect(res.body.data.totalRows).toBe(3);
+      expect(res.body.data.importable).toBe(2);
+      expect(res.body.data.failed).toHaveLength(1);
+      expect(res.body.data.duplicateInFile).toBe(1);
+      expect(res.body.data.duplicateInDatabase).toBe(1);
+      const after = await ds.getRepository(Question).count({ where: { tenantId: TENANT, category } });
+      expect(after).toBe(before);
     });
 
     it('study answer tracking accumulates repeated answers on one practice row', async () => {
@@ -1097,11 +1153,31 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
       const row = stats.body.data.find((r: { category: string }) => r.category === CAT);
       expect(row.count).toBeGreaterThanOrEqual(2);
 
-      const del = await request(app.getHttpServer())
+      const denied = await request(app.getHttpServer())
         .delete('/admin/questions?category=' + encodeURIComponent(CAT))
+        .set('Authorization', `Bearer ${admin.token}`);
+      expect(denied.status).toBe(400);
+
+      const impact = await request(app.getHttpServer())
+        .get('/admin/questions/delete-impact?category=' + encodeURIComponent(CAT))
+        .set('Authorization', `Bearer ${admin.token}`);
+      expect(impact.status).toBe(200);
+      expect(impact.body.data.questionCount).toBeGreaterThanOrEqual(2);
+
+      const del = await request(app.getHttpServer())
+        .delete(
+          '/admin/questions?category=' +
+            encodeURIComponent(CAT) +
+            '&confirm=' +
+            encodeURIComponent(impact.body.data.requiredConfirm),
+        )
         .set('Authorization', `Bearer ${admin.token}`);
       expect(del.status).toBe(200);
       expect(del.body.data.deleted).toBeGreaterThanOrEqual(2);
+      const purgeLog = await ds.getRepository(AdminOperationLog).findOne({
+        where: { tenantId: TENANT, action: 'question_purge_category', targetId: CAT },
+      });
+      expect(purgeLog).toBeTruthy();
     });
 
     it('普通用户无法访问维护接口', async () => {

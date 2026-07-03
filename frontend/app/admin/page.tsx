@@ -9,6 +9,7 @@ import {
   type AppApkStatus,
   type ExamPaperRule,
   type ForumTopic,
+  type ImportPreview,
   type ImportResult,
   type ManagedQuestionCategory,
   type QuestionUsage,
@@ -76,6 +77,7 @@ export default function AdminPage() {
   const [importUsage, setImportUsage] = useState<QuestionUsage>('both');
   const [importCategory, setImportCategory] = useState('');
   const [importResult, setImportResult] = useState<ImportResult | null>(null);
+  const [importPreview, setImportPreview] = useState<ImportPreview | null>(null);
   const [categories, setCategories] = useState<string[]>([]);
   const [managedCategories, setManagedCategories] = useState<ManagedQuestionCategory[]>([]);
   const [newCategory, setNewCategory] = useState('');
@@ -195,6 +197,7 @@ export default function AdminPage() {
   const doImport = wrap(async () => {
     if (!importFile) throw new Error('请先选择 Excel 或 PDF 文件');
     setImportResult(null);
+    setImportPreview(null);
     const r = await api.importQuestions(
       importFile,
       importUsage,
@@ -203,6 +206,12 @@ export default function AdminPage() {
     setImportResult(r);
     await refreshStats();
     await refreshCategories();
+  });
+
+  const previewImport = wrap(async () => {
+    if (!importFile) throw new Error('请先选择 Excel 或 PDF 文件');
+    setImportResult(null);
+    setImportPreview(await api.previewImportQuestions(importFile, importUsage, importCategory || undefined));
   });
 
   const addQuestionCategory = wrap(async () => {
@@ -242,6 +251,8 @@ export default function AdminPage() {
 
   function chooseImportFile(file: File | null) {
     setImportFile(file);
+    setImportPreview(null);
+    setImportResult(null);
     if (!file) return;
     const inferred = inferImportCategory(file);
     if (inferred) setImportCategory(inferred);
@@ -295,7 +306,12 @@ export default function AdminPage() {
     wrap(async () => {
       const label = category || '(未分类)';
       if (!window.confirm(`确认删除「${label}」科目下全部题目?此操作不可恢复。`)) return;
-      const r = await api.purgeQuestions(category);
+      const impact = await api.questionDeleteImpact(category);
+      const input = window.prompt(
+        `${label}: 将删除 ${impact.questionCount} 题、${impact.commentCount} 条评论。输入 ${impact.requiredConfirm} 确认删除。`,
+      );
+      if (input !== impact.requiredConfirm) return;
+      const r = await api.purgeQuestions(category, impact.requiredConfirm);
       setMaintMsg(`已删除 ${label} 下 ${r.deleted} 题`);
       await refreshStats();
       await refreshCategories();
@@ -674,6 +690,9 @@ export default function AdminPage() {
               className="block w-full text-sm text-ink/70 file:mr-3 file:rounded-lg file:border-0 file:bg-steel file:px-4 file:py-2 file:text-white"
             />
             <div className="flex items-center gap-3">
+              <button className={btn} onClick={previewImport}>
+                预览
+              </button>
               <button className={btn} onClick={doImport}>
                 导入
               </button>
@@ -681,6 +700,23 @@ export default function AdminPage() {
                 下载导入模板
               </button>
             </div>
+            {importPreview && (
+              <div className="rounded-lg bg-mist p-3 text-sm text-ink">
+                <p>
+                  预览: 可导入 {importPreview.importable}/{importPreview.totalRows} 行, 失败 {importPreview.failed.length} 行,
+                  文件内重复 {importPreview.duplicateInFile} 个, 库内已存在 {importPreview.duplicateInDatabase} 个
+                </p>
+                {importPreview.failed.length > 0 && (
+                  <ul className="mt-2 space-y-1 text-red-500/90">
+                    {importPreview.failed.map((f) => (
+                      <li key={f.row}>
+                        第 {f.row} 行: {f.reason}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
             {importResult && (
               <div className="rounded-lg bg-mist p-3 text-sm">
                 <p className="text-ink">

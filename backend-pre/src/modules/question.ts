@@ -23,15 +23,17 @@ import { In, Repository } from 'typeorm';
 import { IsArray, IsIn, IsInt, IsNotEmpty, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
 import { Type } from 'class-transformer';
 import type { Response } from 'express';
-import { createHash } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { mkdir, writeFile } from 'fs/promises';
 import { basename, extname, join } from 'path';
 import * as XLSX from 'xlsx';
 import {
+  AdminOperationLog,
   Comment,
   ExamAttempt,
   Question,
   QuestionCategoryEntity,
+  QuestionImportBatch,
   QuestionOption,
   QuestionPractice,
   QuestionUsage,
@@ -160,6 +162,16 @@ class BatchDeleteDto {
   ids!: string[];
 }
 
+class DeleteConfirmQuery {
+  @IsOptional()
+  @IsString()
+  category?: string;
+
+  @IsOptional()
+  @IsString()
+  confirm?: string;
+}
+
 class UpdateQuestionDto {
   @IsOptional()
   @IsString()
@@ -216,6 +228,23 @@ interface ExtractedImage {
   buffer: Buffer;
 }
 
+interface ParsedImportFile {
+  rows: unknown[][];
+  rowImages: Map<number, ExtractedImage[]>;
+  fileName: string;
+  fileHash: string;
+}
+
+interface ImportPlanRow {
+  rowIndex: number;
+  parsed: {
+    stem: string;
+    options: QuestionOption[];
+    answer: string;
+    analysis: string;
+  };
+}
+
 @Injectable()
 export class QuestionService {
   private readonly questionListCountCache = new Map<string, { total: number; expiresAt: number }>();
@@ -232,8 +261,29 @@ export class QuestionService {
     @InjectRepository(WrongQuestion) private readonly wrongBookRepo: Repository<WrongQuestion>,
     @InjectRepository(QuestionPractice) private readonly practices: Repository<QuestionPractice>,
     @InjectRepository(StudyQuestionProgress) private readonly studyProgress: Repository<StudyQuestionProgress>,
+    @InjectRepository(QuestionImportBatch) private readonly importBatches: Repository<QuestionImportBatch>,
+    @InjectRepository(AdminOperationLog) private readonly operationLogs: Repository<AdminOperationLog>,
     private readonly questionPool: QuestionPoolCacheService,
   ) {}
+
+  private async logAdminOperation(
+    admin: AuthUser,
+    action: string,
+    targetType: string,
+    targetId: string | null,
+    detail: Record<string, unknown>,
+  ): Promise<void> {
+    await this.operationLogs.save(
+      this.operationLogs.create({
+        tenantId: admin.tenantId,
+        adminId: admin.userId,
+        action,
+        targetType,
+        targetId,
+        detail,
+      }),
+    );
+  }
 
   private clearQuestionListCountCache(tenantId: string): void {
     for (const key of this.questionListCountCache.keys()) {
@@ -368,18 +418,169 @@ export class QuestionService {
     usage: QuestionUsage,
     category: string | undefined,
     courseId: string | undefined,
-  ): Promise<{ imported: number; failed: ImportFailure[] }> {
+  ): Promise<{ imported: number; failed: ImportFailure[]; batchId: string }> {
     if (!file?.buffer?.length) throw new BadRequestException('请上传题库文件');
     await this.assertCategoryExists(admin.tenantId, category);
-    const name = file.originalname.toLowerCase();
-    if (name.endsWith('.pdf')) {
-      const rows = await this.parsePdfRows(file.buffer);
-      return this.importRows(admin, rows, usage, category, courseId);
-    }
-    return this.importExcel(admin, file, usage, category, courseId);
+    const parsedFile = await this.parseImportFile(file);
+    return this.importParsedRows(admin, parsedFile, usage, category, courseId);
   }
 
   // 解析 Excel 并批量入库。逐行校验,失败行收集返回,不静默吞错;成功行照常写入。
+  async previewImportFile(
+    admin: AuthUser,
+    file: UploadedQuestionFile | undefined,
+    usage: QuestionUsage,
+    category: string | undefined,
+    courseId: string | undefined,
+  ): Promise<{
+    totalRows: number;
+    importable: number;
+    failed: ImportFailure[];
+    duplicateInFile: number;
+    duplicateInDatabase: number;
+  }> {
+    await this.assertCategoryExists(admin.tenantId, category);
+    const parsedFile = await this.parseImportFile(file);
+    const plan = this.buildImportPlan(parsedFile.rows);
+    const stems = plan.toSave.map((row) => row.parsed.stem);
+    return {
+      totalRows: Math.max(parsedFile.rows.length - 1, 0),
+      importable: plan.toSave.length,
+      failed: plan.failed,
+      duplicateInFile: this.countDuplicateStems(stems),
+      duplicateInDatabase: await this.countExistingStems(admin.tenantId, category ?? '', stems),
+    };
+  }
+
+  private async parseImportFile(file: UploadedQuestionFile | undefined): Promise<ParsedImportFile> {
+    if (!file?.buffer?.length) throw new BadRequestException('question file required');
+    const fileName = file.originalname;
+    const fileHash = createHash('sha1').update(file.buffer).digest('hex');
+    if (fileName.toLowerCase().endsWith('.pdf')) {
+      return { rows: await this.parsePdfRows(file.buffer), rowImages: new Map(), fileName, fileHash };
+    }
+
+    let rows: unknown[][];
+    let rowImages = new Map<number, ExtractedImage[]>();
+    try {
+      const wb = XLSX.read(file.buffer, { type: 'buffer', bookFiles: true, cellFormula: true });
+      const sheetName = wb.SheetNames[0];
+      const sheet = wb.Sheets[sheetName];
+      if (!sheet) throw new Error('empty workbook');
+      rows = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, blankrows: false });
+      rowImages = this.extractWpsCellImages(wb, sheet);
+    } catch {
+      throw new BadRequestException('Excel parse failed');
+    }
+    if (rows.length < 2) throw new BadRequestException('Excel has no data rows');
+    return { rows, rowImages, fileName, fileHash };
+  }
+
+  private buildImportPlan(rows: unknown[][]): { toSave: ImportPlanRow[]; failed: ImportFailure[] } {
+    const colMap = this.buildColMap(rows[0]);
+    if (colMap.stem < 0) throw new BadRequestException('missing stem column');
+    if (colMap.answer < 0) throw new BadRequestException('missing answer column');
+    if (colMap.options.length < 2) throw new BadRequestException('missing option columns');
+
+    const failed: ImportFailure[] = [];
+    const toSave: ImportPlanRow[] = [];
+    for (let i = 1; i < rows.length; i++) {
+      const parsed = this.parseRow(rows[i], colMap);
+      if ('error' in parsed) {
+        failed.push({ row: i + 1, reason: parsed.error });
+        continue;
+      }
+      toSave.push({ rowIndex: i, parsed });
+    }
+    return { toSave, failed };
+  }
+
+  private async importParsedRows(
+    admin: AuthUser,
+    parsedFile: ParsedImportFile,
+    usage: QuestionUsage,
+    category: string | undefined,
+    courseId: string | undefined,
+  ): Promise<{ imported: number; failed: ImportFailure[]; batchId: string }> {
+    const plan = this.buildImportPlan(parsedFile.rows);
+    const batchId = randomUUID();
+    const batch = this.importBatches.create({
+      id: batchId,
+      tenantId: admin.tenantId,
+      importedBy: admin.userId,
+      fileName: parsedFile.fileName,
+      fileHash: parsedFile.fileHash,
+      usage,
+      category: category ?? '',
+      courseId: courseId ?? null,
+      totalRows: Math.max(parsedFile.rows.length - 1, 0),
+      imported: plan.toSave.length,
+      failed: plan.failed.length,
+      failures: plan.failed,
+      status: 'completed',
+    });
+
+    const toSave: Question[] = [];
+    for (const row of plan.toSave) {
+      toSave.push(
+        this.questions.create({
+          tenantId: admin.tenantId,
+          category: category ?? '',
+          courseId: courseId ?? null,
+          type: row.parsed.answer.length > 1 ? 'multiple' : 'single',
+          stem: row.parsed.stem,
+          options: row.parsed.options,
+          answer: row.parsed.answer,
+          analysis: row.parsed.analysis,
+          imageUrls: await this.saveQuestionImages(parsedFile.rowImages.get(row.rowIndex) ?? []),
+          usage,
+          order: row.rowIndex,
+          importBatchId: batchId,
+        }),
+      );
+    }
+    await this.questions.manager.transaction(async (manager) => {
+      await manager.save(QuestionImportBatch, batch);
+      if (toSave.length) await manager.save(Question, toSave);
+      await manager.save(
+        AdminOperationLog,
+        this.operationLogs.create({
+          tenantId: admin.tenantId,
+          adminId: admin.userId,
+          action: 'question_import',
+          targetType: 'question_import_batch',
+          targetId: batchId,
+          detail: {
+            fileName: parsedFile.fileName,
+            usage,
+            category: category ?? '',
+            courseId: courseId ?? null,
+            imported: toSave.length,
+            failed: plan.failed.length,
+          },
+        }),
+      );
+    });
+    if (toSave.length) await this.refreshQuestionCaches(admin.tenantId);
+    return { imported: toSave.length, failed: plan.failed, batchId };
+  }
+
+  private countDuplicateStems(stems: string[]): number {
+    const seen = new Set<string>();
+    const duplicated = new Set<string>();
+    for (const stem of stems) {
+      if (seen.has(stem)) duplicated.add(stem);
+      seen.add(stem);
+    }
+    return duplicated.size;
+  }
+
+  private async countExistingStems(tenantId: string, category: string, stems: string[]): Promise<number> {
+    const unique = [...new Set(stems)];
+    if (!unique.length) return 0;
+    return this.questions.count({ where: { tenantId, category, stem: In(unique) } });
+  }
+
   async importExcel(
     admin: AuthUser,
     file: UploadedQuestionFile | undefined,
@@ -654,7 +855,7 @@ export class QuestionService {
   async list(
     user: AuthUser,
     q: ListQuery,
-  ): Promise<{ items: Array<Omit<Question, 'answer' | 'analysis'>>; total: number; page: number; pageSize: number }> {
+  ): Promise<{ items: Array<Omit<Question, 'answer' | 'analysis' | 'importBatchId'>>; total: number; page: number; pageSize: number }> {
     const page = q.page ?? 1;
     const pageSize = q.pageSize ?? 20;
     {
@@ -848,7 +1049,27 @@ export class QuestionService {
   }
 
   // 按科目批量删除(连带评论)。category='' 表示删未分类。须显式传 category,防误清全库。
-  async purgeByCategory(user: AuthUser, category: string): Promise<{ deleted: number }> {
+  async deleteImpactByCategory(
+    user: AuthUser,
+    category: string,
+  ): Promise<{ category: string; questionCount: number; commentCount: number; requiredConfirm: string }> {
+    const ids = (
+      await this.questions.find({ where: { tenantId: user.tenantId, category }, select: ['id'] })
+    ).map((q) => q.id);
+    const commentCount = ids.length
+      ? await this.comments.count({ where: { tenantId: user.tenantId, questionId: In(ids) } })
+      : 0;
+    return {
+      category,
+      questionCount: ids.length,
+      commentCount,
+      requiredConfirm: category || '__EMPTY__',
+    };
+  }
+
+  async purgeByCategory(user: AuthUser, category: string, confirm?: string): Promise<{ deleted: number }> {
+    const requiredConfirm = category || '__EMPTY__';
+    if (confirm !== requiredConfirm) throw new BadRequestException('delete confirmation mismatch');
     const ids = (
       await this.questions.find({ where: { tenantId: user.tenantId, category }, select: ['id'] })
     ).map((q) => q.id);
@@ -856,6 +1077,10 @@ export class QuestionService {
     await this.comments.delete({ tenantId: user.tenantId, questionId: In(ids) });
     await this.questions.delete({ tenantId: user.tenantId, category });
     await this.refreshQuestionCaches(user.tenantId);
+    await this.logAdminOperation(user, 'question_purge_category', 'question_category', category || null, {
+      category,
+      deleted: ids.length,
+    });
     return { deleted: ids.length };
   }
 
@@ -864,6 +1089,9 @@ export class QuestionService {
     await this.comments.delete({ tenantId: user.tenantId, questionId: id });
     const r = await this.questions.delete({ tenantId: user.tenantId, id });
     if ((r.affected ?? 0) > 0) await this.refreshQuestionCaches(user.tenantId);
+    if ((r.affected ?? 0) > 0) {
+      await this.logAdminOperation(user, 'question_delete_one', 'question', id, { deleted: r.affected ?? 0 });
+    }
     return { deleted: r.affected ?? 0 };
   }
 
@@ -911,6 +1139,7 @@ export class QuestionService {
     Object.assign(q, patch);
     const saved = await this.questions.save(q);
     this.clearQuestionListCountCache(user.tenantId);
+    await this.logAdminOperation(user, 'question_update_one', 'question', id, { fields: Object.keys(patch) });
     return saved;
   }
 
@@ -973,6 +1202,12 @@ export class QuestionService {
     await this.comments.delete({ tenantId: user.tenantId, questionId: In(ids) });
     const r = await this.questions.delete({ tenantId: user.tenantId, id: In(ids) });
     if ((r.affected ?? 0) > 0) await this.refreshQuestionCaches(user.tenantId);
+    if ((r.affected ?? 0) > 0) {
+      await this.logAdminOperation(user, 'question_delete_many', 'question', null, {
+        requested: ids.length,
+        deleted: r.affected ?? 0,
+      });
+    }
     return { deleted: r.affected ?? 0 };
   }
 
@@ -1002,6 +1237,16 @@ export class QuestionAdminController {
     @Query() q: ImportQuery,
   ) {
     return this.svc.importFile(admin, file, q.usage, q.category, q.courseId);
+  }
+
+  @Post('import/preview')
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 150 * 1024 * 1024 } }))
+  previewImport(
+    @CurrentUser() admin: AuthUser,
+    @UploadedFile() file: UploadedQuestionFile,
+    @Query() q: ImportQuery,
+  ) {
+    return this.svc.previewImportFile(admin, file, q.usage, q.category, q.courseId);
   }
 
   @Get('template')
@@ -1052,11 +1297,18 @@ export class QuestionAdminController {
     return this.svc.deleteMany(admin, dto.ids);
   }
 
+  @Get('delete-impact')
+  deleteImpact(@CurrentUser() admin: AuthUser, @Query('category') category?: string) {
+    if (category === undefined) throw new BadRequestException('category required');
+    return this.svc.deleteImpactByCategory(admin, category);
+  }
+
   // 按科目批量删除(须传 category,'' 删未分类)。
   @Delete()
-  purge(@CurrentUser() admin: AuthUser, @Query('category') category?: string) {
+  purge(@CurrentUser() admin: AuthUser, @Query() q: DeleteConfirmQuery) {
+    const category = q.category;
     if (category === undefined) throw new BadRequestException('请指定 category');
-    return this.svc.purgeByCategory(admin, category);
+    return this.svc.purgeByCategory(admin, category, q.confirm);
   }
 
   @Patch(':id')
@@ -1133,6 +1385,8 @@ export class QuestionImageController {
       WrongQuestion,
       QuestionPractice,
       StudyQuestionProgress,
+      QuestionImportBatch,
+      AdminOperationLog,
     ]),
     QuestionPoolCacheModule,
   ],

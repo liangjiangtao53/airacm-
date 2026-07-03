@@ -62,6 +62,22 @@ export interface CommentItem {
 export interface ImportResult {
   imported: number;
   failed: Array<{ row: number; reason: string }>;
+  batchId?: string;
+}
+
+export interface ImportPreview {
+  totalRows: number;
+  importable: number;
+  failed: Array<{ row: number; reason: string }>;
+  duplicateInFile: number;
+  duplicateInDatabase: number;
+}
+
+export interface DeleteImpact {
+  category: string;
+  questionCount: number;
+  commentCount: number;
+  requiredConfirm: string;
 }
 
 export interface AppApkStatus {
@@ -396,6 +412,11 @@ export const api = {
     if (category) qs.set('category', category);
     return upload<ImportResult>(`/admin/questions/import?${qs}`, file);
   },
+  previewImportQuestions: (file: File, usage: QuestionUsage, category?: string) => {
+    const qs = new URLSearchParams({ usage });
+    if (category) qs.set('category', category);
+    return upload<ImportPreview>(`/admin/questions/import/preview?${qs}`, file);
+  },
   // 模板下载地址(GET,浏览器直接打开)。
   questionTemplateUrl: () => `${BASE}/admin/questions/template`,
 
@@ -420,8 +441,10 @@ export const api = {
   },
   batchDeleteQuestions: (ids: string[]) =>
     req<{ deleted: number }>('/admin/questions/batch-delete', { method: 'POST', body: { ids } }),
-  purgeQuestions: (category: string) =>
-    req<{ deleted: number }>(`/admin/questions?category=${encodeURIComponent(category)}`, {
+  questionDeleteImpact: (category: string) =>
+    req<DeleteImpact>(`/admin/questions/delete-impact?category=${encodeURIComponent(category)}`),
+  purgeQuestions: (category: string, confirm: string) =>
+    req<{ deleted: number }>(`/admin/questions?category=${encodeURIComponent(category)}&confirm=${encodeURIComponent(confirm)}`, {
       method: 'DELETE',
     }),
   updateQuestion: (id: string, patch: AdminQuestionPatch) =>

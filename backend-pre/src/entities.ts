@@ -30,6 +30,7 @@ export type QuestionType = 'single' | 'multiple';
 // 题目用途:仅学习刷题 / 仅考试 / 两者都进。Excel 导入时整批指定。
 export type QuestionUsage = 'study' | 'exam' | 'both';
 export type WrongQuestionSource = 'study' | 'exam';
+export type QuestionImportStatus = 'completed' | 'failed';
 
 @Entity('exam_paper_rule')
 @Index(['tenantId'], { unique: true })
@@ -86,6 +87,81 @@ export class QuestionCategoryEntity {
 
   @Column({ type: 'integer', default: 0 })
   order!: number;
+
+  @CreateDateColumn()
+  createdAt!: Date;
+}
+
+@Entity('question_import_batch')
+@Index(['tenantId', 'createdAt'])
+export class QuestionImportBatch {
+  @PrimaryGeneratedColumn('uuid')
+  id!: string;
+
+  @Column({ length: 64 })
+  tenantId!: string;
+
+  @Column({ length: 64 })
+  importedBy!: string;
+
+  @Column({ default: '' })
+  fileName!: string;
+
+  @Column({ length: 64, default: '' })
+  fileHash!: string;
+
+  @Column({ type: 'varchar', default: 'both' })
+  usage!: QuestionUsage;
+
+  @Column({ default: '' })
+  category!: string;
+
+  @Column({ type: 'varchar', nullable: true })
+  courseId!: string | null;
+
+  @Column({ type: 'integer', default: 0 })
+  totalRows!: number;
+
+  @Column({ type: 'integer', default: 0 })
+  imported!: number;
+
+  @Column({ type: 'integer', default: 0 })
+  failed!: number;
+
+  @Column({ type: 'simple-json', nullable: true })
+  failures!: Array<{ row: number; reason: string }> | null;
+
+  @Column({ type: 'varchar', default: 'completed' })
+  status!: QuestionImportStatus;
+
+  @CreateDateColumn()
+  createdAt!: Date;
+}
+
+@Entity('admin_operation_log')
+@Index(['tenantId', 'createdAt'])
+@Index(['tenantId', 'action'])
+export class AdminOperationLog {
+  @PrimaryGeneratedColumn('uuid')
+  id!: string;
+
+  @Column({ length: 64 })
+  tenantId!: string;
+
+  @Column({ length: 64 })
+  adminId!: string;
+
+  @Column({ length: 64 })
+  action!: string;
+
+  @Column({ length: 64 })
+  targetType!: string;
+
+  @Column({ type: 'varchar', nullable: true })
+  targetId!: string | null;
+
+  @Column({ type: 'simple-json', nullable: true })
+  detail!: Record<string, unknown> | null;
 
   @CreateDateColumn()
   createdAt!: Date;
@@ -461,6 +537,9 @@ export class Question {
   @Column({ type: 'integer', default: 0 })
   order!: number;
 
+  @Column({ type: 'varchar', nullable: true })
+  importBatchId!: string | null;
+
   @CreateDateColumn()
   createdAt!: Date;
 }
@@ -742,6 +821,8 @@ export const ALL_ENTITIES = [
   Entitlement,
   Progress,
   Question,
+  QuestionImportBatch,
+  AdminOperationLog,
   ExamPaperRule,
   QuestionCategoryEntity,
   Comment,
