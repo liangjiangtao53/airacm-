@@ -90,8 +90,20 @@ sudo -n docker compose up -d --build
 ln -sfn "`$PWD" "`$BASE/current"
 echo "current -> `$(readlink "`$BASE/current")"
 sudo -n docker compose ps
-curl -k -sS -o /tmp/airacm_health.out -w "public_health %{http_code} %{time_total}\n" https://weixiuzhiyi.com.cn/api/health
+health_code=""
+for i in `$(seq 1 20); do
+  health_code=`$(curl -k -sS -o /tmp/airacm_health.out -w "%{http_code}" https://weixiuzhiyi.com.cn/api/health || true)
+  echo "public_health try=`$i code=`$health_code"
+  [ "`$health_code" = "200" ] && break
+  sleep 2
+done
 cat /tmp/airacm_health.out
+if [ "`$health_code" != "200" ]; then
+  echo "health check failed after deploy" >&2
+  sudo -n docker compose logs --tail=120 api >&2 || true
+  sudo -n docker compose logs --tail=80 nginx >&2 || true
+  exit 1
+fi
 
 "@
 
