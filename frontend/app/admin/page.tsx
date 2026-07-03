@@ -29,6 +29,14 @@ const input =
 const btn =
   'rounded-lg bg-steel px-5 py-2 font-medium text-white hover:bg-ink disabled:opacity-50';
 const logoUrl = '/images/maintenance-wing-logo.jpg';
+const defaultExamCategoryCounts: Record<string, number> = {
+  'M1 航空概论': 32,
+  'M2 航空器维修': 50,
+  'M3 飞机结构和系统': 182,
+  'M5 航空涡轮发动机': 70,
+  'M9 航空英语': 60,
+  'M9 new': 60,
+};
 type AccessKeyRow = { id: string; key: string; status: string; expiresAt: string; createdAt: string };
 type AdminSheet = 'operations' | 'questions' | 'users' | 'security';
 const sheets: Array<{ key: AdminSheet; label: string }> = [
@@ -80,6 +88,7 @@ export default function AdminPage() {
   // 模拟考试组卷规则(admin + super)
   const [examRule, setExamRule] = useState<ExamPaperRule | null>(null);
   const [examRuleCount, setExamRuleCount] = useState('100');
+  const [examRuleCategoryCounts, setExamRuleCategoryCounts] = useState<Record<string, string>>({});
   const [examRuleMsg, setExamRuleMsg] = useState('');
 
   // 数据维护
@@ -129,6 +138,8 @@ export default function AdminPage() {
         api.examRule().then((r) => {
           setExamRule(r);
           setExamRuleCount(String(r.totalCount));
+          const merged = { ...defaultExamCategoryCounts, ...(r.categoryCounts ?? {}) };
+          setExamRuleCategoryCounts(Object.fromEntries(Object.entries(merged).map(([k, v]) => [k, String(v)])));
         }).catch(() => undefined);
         api.users().then(setUsers).catch(() => undefined);
         api.forumTopics().then(setTopics).catch(() => undefined);
@@ -248,13 +259,22 @@ export default function AdminPage() {
 
   const saveExamRule = wrap(async () => {
     const totalCount = Number(examRuleCount);
-    if (!Number.isInteger(totalCount) || totalCount < 1 || totalCount > 100) {
-      throw new Error('模拟考试题目数必须是 1-100 的整数');
+    if (!Number.isInteger(totalCount) || totalCount < 1 || totalCount > 300) {
+      throw new Error('模拟考试题目数必须是 1-300 的整数');
     }
-    const saved = await api.updateExamRule(totalCount);
+    const categoryCounts: Record<string, number> = {};
+    for (const category of Array.from(new Set([...categories, ...Object.keys(examRuleCategoryCounts)]))) {
+      const value = Number(examRuleCategoryCounts[category] ?? defaultExamCategoryCounts[category] ?? examRule?.totalCount ?? totalCount);
+      if (!Number.isInteger(value) || value < 1 || value > 300) {
+        throw new Error(`${category} 的题目数必须是 1-300 的整数`);
+      }
+      categoryCounts[category] = value;
+    }
+    const saved = await api.updateExamRule(totalCount, categoryCounts);
     setExamRule(saved);
     setExamRuleCount(String(saved.totalCount));
-    setExamRuleMsg(`组卷规则已保存:每次模拟考试 ${saved.totalCount} 道题`);
+    setExamRuleCategoryCounts(Object.fromEntries(Object.entries(saved.categoryCounts).map(([k, v]) => [k, String(v)])));
+    setExamRuleMsg('模拟考试组卷规则已保存');
   });
 
   // 模板下载:端点需鉴权,普通 <a> 不带 token,改为带鉴权头取 blob 下载。
@@ -386,6 +406,10 @@ export default function AdminPage() {
 
   const sourceLabel = (s?: AdminUser['source']) =>
     s === 'key' ? '卡密' : s === 'wechat' ? '微信' : s === 'register' ? '注册' : '';
+
+  const examRuleCategories = Array.from(
+    new Set([...Object.keys(defaultExamCategoryCounts), ...categories, ...Object.keys(examRuleCategoryCounts)]),
+  );
 
   if (!ready) {
     return <main className="flex min-h-screen items-center justify-center text-ink/50">校验权限...</main>;
@@ -530,12 +554,12 @@ export default function AdminPage() {
         <Card title="模拟考试组卷规则">
           <div className="space-y-3">
             <div className="rounded-lg bg-mist p-3 text-sm text-ink/70">
-              当前规则:每次模拟考试{' '}
+              默认规则:未选择科目时每次模拟考试{' '}
               <span className="font-semibold text-ink">{examRule?.totalCount ?? 100}</span> 道题。
             </div>
             <div className="flex flex-wrap items-end gap-3">
               <div className="w-36">
-                <label className="mb-1 block text-xs text-ink/60">题目数</label>
+                <label className="mb-1 block text-xs text-ink/60">默认题目数</label>
                 <input
                   className={input}
                   value={examRuleCount}
@@ -547,7 +571,25 @@ export default function AdminPage() {
                 保存规则
               </button>
             </div>
-            <p className="text-xs text-ink/45">用户端不能修改题目数;没有配置时默认 100 道题。</p>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              {examRuleCategories.map((category) => (
+                <label key={category} className="block">
+                  <span className="mb-1 block text-xs text-ink/60">{category}</span>
+                  <input
+                    className={input}
+                    value={examRuleCategoryCounts[category] ?? String(defaultExamCategoryCounts[category] ?? examRule?.totalCount ?? 100)}
+                    inputMode="numeric"
+                    onChange={(e) =>
+                      setExamRuleCategoryCounts((prev) => ({
+                        ...prev,
+                        [category]: e.target.value,
+                      }))
+                    }
+                  />
+                </label>
+              ))}
+            </div>
+            <p className="text-xs text-ink/45">按科目开始考试时使用对应题数;没有科目配置时使用默认题数。</p>
             {examRuleMsg && <p className="text-sm text-sky">{examRuleMsg}</p>}
           </div>
         </Card>

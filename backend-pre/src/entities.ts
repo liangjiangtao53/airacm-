@@ -43,6 +43,9 @@ export class ExamPaperRule {
   @Column({ type: 'integer', default: 100 })
   totalCount!: number;
 
+  @Column({ type: 'simple-json', nullable: true })
+  categoryCounts!: Record<string, number> | null;
+
   @CreateDateColumn()
   createdAt!: Date;
 
@@ -545,7 +548,35 @@ export class QuestionPractice {
   updatedAt!: Date;
 }
 
-// 错题本:学员答错的题。按来源区分顺序学习/模拟考试,同一题可分别累计。
+// 顺序学习进度:只由专题学习查看答案推进,避免模拟考试记录污染学习游标。
+@Entity('study_question_progress')
+@Index(['tenantId', 'userId', 'category', 'courseId'], { unique: true })
+export class StudyQuestionProgress {
+  @PrimaryGeneratedColumn('uuid')
+  id!: string;
+
+  @Column({ length: 64 })
+  tenantId!: string;
+
+  @Column({ length: 64 })
+  userId!: string;
+
+  @Column({ length: 50 })
+  category!: string;
+
+  @Column({ length: 64, default: '' })
+  courseId!: string;
+
+  @Column({ length: 64 })
+  questionId!: string;
+
+  @Column({ type: TS_TYPE })
+  lastStudiedAt!: Date;
+
+  @UpdateDateColumn()
+  updatedAt!: Date;
+}
+
 @Entity('wrong_question')
 @Index(['tenantId', 'userId', 'questionId', 'source'], { unique: true })
 @Index(['tenantId', 'userId', 'status'])
@@ -716,6 +747,7 @@ export const ALL_ENTITIES = [
   Comment,
   ExamAttempt,
   QuestionPractice,
+  StudyQuestionProgress,
   WrongQuestion,
   AccessKey,
   Post,

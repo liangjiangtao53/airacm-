@@ -14,12 +14,30 @@ import {
 import { InjectRepository, TypeOrmModule } from '@nestjs/typeorm';
 import { In, QueryFailedError, Repository } from 'typeorm';
 import { IsInt, IsObject, IsOptional, IsString, Max, Min } from 'class-validator';
-import { ExamAttempt, ExamPaperRule, Question, QuestionOption, QuestionPractice, WrongQuestion, WrongQuestionSource } from '../entities';
+import {
+  ExamAttempt,
+  ExamPaperRule,
+  Question,
+  QuestionOption,
+  QuestionPractice,
+  StudyQuestionProgress,
+  WrongQuestion,
+  WrongQuestionSource,
+} from '../entities';
 import { AuthUser, CurrentUser, JwtAuthGuard, Roles, RolesGuard } from '../common';
-import { AdaptiveQuestionState, pickAdaptiveQuestions } from './question-picking';
+import { PublicQuestion, QuestionPoolCacheModule, QuestionPoolCacheService } from './question-pool-cache';
 
 const DEFAULT_COUNT = 100;
-const MAX_COUNT = 100;
+const MAX_COUNT = 300;
+const WRONG_QUESTION_RATIO = 0.2;
+const DEFAULT_CATEGORY_COUNTS: Record<string, number> = {
+  'M1 航空概论': 32,
+  'M2 航空器维修': 50,
+  'M3 飞机结构和系统': 182,
+  'M5 航空涡轮发动机': 70,
+  'M9 航空英语': 60,
+  'M9 new': 60,
+};
 
 class StartExamDto {
   @IsOptional()
@@ -40,10 +58,15 @@ class StartExamDto {
 }
 
 class UpdateExamRuleDto {
+  @IsOptional()
   @IsInt()
   @Min(1)
   @Max(MAX_COUNT)
-  totalCount!: number;
+  totalCount?: number;
+
+  @IsOptional()
+  @IsObject()
+  categoryCounts?: Record<string, number>;
 }
 
 class SubmitExamDto {
@@ -119,16 +142,30 @@ export class ExamService {
     @InjectRepository(WrongQuestion) private readonly wrongBookRepo: Repository<WrongQuestion>,
     @InjectRepository(QuestionPractice) private readonly practices: Repository<QuestionPractice>,
     @InjectRepository(ExamPaperRule) private readonly rules: Repository<ExamPaperRule>,
+    @InjectRepository(StudyQuestionProgress) private readonly studyProgress: Repository<StudyQuestionProgress>,
+    private readonly questionPool: QuestionPoolCacheService,
   ) {}
 
-  async getRule(tenantId: string): Promise<{ totalCount: number }> {
+  async getRule(tenantId: string): Promise<{ totalCount: number; categoryCounts: Record<string, number> }> {
     const row = await this.rules.findOne({ where: { tenantId } });
-    return { totalCount: row?.totalCount ?? DEFAULT_COUNT };
+    return {
+      totalCount: row?.totalCount ?? DEFAULT_COUNT,
+      categoryCounts: { ...DEFAULT_CATEGORY_COUNTS, ...(row?.categoryCounts ?? {}) },
+    };
   }
 
-  async updateRule(user: AuthUser, totalCount: number): Promise<{ totalCount: number }> {
-    // 原来是先查再新增；首次并发保存可能撞 tenantId 唯一索引，这里改成数据库 upsert。
-    await this.rules.upsert({ tenantId: user.tenantId, totalCount }, ['tenantId']);
+  async updateRule(
+    user: AuthUser,
+    dto: UpdateExamRuleDto,
+  ): Promise<{ totalCount: number; categoryCounts: Record<string, number> }> {
+    const current = await this.getRule(user.tenantId);
+    const totalCount = dto.totalCount === undefined ? current.totalCount : this.sanitizeCount(dto.totalCount);
+    const categoryCounts = this.sanitizeCategoryCounts({
+      ...current.categoryCounts,
+      ...(dto.categoryCounts ?? {}),
+    });
+    // 原来只保存全局题数；现在同时保存按科目题数,老客户端仍可只传 totalCount。
+    await this.rules.upsert({ tenantId: user.tenantId, totalCount, categoryCounts }, ['tenantId']);
     return this.getRule(user.tenantId);
   }
 
@@ -137,8 +174,9 @@ export class ExamService {
     user: AuthUser,
     dto: StartExamDto,
   ): Promise<{ attemptId: string; total: number; questions: PaperQuestion[] }> {
-    const { totalCount } = await this.getRule(user.tenantId);
-    const picked = await this.pickExamQuestions(user, dto, totalCount);
+    const rule = await this.getRule(user.tenantId);
+    const count = dto.category ? (rule.categoryCounts[dto.category] ?? rule.totalCount) : rule.totalCount;
+    const picked = await this.pickExamQuestions(user, dto, count);
     if (picked.length === 0) throw new BadRequestException('暂无考试题目');
     const attempt = await this.attempts.save(
       this.attempts.create({
@@ -162,17 +200,26 @@ export class ExamService {
     user: AuthUser,
     dto: Pick<StartExamDto, 'courseId' | 'category'>,
     count: number,
-  ): Promise<Question[]> {
-    const qb = this.questions
-      .createQueryBuilder('q')
-      .where('q.tenantId = :tenantId', { tenantId: user.tenantId })
-      .andWhere('q.usage IN (:...usages)', { usages: ['exam', 'both'] });
-    if (dto.courseId) qb.andWhere('q.courseId = :courseId', { courseId: dto.courseId });
-    if (dto.category) qb.andWhere('q.category = :category', { category: dto.category });
-    const pool = await qb.orderBy('q.order', 'ASC').getMany();
-    const target = Math.max(1, Math.min(MAX_COUNT, count));
-    const state = await this.loadAdaptiveQuestionState(user, pool);
-    return this.shuffle(pickAdaptiveQuestions(pool, state, target));
+  ): Promise<PublicQuestion[]> {
+    // Start exam used to read the full question table on every request; use the boot-time pool cache instead.
+    const pool = await this.questionPool.getQuestions(user.tenantId, {
+      usage: 'exam',
+      ...(dto.courseId ? { courseId: dto.courseId } : {}),
+      ...(dto.category ? { category: dto.category } : {}),
+      reloadIfEmpty: true,
+    });
+    const target = this.sanitizeCount(count);
+    const wrongQuestionIds = await this.loadOpenExamWrongQuestionIds(user, pool);
+    const wrongSet = new Set(wrongQuestionIds);
+    const wrongPool = pool.filter((q) => wrongSet.has(q.id));
+    const wrongTarget = wrongPool.length > 0 ? Math.max(1, Math.floor(target * WRONG_QUESTION_RATIO)) : 0;
+    const pickedWrong = this.shuffle(wrongPool).slice(0, Math.min(wrongTarget, target));
+    const pickedIds = new Set(pickedWrong.map((q) => q.id));
+    const randomPool = pool.filter((q) => !wrongSet.has(q.id));
+    const pickedRandom = this.shuffle(randomPool).slice(0, Math.max(0, target - pickedWrong.length));
+    pickedRandom.forEach((q) => pickedIds.add(q.id));
+    const fallbackWrong = wrongPool.filter((q) => !pickedIds.has(q.id)).slice(0, Math.max(0, target - pickedWrong.length - pickedRandom.length));
+    return this.shuffle([...pickedWrong, ...pickedRandom, ...fallbackWrong]);
   }
 
   // 交卷判分:按锁定的 questionIds 逐题比对,算分(百分制),落库,返回逐题对错 + 正确答案。
@@ -238,23 +285,29 @@ export class ExamService {
     return { score, correct, total, details };
   }
 
-  private async loadAdaptiveQuestionState(user: AuthUser, pool: Question[]): Promise<AdaptiveQuestionState> {
+  private sanitizeCount(value: number): number {
+    return Math.max(1, Math.min(MAX_COUNT, Math.trunc(value)));
+  }
+
+  private sanitizeCategoryCounts(raw: Record<string, number>): Record<string, number> {
+    const counts: Record<string, number> = {};
+    for (const [category, value] of Object.entries(raw)) {
+      if (!category.trim() || !Number.isFinite(Number(value))) continue;
+      counts[category] = this.sanitizeCount(Number(value));
+    }
+    return counts;
+  }
+
+  private async loadOpenExamWrongQuestionIds(user: AuthUser, pool: Array<Pick<Question, 'id'>>): Promise<string[]> {
     const ids = pool.map((q) => q.id);
-    if (ids.length === 0) return { attempts: [], practices: [], wrongs: [] };
-    const [attempts, practices, wrongs] = await Promise.all([
-      this.attempts.find({
-        where: { tenantId: user.tenantId, userId: user.userId, status: 'submitted' },
-        order: { submittedAt: 'DESC' },
-        take: 50,
-      }),
-      this.practices.find({
-        where: { tenantId: user.tenantId, userId: user.userId, questionId: In(ids) },
-      }),
-      this.wrongBookRepo.find({
-        where: { tenantId: user.tenantId, userId: user.userId, questionId: In(ids) },
-      }),
-    ]);
-    return { attempts, practices, wrongs };
+    if (ids.length === 0) return [];
+    const idSet = new Set(ids);
+    const wrongs = await this.wrongBookRepo.find({
+      where: { tenantId: user.tenantId, userId: user.userId, status: 'open', source: 'exam' },
+      select: ['questionId', 'wrongCount', 'lastWrongAt'],
+      order: { wrongCount: 'DESC', lastWrongAt: 'DESC' },
+    });
+    return wrongs.map((w) => w.questionId).filter((id) => idSet.has(id));
   }
 
   private async syncQuestionPractice(user: AuthUser, details: GradedItem[]): Promise<void> {
@@ -386,6 +439,17 @@ export class ExamService {
     if (!q) throw new NotFoundException('题目不存在');
     const now = new Date();
     const isCorrect = normalize(answer) === q.answer;
+    await this.studyProgress.upsert(
+      {
+        tenantId: user.tenantId,
+        userId: user.userId,
+        category: q.category,
+        courseId: q.courseId ?? '',
+        questionId,
+        lastStudiedAt: now,
+      },
+      ['tenantId', 'userId', 'category', 'courseId'],
+    );
     await this.recordQuestionPractice(user, questionId, isCorrect, now);
     if (isCorrect) return { ok: true, recorded: false };
     await this.recordWrong(user, questionId, 'study', now);
@@ -576,12 +640,15 @@ export class ExamRuleAdminController {
 
   @Patch()
   update(@CurrentUser() admin: AuthUser, @Body() dto: UpdateExamRuleDto) {
-    return this.svc.updateRule(admin, dto.totalCount);
+    return this.svc.updateRule(admin, dto);
   }
 }
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Question, ExamAttempt, WrongQuestion, QuestionPractice, ExamPaperRule])],
+  imports: [
+    TypeOrmModule.forFeature([Question, ExamAttempt, WrongQuestion, QuestionPractice, ExamPaperRule, StudyQuestionProgress]),
+    QuestionPoolCacheModule,
+  ],
   controllers: [ExamController, ExamRuleAdminController],
   providers: [ExamService],
 })

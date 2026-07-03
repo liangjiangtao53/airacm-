@@ -36,12 +36,14 @@ import {
   QuestionPractice,
   QuestionUsage,
   QUESTION_CATEGORIES,
+  StudyQuestionProgress,
   User,
   WrongQuestion,
 } from '../entities';
 import { AuthUser, CurrentUser, JwtAuthGuard, Roles, RolesGuard } from '../common';
 import { env } from '../config';
 import { AdaptiveQuestionState, orderAdaptiveQuestions } from './question-picking';
+import { QuestionPoolCacheModule, QuestionPoolCacheService } from './question-pool-cache';
 
 // 上传文件最小形状(避免引入 @types/multer)。FileInterceptor 默认内存存储提供 buffer。
 interface UploadedQuestionFile {
@@ -50,6 +52,7 @@ interface UploadedQuestionFile {
 }
 
 const USAGES: QuestionUsage[] = ['study', 'exam', 'both'];
+const SEQUENTIAL_STUDY_BATCH_SIZE = 20;
 // 模板表头(下载用)。解析按表头名匹配,不依赖列序,兼容真实文件(序号/参考答案/3选项等)。
 const TEMPLATE_HEADER = ['题干', '选项A', '选项B', '选项C', '选项D', '答案', '解析'] as const;
 const PDF_IMPORT_HEADER = ['题干', '选项A', '选项B', '选项C', '选项D', '选项E', '选项F', '选项G', '选项H', '答案', '解析'] as const;
@@ -228,12 +231,19 @@ export class QuestionService {
     @InjectRepository(ExamAttempt) private readonly attempts: Repository<ExamAttempt>,
     @InjectRepository(WrongQuestion) private readonly wrongBookRepo: Repository<WrongQuestion>,
     @InjectRepository(QuestionPractice) private readonly practices: Repository<QuestionPractice>,
+    @InjectRepository(StudyQuestionProgress) private readonly studyProgress: Repository<StudyQuestionProgress>,
+    private readonly questionPool: QuestionPoolCacheService,
   ) {}
 
   private clearQuestionListCountCache(tenantId: string): void {
     for (const key of this.questionListCountCache.keys()) {
       if (key.startsWith(`${tenantId}|`)) this.questionListCountCache.delete(key);
     }
+  }
+
+  private async refreshQuestionCaches(tenantId: string): Promise<void> {
+    this.clearQuestionListCountCache(tenantId);
+    await this.questionPool.refreshTenant(tenantId);
   }
 
   private async cachedQuestionListTotal(cacheKey: string, loader: () => Promise<number>): Promise<number> {
@@ -437,7 +447,7 @@ export class QuestionService {
     }
     if (toSave.length) {
       await this.questions.save(toSave);
-      this.clearQuestionListCountCache(admin.tenantId);
+      await this.refreshQuestionCaches(admin.tenantId);
     }
     return { imported: toSave.length, failed };
   }
@@ -673,6 +683,23 @@ export class QuestionService {
         'q.order',
         'q.createdAt',
       ];
+      if (q.usage === 'study' && q.category && !q.keyword?.trim()) {
+        // 顺序学习原来混用自适应排序；现在按用户最后一次学习位置继续固定取 20 题。
+        const allRows = await this.questionPool.getQuestions(user.tenantId, {
+          usage: 'study',
+          category: q.category,
+          ...(q.courseId ? { courseId: q.courseId } : {}),
+          reloadIfEmpty: true,
+        });
+        const { rows, page: currentPage } = await this.listSequentialStudyBatch(
+          user,
+          allRows,
+          q.category,
+          q.courseId ?? '',
+        );
+        return { items: rows, total: allRows.length, page: currentPage, pageSize: SEQUENTIAL_STUDY_BATCH_SIZE };
+      }
+
       const countCacheKey = [
         user.tenantId,
         q.usage ?? '',
@@ -681,17 +708,6 @@ export class QuestionService {
         q.keyword?.trim() ?? '',
       ].join('|');
       const total = await this.cachedQuestionListTotal(countCacheKey, () => baseQb.clone().getCount());
-
-      if (q.usage === 'study' && q.category && !q.keyword?.trim()) {
-        const allRowsQb = baseQb.clone().select(publicSelect).orderBy('q.order', 'ASC');
-        const dbType = this.questions.manager.connection.options.type;
-        if (dbType === 'mysql' || dbType === 'mariadb') allRowsQb.useIndex(this.questionListIndex(q));
-        const allRows = await allRowsQb.getMany();
-        const state = await this.loadAdaptiveQuestionState(user, allRows);
-        const rows = orderAdaptiveQuestions(allRows, state).slice((page - 1) * pageSize, page * pageSize);
-        const items = rows.map(({ answer: _a, analysis: _an, ...rest }) => rest);
-        return { items, total, page, pageSize };
-      }
 
       const rowsQb = baseQb
         .clone()
@@ -710,23 +726,32 @@ export class QuestionService {
   }
 
   // 读取用户历史练习/考试/错题状态,用于专题学习按新题/原题/错题混合排序。
-  private async loadAdaptiveQuestionState(user: AuthUser, pool: Question[]): Promise<AdaptiveQuestionState> {
+  private async loadAdaptiveQuestionState(user: AuthUser, pool: Array<Pick<Question, 'id'>>): Promise<AdaptiveQuestionState> {
     const ids = pool.map((q) => q.id);
     if (ids.length === 0) return { attempts: [], practices: [], wrongs: [] };
+    const idSet = new Set(ids);
     const [attempts, practices, wrongs] = await Promise.all([
       this.attempts.find({
         where: { tenantId: user.tenantId, userId: user.userId, status: 'submitted' },
+        select: ['questionIds', 'submittedAt', 'createdAt'],
         order: { submittedAt: 'DESC' },
         take: 50,
       }),
       this.practices.find({
-        where: { tenantId: user.tenantId, userId: user.userId, questionId: In(ids) },
+        // Avoid a huge IN (...) per study request; filter the user's compact state in memory.
+        where: { tenantId: user.tenantId, userId: user.userId },
+        select: ['questionId', 'seenCount', 'lastSeenAt'],
       }),
       this.wrongBookRepo.find({
-        where: { tenantId: user.tenantId, userId: user.userId, questionId: In(ids) },
+        where: { tenantId: user.tenantId, userId: user.userId, status: 'open' },
+        select: ['questionId', 'wrongCount', 'status', 'lastWrongAt'],
       }),
     ]);
-    return { attempts, practices, wrongs };
+    return {
+      attempts,
+      practices: practices.filter((p) => idSet.has(p.questionId)),
+      wrongs: wrongs.filter((w) => idSet.has(w.questionId)),
+    };
   }
 
   // 查看答案:单独端点,返回正确答案 + 解析。
@@ -739,6 +764,28 @@ export class QuestionService {
       throw new ForbiddenException('考试题答案不可查看');
     }
     return { answer: q.answer, analysis: q.analysis };
+  }
+
+  // 顺序学习按最近一次学习位置续取,不参与新题/原题/错题混排。
+  private async listSequentialStudyBatch<T extends Pick<Question, 'id'>>(
+    user: AuthUser,
+    allRows: T[],
+    category: string,
+    courseId: string,
+  ): Promise<{ rows: T[]; page: number }> {
+    if (allRows.length === 0) return { rows: [], page: 1 };
+    const questionIndex = new Map(allRows.map((q, i) => [q.id, i]));
+    const progress = await this.studyProgress.findOne({
+      where: { tenantId: user.tenantId, userId: user.userId, category, courseId },
+      select: ['questionId'],
+    });
+    const lastIndex = progress ? questionIndex.get(progress.questionId) : undefined;
+    const startIndex = lastIndex === undefined ? 0 : lastIndex + 1;
+
+    return {
+      rows: allRows.slice(startIndex, startIndex + SEQUENTIAL_STUDY_BATCH_SIZE),
+      page: Math.floor(startIndex / SEQUENTIAL_STUDY_BATCH_SIZE) + 1,
+    };
   }
 
   // 评论列表(带作者昵称)。学习/考试复盘/错题本共用同一 questionId 评论串。
@@ -808,7 +855,7 @@ export class QuestionService {
     if (!ids.length) return { deleted: 0 };
     await this.comments.delete({ tenantId: user.tenantId, questionId: In(ids) });
     await this.questions.delete({ tenantId: user.tenantId, category });
-    this.clearQuestionListCountCache(user.tenantId);
+    await this.refreshQuestionCaches(user.tenantId);
     return { deleted: ids.length };
   }
 
@@ -816,7 +863,7 @@ export class QuestionService {
   async deleteOne(user: AuthUser, id: string): Promise<{ deleted: number }> {
     await this.comments.delete({ tenantId: user.tenantId, questionId: id });
     const r = await this.questions.delete({ tenantId: user.tenantId, id });
-    if ((r.affected ?? 0) > 0) this.clearQuestionListCountCache(user.tenantId);
+    if ((r.affected ?? 0) > 0) await this.refreshQuestionCaches(user.tenantId);
     return { deleted: r.affected ?? 0 };
   }
 
@@ -925,7 +972,7 @@ export class QuestionService {
     if (!ids.length) return { deleted: 0 };
     await this.comments.delete({ tenantId: user.tenantId, questionId: In(ids) });
     const r = await this.questions.delete({ tenantId: user.tenantId, id: In(ids) });
-    if ((r.affected ?? 0) > 0) this.clearQuestionListCountCache(user.tenantId);
+    if ((r.affected ?? 0) > 0) await this.refreshQuestionCaches(user.tenantId);
     return { deleted: r.affected ?? 0 };
   }
 
@@ -1076,7 +1123,19 @@ export class QuestionImageController {
 }
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Question, QuestionCategoryEntity, Comment, User, ExamAttempt, WrongQuestion, QuestionPractice])],
+  imports: [
+    TypeOrmModule.forFeature([
+      Question,
+      QuestionCategoryEntity,
+      Comment,
+      User,
+      ExamAttempt,
+      WrongQuestion,
+      QuestionPractice,
+      StudyQuestionProgress,
+    ]),
+    QuestionPoolCacheModule,
+  ],
   controllers: [QuestionAdminController, QuestionController, QuestionImageController],
   providers: [QuestionService],
 })

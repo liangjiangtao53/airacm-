@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { api, assetUrl, getToken, type QuestionItem } from '@/lib/api';
 import Comments from '@/components/Comments';
 
-const PAGE_SIZES = [10, 20, 30];
+const PAGE_SIZES = [20];
 
 export default function StudyPage() {
   const router = useRouter();
@@ -15,7 +15,7 @@ export default function StudyPage() {
   const [keyword, setKeyword] = useState(''); // 搜索输入(即时)
   const [searchKw, setSearchKw] = useState(''); // 防抖后真正用于查询的关键词
   const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(10);
+  const [pageSize, setPageSize] = useState(20);
   const [jumpTo, setJumpTo] = useState('1');
   const [total, setTotal] = useState(0);
   const [err, setErr] = useState('');
@@ -55,6 +55,8 @@ export default function StudyPage() {
       .then((r) => {
         setItems(r.items);
         setTotal(r.total);
+        setPage(r.page);
+        setPageSize(r.pageSize);
       })
       .catch((e) => setErr((e as Error).message))
       .finally(() => setLoading(false));
@@ -234,9 +236,7 @@ function QuestionCard({ q, index }: { q: QuestionItem; index: number }) {
       const result = await api.questionAnswer(q.id);
       setAnswer(result);
       const pickedKey = [...picked].sort().join('');
-      if (pickedKey && pickedKey !== result.answer) {
-        await api.recordStudyWrong(q.id, pickedKey);
-      }
+      await api.recordStudyWrong(q.id, pickedKey || result.answer);
     } catch {
       /* 静默:答案获取失败不致命,用户可重试 */
     }

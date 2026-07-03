@@ -115,6 +115,7 @@ export interface ManagedQuestionCategory {
 
 export interface ExamPaperRule {
   totalCount: number;
+  categoryCounts: Record<string, number>;
 }
 
 // 考试卷面题目(不含答案)。
@@ -386,8 +387,8 @@ export const api = {
   uploadAppApk: (file: File) => upload<AppApkStatus>('/admin/app/apk', file),
 
   examRule: () => req<ExamPaperRule>('/admin/exam/rule'),
-  updateExamRule: (totalCount: number) =>
-    req<ExamPaperRule>('/admin/exam/rule', { method: 'PATCH', body: { totalCount } }),
+  updateExamRule: (totalCount: number, categoryCounts?: Record<string, number>) =>
+    req<ExamPaperRule>('/admin/exam/rule', { method: 'PATCH', body: { totalCount, categoryCounts } }),
 
   // 题库 Excel 导入:整批指定 usage(仅学习/仅考试/两者)。
   importQuestions: (file: File, usage: QuestionUsage, category?: string) => {

@@ -11,8 +11,8 @@ const picked = ref<Record<string, string[]>>({});
 const answers = ref<Record<string, { answer: string; analysis: string }>>({});
 const page = ref(1);
 const jumpValue = ref('1');
-const pageSizeOptions = [10, 20, 30];
-const pageSize = ref(10);
+const pageSizeOptions = [20];
+const pageSize = ref(20);
 const total = ref(0);
 const loading = ref(false);
 const commentOpen = ref<Record<string, boolean>>({});
@@ -49,6 +49,9 @@ async function loadQuestions(reset = false) {
     });
     questions.value = res.items;
     total.value = res.total;
+    page.value = res.page;
+    pageSize.value = res.pageSize;
+    jumpValue.value = String(res.page);
   } catch (e) {
     toast((e as Error).message);
   } finally {
@@ -62,9 +65,7 @@ async function reveal(id: string) {
     const result = await api.questionAnswer(id);
     answers.value[id] = result;
     const pickedKey = [...(picked.value[id] || [])].sort().join('');
-    if (pickedKey) {
-      await api.recordStudyWrong(id, pickedKey);
-    }
+    await api.recordStudyWrong(id, pickedKey || result.answer);
   } catch (e) {
     toast((e as Error).message);
   }

@@ -19,7 +19,16 @@ import request from 'supertest';
 import * as XLSX from 'xlsx';
 import { AppModule } from '../src/app.module';
 import { AuthUser, signToken } from '../src/common';
-import { AccessKey, Question, QuestionPractice, QuestionUsage, User, Wallet, WrongQuestion } from '../src/entities';
+import {
+  AccessKey,
+  Question,
+  QuestionPractice,
+  QuestionUsage,
+  StudyQuestionProgress,
+  User,
+  Wallet,
+  WrongQuestion,
+} from '../src/entities';
 import { SmsService } from '../src/modules/sms';
 
 const TENANT = 't1';
@@ -351,11 +360,13 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
         .send({ totalCount: 2 });
       expect(saved.status).toBe(200);
       expect(saved.body.data.totalCount).toBe(2);
+      expect(saved.body.data.categoryCounts['M1 航空概论']).toBe(32);
 
       const current = await request(app.getHttpServer())
         .get('/admin/exam/rule')
         .set('Authorization', `Bearer ${admin.token}`);
       expect(current.body.data.totalCount).toBe(2);
+      expect(current.body.data.categoryCounts['M3 飞机结构和系统']).toBe(182);
 
       const start = await request(app.getHttpServer())
         .post('/exams/start')
@@ -440,10 +451,10 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
       return rows.filter((q) => q.stem.startsWith(prefix)).length;
     }
 
-    it('exam start mixes new, review, and wrong questions instead of pure random', async () => {
+    it('exam start uses category counts and mixes random pool questions with exam wrong questions', async () => {
       const admin = await makeUser('admin');
       const user = await makeUser('user');
-      const category = `ADAPTIVE-EXAM-${phoneSeq++}`;
+      const category = `RANDOM-WRONG-EXAM-${phoneSeq++}`;
       const courseId = `adaptive-course-${phoneSeq++}`;
       const fresh = await seedQuestions('EXAM-NEW', 12, 'exam', category, courseId);
       const review = await seedQuestions('EXAM-REVIEW', 5, 'exam', category, courseId);
@@ -482,7 +493,7 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
       await request(app.getHttpServer())
         .patch('/admin/exam/rule')
         .set('Authorization', `Bearer ${admin.token}`)
-        .send({ totalCount: 10 });
+        .send({ totalCount: 100, categoryCounts: { [category]: 10 } });
       const start = await request(app.getHttpServer())
         .post('/exams/start')
         .set('Authorization', `Bearer ${user.token}`)
@@ -495,49 +506,30 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
       const questions = start.body.data.questions as Array<{ stem: string }>;
       expect(start.status).toBe(201);
       expect(questions).toHaveLength(10);
-      expect(countByPrefix(questions, 'EXAM-NEW')).toBe(6);
-      expect(countByPrefix(questions, 'EXAM-REVIEW')).toBe(3);
-      expect(countByPrefix(questions, 'EXAM-WRONG')).toBe(1);
+      expect(countByPrefix(questions, 'EXAM-WRONG')).toBe(2);
+      expect(countByPrefix(questions, 'EXAM-NEW') + countByPrefix(questions, 'EXAM-REVIEW')).toBe(8);
       expect(fresh).toHaveLength(12);
     });
 
-    it('study list uses the same mix but stays inside the selected category', async () => {
+    it('study list advances sequentially in fixed batches of 20 inside the selected category', async () => {
       const user = await makeUser('user');
-      const category = `ADAPTIVE-STUDY-${phoneSeq++}`;
-      const otherCategory = `ADAPTIVE-STUDY-OTHER-${phoneSeq++}`;
-      await seedQuestions('STUDY-NEW', 12, 'study', category, null);
-      const review = await seedQuestions('STUDY-REVIEW', 5, 'study', category, null);
-      const wrong = await seedQuestions('STUDY-WRONG', 3, 'study', category, null);
+      const category = `SEQUENTIAL-STUDY-${phoneSeq++}`;
+      const otherCategory = `SEQUENTIAL-STUDY-OTHER-${phoneSeq++}`;
+      const rows = await seedQuestions('STUDY-SEQ', 25, 'study', category, null);
       await seedQuestions('STUDY-OTHER', 5, 'study', otherCategory, null);
       const now = new Date();
-
       await ds.getRepository(QuestionPractice).save(
-        review.map((q) =>
-          ds.getRepository(QuestionPractice).create({
-            tenantId: TENANT,
-            userId: user.user.userId,
-            questionId: q.id,
-            seenCount: 1,
-            correctCount: 1,
-            wrongCount: 0,
-            lastSeenAt: now,
-            lastCorrectAt: now,
-            lastWrongAt: null,
-          }),
-        ),
-      );
-      await ds.getRepository(WrongQuestion).save(
-        wrong.map((q, i) =>
-          ds.getRepository(WrongQuestion).create({
-            tenantId: TENANT,
-            userId: user.user.userId,
-            questionId: q.id,
-            source: 'study',
-            wrongCount: i + 1,
-            status: 'open',
-            lastWrongAt: now,
-          }),
-        ),
+        ds.getRepository(QuestionPractice).create({
+          tenantId: TENANT,
+          userId: user.user.userId,
+          questionId: rows[24].id,
+          seenCount: 1,
+          correctCount: 1,
+          wrongCount: 0,
+          lastSeenAt: now,
+          lastCorrectAt: now,
+          lastWrongAt: null,
+        }),
       );
 
       const res = await request(app.getHttpServer())
@@ -546,12 +538,86 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
 
       const items = res.body.data.items as Array<{ stem: string; category: string }>;
       expect(res.status).toBe(200);
-      expect(items).toHaveLength(10);
+      expect(items).toHaveLength(20);
+      expect(res.body.data.pageSize).toBe(20);
+      expect(res.body.data.page).toBe(1);
       expect(items.every((q) => q.category === category)).toBe(true);
-      expect(countByPrefix(items, 'STUDY-NEW')).toBe(6);
-      expect(countByPrefix(items, 'STUDY-REVIEW')).toBe(3);
-      expect(countByPrefix(items, 'STUDY-WRONG')).toBe(1);
+      expect(items.map((q) => q.stem)).toEqual(Array.from({ length: 20 }, (_, i) => `STUDY-SEQ-${i + 1}`));
       expect(countByPrefix(items, 'STUDY-OTHER')).toBe(0);
+
+      await ds.getRepository(StudyQuestionProgress).save(
+        ds.getRepository(StudyQuestionProgress).create({
+          tenantId: TENANT,
+          userId: user.user.userId,
+          category,
+          courseId: '',
+          questionId: rows[19].id,
+          lastStudiedAt: now,
+        }),
+      );
+
+      const next = await request(app.getHttpServer())
+        .get(`/questions?usage=study&category=${encodeURIComponent(category)}&page=99&pageSize=10`)
+        .set('Authorization', `Bearer ${user.token}`);
+      const nextItems = next.body.data.items as Array<{ stem: string; category: string }>;
+      expect(next.status).toBe(200);
+      expect(next.body.data.page).toBe(2);
+      expect(next.body.data.pageSize).toBe(20);
+      expect(nextItems.map((q) => q.stem)).toEqual(['STUDY-SEQ-21', 'STUDY-SEQ-22', 'STUDY-SEQ-23', 'STUDY-SEQ-24', 'STUDY-SEQ-25']);
+
+      await ds.getRepository(StudyQuestionProgress).upsert(
+        {
+          tenantId: TENANT,
+          userId: user.user.userId,
+          category,
+          courseId: '',
+          questionId: rows[24].id,
+          lastStudiedAt: new Date(now.getTime() + 1000),
+        },
+        ['tenantId', 'userId', 'category', 'courseId'],
+      );
+
+      const done = await request(app.getHttpServer())
+        .get(`/questions?usage=study&category=${encodeURIComponent(category)}`)
+        .set('Authorization', `Bearer ${user.token}`);
+      expect(done.status).toBe(200);
+      expect(done.body.data.items).toHaveLength(0);
+      expect(done.body.data.page).toBe(2);
+    });
+
+    it('question pool cache refreshes after import and delete', async () => {
+      const admin = await makeUser('admin');
+      const user = await makeUser('user');
+      const courseId = `cache-course-${phoneSeq++}`;
+      const stem = `CACHE-EXAM-${phoneSeq++}`;
+
+      const imported = await request(app.getHttpServer())
+        .post(`/admin/questions/import?usage=exam&courseId=${encodeURIComponent(courseId)}`)
+        .set('Authorization', `Bearer ${admin.token}`)
+        .attach('file', buildXlsx([[stem, 'A', 'B', '', '', 'A', 'cache analysis']]), 'cache.xlsx');
+      expect(imported.status).toBe(201);
+      expect(imported.body.data.imported).toBe(1);
+
+      const start = await request(app.getHttpServer())
+        .post('/exams/start')
+        .set('Authorization', `Bearer ${user.token}`)
+        .send({ courseId });
+      expect(start.status).toBe(201);
+      expect(start.body.data.questions).toHaveLength(1);
+      expect(start.body.data.questions[0].stem).toBe(stem);
+
+      const q = await ds.getRepository(Question).findOneOrFail({ where: { tenantId: TENANT, stem } });
+      const deleted = await request(app.getHttpServer())
+        .delete(`/admin/questions/${q.id}`)
+        .set('Authorization', `Bearer ${admin.token}`);
+      expect(deleted.status).toBe(200);
+      expect(deleted.body.data.deleted).toBe(1);
+
+      const afterDelete = await request(app.getHttpServer())
+        .post('/exams/start')
+        .set('Authorization', `Bearer ${user.token}`)
+        .send({ courseId });
+      expect(afterDelete.status).toBe(400);
     });
 
     it('study answer tracking accumulates repeated answers on one practice row', async () => {
@@ -582,6 +648,10 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
       expect(rows[0].lastSeenAt).toBeTruthy();
       expect(rows[0].lastCorrectAt).toBeTruthy();
       expect(rows[0].lastWrongAt).toBeNull();
+      const progress = await ds.getRepository(StudyQuestionProgress).findOne({
+        where: { tenantId: TENANT, userId: user.user.userId, category, courseId: '' },
+      });
+      expect(progress?.questionId).toBe(q.id);
     });
   });
 
