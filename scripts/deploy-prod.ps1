@@ -63,6 +63,7 @@ else
   mkdir -p uploads/app uploads/question-images
 fi
 echo "release=`$PWD"
+
 "@
 
   $remoteScript += @"
@@ -72,12 +73,14 @@ if [ ! -x "`$BASE/bin/backup-db.sh" ]; then
   exit 1
 fi
 "`$BASE/bin/backup-db.sh" predeploy
+
 "@
 
   if (-not $SkipMigration) {
     $remoteScript += @"
 echo "running migration..."
 sudo -n docker run --rm --network airacm_default --env-file .env -e NODE_ENV=production -v "`$PWD/backend-pre:/work" -w /work node:22-slim sh -lc "npm config set registry https://registry.npmmirror.com && npm ci --omit=optional --ignore-scripts && npm run migration:run"
+
 "@
   }
 
@@ -89,6 +92,7 @@ echo "current -> `$(readlink "`$BASE/current")"
 sudo -n docker compose ps
 curl -k -sS -o /tmp/airacm_health.out -w "public_health %{http_code} %{time_total}\n" https://weixiuzhiyi.com.cn/api/health
 cat /tmp/airacm_health.out
+
 "@
 
   $tmp = Join-Path $env:TEMP "airacm-deploy-$release.sh"
