@@ -30,3 +30,7 @@ deploy/certbot/
 .DS_Store
 Thumbs.db
 .gstack/
+.context/
+
+# Local release archives generated during manual/prod deploys
+airacm*.tar.gz
