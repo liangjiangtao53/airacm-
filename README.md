@@ -118,7 +118,13 @@ docker compose down               # 停止服务(数据库使用外部 MySQL)
 - [ ] 生产关闭短信 dev 模式(`SMS_DEV_MODE=false`)
 - [ ] MySQL 定时备份(`mysqldump` 或云数据库快照)
 
+### 当前上线状态(2026-07-03)
+
+- 生产已改为 TypeORM migration 流程,`DB_SYNC` 保持 `false`。
+- 生产数据库每日 03:20 自动备份到 `/home/ubuntu/airacm/db-backups`。
+- 部署脚本会在 migration 前自动执行 `predeploy` 数据库备份。
+- 2026-07-03 已完成一次备份恢复演练:临时 MySQL 恢复成功,题库表和新增审计表可恢复。
+
 ### 待办(P1)
 
-- 补 TypeORM 迁移文件,替代 `DB_SYNC`(当前无迁移,首部署靠 synchronize 建表)
 - CSP 收紧为 nonce 方案(当前含 `'unsafe-inline'` 以兼容 Next 运行时)

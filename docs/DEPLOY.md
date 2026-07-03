@@ -325,12 +325,53 @@ docker compose restart
 
 ### 数据库备份 / 恢复
 
+当前生产已安装备份脚本:
+
+```bash
+/home/ubuntu/airacm/bin/backup-db.sh
+```
+
+备份目录:
+
+```bash
+/home/ubuntu/airacm/db-backups
+```
+
+部署脚本会在 migration 前自动执行:
+
+```bash
+/home/ubuntu/airacm/bin/backup-db.sh predeploy
+```
+
+每日备份 cron:
+
+```bash
+20 3 * * * /home/ubuntu/airacm/bin/backup-db.sh daily >> /home/ubuntu/airacm/db-backups/backup.log 2>&1
+```
+
+保留策略:
+
+- `daily`:保留 14 天,至少保留最近 7 份。
+- `weekly`:每周日复制一份,保留 8 周,至少保留最近 4 份。
+- `predeploy`:保留 14 天,至少保留最近 10 份。
+- `manual`:保留 7 天,至少保留最近 3 份。
+- 备份目录超过 5G 会清理最老备份。
+- 可用空间低于 8G 会告警,低于 2G 会拒绝继续备份。
+
+手动备份:
+
+```bash
+/home/ubuntu/airacm/bin/backup-db.sh manual
+```
+
+2026-07-03 已完成恢复演练:使用部署后 manual 备份恢复到临时 MySQL,验证 `question`、`question_import_batch`、`admin_operation_log` 和 `question.importBatchId` 成功。
+
 ```bash
 # 备份
-docker compose exec db pg_dump -U airacm airacm > backup_$(date +%F).sql
+/home/ubuntu/airacm/bin/backup-db.sh manual
 
-# 恢复(覆盖现有数据,谨慎)
-cat backup_2026-06-22.sql | docker compose exec -T db psql -U airacm airacm
+# 恢复演练请恢复到临时 MySQL,不要直接覆盖生产库。
+# 生产覆盖恢复必须先停服务并二次确认。
 ```
 
 > 建议加进 crontab 每日备份,并把备份同步到阿里云 OSS。

@@ -52,14 +52,13 @@ CORS_ORIGINS=https://你的前端域名                    # 生产必填,否则
 SMS_DEV_MODE=false
 ALI_SMS_AK_ID=...   ALI_SMS_AK_SECRET=...   ALI_SMS_SIGN=...   ALI_SMS_TEMPLATE=...
 
-# 首次部署:建表 + 管理员(只这一次开 sync)
-DB_SYNC=true SEED_DEMO=false npm run seed
-# 之后正常启动(确保 .env 里 DB_SYNC 未开或为 false)
+# 生产表结构通过 migration 更新,DB_SYNC 保持 false
+npm run migration:run
 npm run build && npm run start:prod
 ```
 
-后续若有表结构变更,建议改用正式迁移:接一个 MySQL 实例后
-`npm run migration:generate` 生成迁移,再 `npm run migration:run` 应用,放弃 `DB_SYNC`。
+生产部署已改用正式迁移。后续表结构变更必须提交 `src/migrations/*` 并在上线时执行
+`npm run migration:run`。`DB_SYNC=true` 只允许测试/本地一次性建表场景使用,不要用于生产。
 
 ## 模块
 
