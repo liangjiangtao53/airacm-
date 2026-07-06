@@ -219,7 +219,7 @@ export class AccessKeyService {
     await this.keys.update(k.id, { status: 'revoked' });
     if (admin) {
       await this.logAdminOperation(admin, 'access_key_revoke', 'access_key', id, {
-        key: k.key,
+        key: k.key.length <= 4 ? '****' : `****${k.key.slice(-4)}`,
         userId: k.userId,
       });
     }
@@ -234,7 +234,7 @@ export class AccessKeyService {
     await this.keys.update(k.id, { expiresAt });
     if (admin) {
       await this.logAdminOperation(admin, 'access_key_update_ttl', 'access_key', id, {
-        key: k.key,
+        key: k.key.length <= 4 ? '****' : `****${k.key.slice(-4)}`,
         ttlDays,
         expiresAt,
       });

@@ -1208,6 +1208,14 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
         .set('Authorization', `Bearer ${admin.token}`);
       expect(rv.status).toBe(201);
 
+      const revokeLog = await ds.getRepository(AdminOperationLog).findOne({
+        where: { tenantId: TENANT, action: 'access_key_revoke', targetId: target.id },
+      });
+      expect(revokeLog).toBeTruthy();
+      const revokeDetail = revokeLog?.detail as { key?: string };
+      expect(revokeDetail.key).not.toBe(target.key);
+      expect(revokeDetail.key).toBe(`****${target.key.slice(-4)}`);
+
       const login = await request(app.getHttpServer())
         .post('/auth/key-login')
         .send({ key: target.key });

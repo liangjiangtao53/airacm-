@@ -37,6 +37,6 @@ public class MainActivity extends Activity {
     webView.setWebViewClient(new WebViewClient());
     setContentView(webView);
     // 域名 HTTPS 当前被云侧拦截,App 临时走公网 IP 的 HTTP;域名放行后再切回 HTTPS 域名。
-    webView.loadUrl("file:///android_asset/www/index.html?platform=app&apiBase=http%3A%2F%2F49.235.145.149%2Fapi&downloadBase=http%3A%2F%2F49.235.145.149#/pages/index/index");
+    webView.loadUrl("file:///android_asset/www/index.html?platform=app&apiBase=https%3A%2F%2Fweixiuzhiyi.com.cn%2Fapi&downloadBase=https%3A%2F%2Fweixiuzhiyi.com.cn#/pages/index/index");
   }
 }
