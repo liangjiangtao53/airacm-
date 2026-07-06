@@ -123,6 +123,16 @@ export interface AdminUser {
   createdAt: string;
 }
 
+export interface AdminOperationLogItem {
+  id: string;
+  action: string;
+  targetType: string;
+  targetId: string | null;
+  detail: Record<string, unknown> | null;
+  createdAt: string;
+  admin: { id: string; phone: string; nickname: string; role: UserRole } | null;
+}
+
 export interface ManagedQuestionCategory {
   id: string;
   name: string;
@@ -398,6 +408,12 @@ export const api = {
     req<{ id: string }>('/admin/chapters', { method: 'POST', body: { courseId, title } }),
   adminCreateLesson: (chapterId: string, title: string, type: LessonType, access: LessonAccess) =>
     req<{ id: string }>('/admin/lessons', { method: 'POST', body: { chapterId, title, type, access } }),
+  operationLogs: (params: { action?: string; keyword?: string; from?: string; to?: string; page?: number; pageSize?: number } = {}) => {
+    const qs = new URLSearchParams();
+    Object.entries(params).forEach(([k, v]) => v !== undefined && v !== '' && qs.set(k, String(v)));
+    const suffix = qs.toString() ? `?${qs}` : '';
+    return req<{ items: AdminOperationLogItem[]; total: number; page: number; pageSize: number }>(`/admin/operation-logs${suffix}`);
+  },
 
   appApkStatus: () => req<AppApkStatus>('/admin/app/apk'),
   uploadAppApk: (file: File) => upload<AppApkStatus>('/admin/app/apk', file),

@@ -62,6 +62,7 @@ const OPTION_LETTERS = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'] as const;
 const STEM_HEADERS = ['题干', '题目', '问题'];
 const ANSWER_HEADERS = ['参考答案', '答案', '正确答案'];
 const ANALYSIS_HEADERS = ['解析', '答案解析', '说明', '备注'];
+const OBSOLETE_QUESTION_CATEGORIES = ['M9 new'];
 
 type PdfSection = 'stem' | 'option' | 'afterAnswer' | 'analysis';
 
@@ -326,7 +327,10 @@ export class QuestionService {
 
   private async ensureDefaultCategories(tenantId: string): Promise<void> {
     const count = await this.categories.count({ where: { tenantId } });
-    if (count > 0) return;
+    if (count > 0) {
+      await this.removeObsoleteCategories(tenantId);
+      return;
+    }
     await this.categories.save(
       QUESTION_CATEGORIES.map((name, order) => this.categories.create({ tenantId, name, order })),
     );
@@ -335,7 +339,7 @@ export class QuestionService {
   async listCategoryNames(tenantId: string): Promise<string[]> {
     await this.ensureDefaultCategories(tenantId);
     const rows = await this.categories.find({ where: { tenantId }, order: { order: 'ASC', name: 'ASC' } });
-    return rows.map((r) => r.name);
+    return rows.map((r) => r.name).filter((name) => !OBSOLETE_QUESTION_CATEGORIES.includes(name));
   }
 
   async listManagedCategories(
@@ -347,18 +351,29 @@ export class QuestionService {
       this.statsByCategory(user),
     ]);
     const counts = new Map(stats.map((s) => [s.category === '(未分类)' ? '' : s.category, s.count]));
-    return rows.map((r) => ({ id: r.id, name: r.name, count: counts.get(r.name) ?? 0 }));
+    return rows
+      .filter((r) => !OBSOLETE_QUESTION_CATEGORIES.includes(r.name))
+      .map((r) => ({ id: r.id, name: r.name, count: counts.get(r.name) ?? 0 }));
+  }
+
+  private async removeObsoleteCategories(tenantId: string): Promise<void> {
+    for (const name of OBSOLETE_QUESTION_CATEGORIES) {
+      const questionCount = await this.questions.count({ where: { tenantId, category: name } });
+      if (questionCount === 0) await this.categories.delete({ tenantId, name });
+    }
   }
 
   async createCategory(user: AuthUser, rawName: string): Promise<{ id: string; name: string; count: number }> {
     const name = this.normalizeCategoryName(rawName);
     if (!name) throw new BadRequestException('类别名称不能为空');
     if (name === '(未分类)') throw new BadRequestException('该名称为系统保留名称');
+    if (OBSOLETE_QUESTION_CATEGORIES.includes(name)) throw new BadRequestException('该类别已停用');
     await this.ensureDefaultCategories(user.tenantId);
     const dup = await this.categories.findOne({ where: { tenantId: user.tenantId, name } });
     if (dup) throw new BadRequestException('类别已存在');
     const order = await this.categories.count({ where: { tenantId: user.tenantId } });
     const row = await this.categories.save(this.categories.create({ tenantId: user.tenantId, name, order }));
+    await this.logAdminOperation(user, 'question_category_create', 'question_category', row.id, { name, order });
     return { id: row.id, name: row.name, count: 0 };
   }
 
@@ -370,6 +385,7 @@ export class QuestionService {
     const name = this.normalizeCategoryName(rawName);
     if (!name) throw new BadRequestException('类别名称不能为空');
     if (name === '(未分类)') throw new BadRequestException('该名称为系统保留名称');
+    if (OBSOLETE_QUESTION_CATEGORIES.includes(name)) throw new BadRequestException('该类别已停用');
     const row = await this.categories.findOne({ where: { tenantId: user.tenantId, id } });
     if (!row) throw new NotFoundException('类别不存在');
     if (row.name === name) return { id: row.id, name: row.name, count: 0 };
@@ -378,6 +394,10 @@ export class QuestionService {
     const dup = await this.categories.findOne({ where: { tenantId: user.tenantId, name } });
     if (dup && dup.id !== id) throw new BadRequestException('类别已存在');
     await this.categories.update(row.id, { name });
+    await this.logAdminOperation(user, 'question_category_rename', 'question_category', row.id, {
+      from: row.name,
+      to: name,
+    });
     return { id: row.id, name, count: 0 };
   }
 
@@ -387,11 +407,15 @@ export class QuestionService {
     const count = await this.questions.count({ where: { tenantId: user.tenantId, category: row.name } });
     if (count > 0) throw new BadRequestException('该类别下还有题目，请先删除题目后再删除类别');
     const r = await this.categories.delete({ tenantId: user.tenantId, id });
+    if ((r.affected ?? 0) > 0) {
+      await this.logAdminOperation(user, 'question_category_delete', 'question_category', id, { name: row.name });
+    }
     return { deleted: r.affected ?? 0 };
   }
 
   private async assertCategoryExists(tenantId: string, category: string | undefined): Promise<void> {
     if (!category) return;
+    if (OBSOLETE_QUESTION_CATEGORIES.includes(category)) throw new BadRequestException('该类别已停用');
     await this.ensureDefaultCategories(tenantId);
     const exists = await this.categories.exist({ where: { tenantId, name: category } });
     if (!exists) throw new BadRequestException('类别不存在，请先在类别管理中新增');

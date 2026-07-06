@@ -16,6 +16,7 @@ import { In, QueryFailedError, Repository } from 'typeorm';
 import { IsInt, IsObject, IsOptional, IsString, Max, Min } from 'class-validator';
 import {
   ExamAttempt,
+  AdminOperationLog,
   ExamPaperRule,
   Question,
   QuestionOption,
@@ -36,7 +37,6 @@ const DEFAULT_CATEGORY_COUNTS: Record<string, number> = {
   'M3 飞机结构和系统': 182,
   'M5 航空涡轮发动机': 70,
   'M9 航空英语': 60,
-  'M9 new': 60,
 };
 
 class StartExamDto {
@@ -142,6 +142,7 @@ export class ExamService {
     @InjectRepository(WrongQuestion) private readonly wrongBookRepo: Repository<WrongQuestion>,
     @InjectRepository(QuestionPractice) private readonly practices: Repository<QuestionPractice>,
     @InjectRepository(ExamPaperRule) private readonly rules: Repository<ExamPaperRule>,
+    @InjectRepository(AdminOperationLog) private readonly operationLogs: Repository<AdminOperationLog>,
     @InjectRepository(StudyQuestionProgress) private readonly studyProgress: Repository<StudyQuestionProgress>,
     private readonly questionPool: QuestionPoolCacheService,
   ) {}
@@ -160,12 +161,19 @@ export class ExamService {
   ): Promise<{ totalCount: number; categoryCounts: Record<string, number> }> {
     const current = await this.getRule(user.tenantId);
     const totalCount = dto.totalCount === undefined ? current.totalCount : this.sanitizeCount(dto.totalCount);
-    const categoryCounts = this.sanitizeCategoryCounts({
-      ...current.categoryCounts,
-      ...(dto.categoryCounts ?? {}),
-    });
+    const categoryCounts = this.sanitizeCategoryCounts(dto.categoryCounts === undefined ? current.categoryCounts : dto.categoryCounts);
     // 原来只保存全局题数；现在同时保存按科目题数,老客户端仍可只传 totalCount。
     await this.rules.upsert({ tenantId: user.tenantId, totalCount, categoryCounts }, ['tenantId']);
+    await this.operationLogs.save(
+      this.operationLogs.create({
+        tenantId: user.tenantId,
+        adminId: user.userId,
+        action: 'exam_rule_update',
+        targetType: 'exam_paper_rule',
+        targetId: user.tenantId,
+        detail: { totalCount, categoryCounts },
+      }),
+    );
     return this.getRule(user.tenantId);
   }
 
@@ -646,7 +654,7 @@ export class ExamRuleAdminController {
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Question, ExamAttempt, WrongQuestion, QuestionPractice, ExamPaperRule, StudyQuestionProgress]),
+    TypeOrmModule.forFeature([Question, ExamAttempt, WrongQuestion, QuestionPractice, ExamPaperRule, StudyQuestionProgress, AdminOperationLog]),
     QuestionPoolCacheModule,
   ],
   controllers: [ExamController, ExamRuleAdminController],

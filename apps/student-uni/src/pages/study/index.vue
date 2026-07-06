@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onShow } from '@dcloudio/uni-app';
-import { ref } from 'vue';
+import { computed, ref } from 'vue';
 import { api, assetUrl, requireLogin, type CommentItem, type QuestionItem } from '@/utils/api';
 
 const categories = ref<string[]>([]);
@@ -10,14 +10,18 @@ const questions = ref<QuestionItem[]>([]);
 const picked = ref<Record<string, string[]>>({});
 const answers = ref<Record<string, { answer: string; analysis: string }>>({});
 const page = ref(1);
-const jumpValue = ref('1');
-const pageSizeOptions = [20];
 const pageSize = ref(20);
 const total = ref(0);
 const loading = ref(false);
+const currentIndex = ref(0);
+const touchStartX = ref(0);
 const commentOpen = ref<Record<string, boolean>>({});
 const commentInputs = ref<Record<string, string>>({});
 const commentLists = ref<Record<string, CommentItem[]>>({});
+const currentQuestion = computed(() => questions.value[currentIndex.value] || null);
+const currentNumber = computed(() => (page.value - 1) * pageSize.value + currentIndex.value + 1);
+const canPrev = computed(() => page.value > 1 || currentIndex.value > 0);
+const canNext = computed(() => currentIndex.value < questions.value.length - 1 || page.value * pageSize.value < total.value);
 
 function toast(message: string) {
   uni.showToast({ title: message, icon: 'none' });
@@ -31,11 +35,10 @@ async function loadCategories() {
   }
 }
 
-async function loadQuestions(reset = false) {
+async function loadQuestions(reset = false, targetIndex = 0) {
   if (!requireLogin()) return;
   if (reset) {
     page.value = 1;
-    jumpValue.value = '1';
   }
   if (!category.value) return;
   loading.value = true;
@@ -51,7 +54,7 @@ async function loadQuestions(reset = false) {
     total.value = res.total;
     page.value = res.page;
     pageSize.value = res.pageSize;
-    jumpValue.value = String(res.page);
+    currentIndex.value = Math.min(Math.max(0, targetIndex), Math.max(0, res.items.length - 1));
   } catch (e) {
     toast((e as Error).message);
   } finally {
@@ -96,33 +99,33 @@ function changeCategory(e: { detail: { value: number } }) {
   loadQuestions(true);
 }
 
-function changePageSize(e: { detail: { value: number } }) {
-  pageSize.value = pageSizeOptions[Number(e.detail.value)] || pageSize.value;
-  picked.value = {};
-  answers.value = {};
-  loadQuestions(true);
+async function nextQuestion(delta: number) {
+  const maxPage = Math.max(1, Math.ceil(total.value / pageSize.value));
+  const nextIndex = currentIndex.value + delta;
+  if (nextIndex >= 0 && nextIndex < questions.value.length) {
+    currentIndex.value = nextIndex;
+    return;
+  }
+  if (delta > 0 && page.value < maxPage) {
+    page.value += 1;
+    await loadQuestions(false, 0);
+    return;
+  }
+  if (delta < 0 && page.value > 1) {
+    page.value -= 1;
+    await loadQuestions(false, pageSize.value - 1);
+  }
 }
 
-function nextPage(delta: number) {
-  const maxPage = Math.max(1, Math.ceil(total.value / pageSize.value));
-  const next = Math.min(maxPage, Math.max(1, page.value + delta));
-  if (next === page.value) return;
-  page.value = next;
-  jumpValue.value = String(next);
-  picked.value = {};
-  answers.value = {};
-  loadQuestions();
+function onTouchStart(e: { changedTouches?: Array<{ clientX: number }>; touches?: Array<{ clientX: number }> }) {
+  touchStartX.value = e.changedTouches?.[0]?.clientX ?? e.touches?.[0]?.clientX ?? 0;
 }
 
-function jumpPage() {
-  const maxPage = Math.max(1, Math.ceil(total.value / pageSize.value));
-  const next = Math.min(maxPage, Math.max(1, Number(jumpValue.value) || 1));
-  jumpValue.value = String(next);
-  if (next === page.value) return;
-  page.value = next;
-  picked.value = {};
-  answers.value = {};
-  loadQuestions();
+function onTouchEnd(e: { changedTouches?: Array<{ clientX: number }> }) {
+  const endX = e.changedTouches?.[0]?.clientX ?? 0;
+  const delta = endX - touchStartX.value;
+  if (Math.abs(delta) < 60) return;
+  nextQuestion(delta > 0 ? -1 : 1);
 }
 
 async function toggleComments(questionId: string) {
@@ -186,21 +189,19 @@ onShow(async () => {
 
     <view class="list-meta">
       <text>当前科目共 {{ total }} 题</text>
-      <picker mode="selector" :range="pageSizeOptions.map((s) => `${s}题/页`)" @change="changePageSize">
-        <view class="page-size">{{ pageSize }}题/页</view>
-      </picker>
+      <text class="page-size">每批 {{ pageSize }} 题</text>
     </view>
 
     <view v-if="loading" class="empty">加载中...</view>
     <view v-else-if="questions.length === 0" class="empty">当前科目暂无题目。</view>
 
-    <view class="question-list">
-        <view v-for="(q, index) in questions" :key="q.id" class="card question-card">
+    <view class="question-list" @touchstart="onTouchStart" @touchend="onTouchEnd">
+      <view v-if="currentQuestion" class="card question-card">
         <view class="question-head">
-          <text class="badge">{{ (page - 1) * pageSize + index + 1 }} · {{ q.type === 'single' ? '单选' : '多选' }}</text>
-          <text class="stem">{{ q.stem }}</text>
+          <text class="badge">{{ currentNumber }} / {{ total }} · {{ currentQuestion.type === 'single' ? '单选' : '多选' }}</text>
+          <text class="stem">{{ currentQuestion.stem }}</text>
           <image
-            v-for="url in q.imageUrls || []"
+            v-for="url in currentQuestion.imageUrls || []"
             :key="url"
             :src="assetUrl(url)"
             mode="widthFix"
@@ -209,37 +210,37 @@ onShow(async () => {
         </view>
         <view class="options">
           <view
-            v-for="option in q.options"
+            v-for="option in currentQuestion.options"
             :key="option.key"
             :class="[
               'option',
-              (picked[q.id] || []).includes(option.key) && 'chosen',
-              answers[q.id] && isCorrect(q.id, option.key) && 'correct',
-              answers[q.id] && (picked[q.id] || []).includes(option.key) && !isCorrect(q.id, option.key) && 'wrong',
+              (picked[currentQuestion.id] || []).includes(option.key) && 'chosen',
+              answers[currentQuestion.id] && isCorrect(currentQuestion.id, option.key) && 'correct',
+              answers[currentQuestion.id] && (picked[currentQuestion.id] || []).includes(option.key) && !isCorrect(currentQuestion.id, option.key) && 'wrong',
             ]"
-            @tap="toggle(q, option.key)"
+            @tap="toggle(currentQuestion, option.key)"
           >
             <text class="option-key">{{ option.key }}</text>
             <text class="option-text">{{ option.text }}</text>
           </view>
         </view>
         <view class="question-actions">
-          <button v-if="!answers[q.id]" class="btn secondary action" @tap="reveal(q.id)">查看答案</button>
-          <button class="btn secondary action" @tap="toggleComments(q.id)">
-            {{ commentOpen[q.id] ? '收起评论' : '评论' }}
+          <button v-if="!answers[currentQuestion.id]" class="btn secondary action" @tap="reveal(currentQuestion.id)">查看答案</button>
+          <button class="btn secondary action" @tap="toggleComments(currentQuestion.id)">
+            {{ commentOpen[currentQuestion.id] ? '收起评论' : '评论' }}
           </button>
         </view>
-        <view v-if="answers[q.id]" class="answer-box">
-          <text class="answer">答案: {{ answers[q.id].answer }}</text>
-          <text v-if="answers[q.id].analysis" class="analysis">解析: {{ answers[q.id].analysis }}</text>
+        <view v-if="answers[currentQuestion.id]" class="answer-box">
+          <text class="answer">答案: {{ answers[currentQuestion.id].answer }}</text>
+          <text v-if="answers[currentQuestion.id].analysis" class="analysis">解析: {{ answers[currentQuestion.id].analysis }}</text>
         </view>
-        <view v-if="commentOpen[q.id]" class="comment-box">
+        <view v-if="commentOpen[currentQuestion.id]" class="comment-box">
           <view class="comment-form">
-            <input v-model="commentInputs[q.id]" class="comment-input" placeholder="写下你的想法..." />
-            <button class="btn comment-submit" @tap="addComment(q.id)">发表</button>
+            <input v-model="commentInputs[currentQuestion.id]" class="comment-input" placeholder="写下你的想法..." />
+            <button class="btn comment-submit" @tap="addComment(currentQuestion.id)">发表</button>
           </view>
-          <view v-if="(commentLists[q.id] || []).length === 0" class="comment-empty">暂无评论</view>
-          <view v-for="c in commentLists[q.id] || []" :key="c.id" class="comment-item">
+          <view v-if="(commentLists[currentQuestion.id] || []).length === 0" class="comment-empty">暂无评论</view>
+          <view v-for="c in commentLists[currentQuestion.id] || []" :key="c.id" class="comment-item">
             <text class="comment-name">{{ c.nickname }}</text>
             <text class="comment-content">{{ c.content }}</text>
           </view>
@@ -247,16 +248,10 @@ onShow(async () => {
       </view>
     </view>
 
-    <view class="pager">
-      <button class="btn secondary pager-btn" @tap="nextPage(-1)">上一页</button>
-      <text class="pager-text">第 {{ page }} / {{ Math.max(1, Math.ceil(total / pageSize)) }} 页</text>
-      <button class="btn secondary pager-btn" @tap="nextPage(1)">下一页</button>
-    </view>
-    <view v-if="total > pageSize" class="jump-row">
-      <text class="jump-label">跳转到</text>
-      <input v-model="jumpValue" class="jump-input" type="number" confirm-type="done" @confirm="jumpPage" />
-      <text class="jump-label">页</text>
-      <button class="btn secondary jump-btn" @tap="jumpPage">跳转</button>
+    <view v-if="questions.length > 0" class="pager">
+      <button class="btn secondary pager-btn" :disabled="!canPrev" @tap="nextQuestion(-1)">上一题</button>
+      <text class="pager-text">{{ currentNumber }} / {{ total }}</text>
+      <button class="btn secondary pager-btn" :disabled="!canNext" @tap="nextQuestion(1)">下一题</button>
     </view>
   </view>
 </template>
@@ -456,8 +451,7 @@ onShow(async () => {
   padding: 0 20rpx;
 }
 
-.comment-submit,
-.jump-btn {
+.comment-submit {
   min-height: 68rpx;
 }
 
@@ -500,26 +494,4 @@ onShow(async () => {
   font-size: 24rpx;
 }
 
-.jump-row {
-  align-items: center;
-  display: flex;
-  flex-direction: row;
-  gap: 12rpx;
-  justify-content: center;
-}
-
-.jump-label {
-  color: rgba(17, 24, 39, 0.55);
-  font-size: 24rpx;
-}
-
-.jump-input {
-  background: #fff;
-  border: 2rpx solid rgba(17, 24, 39, 0.12);
-  border-radius: 14rpx;
-  color: #111827;
-  min-height: 68rpx;
-  text-align: center;
-  width: 120rpx;
-}
 </style>

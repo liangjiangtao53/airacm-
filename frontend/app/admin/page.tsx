@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import {
   api,
   getToken,
+  type AdminOperationLogItem,
   type AdminUser,
   type AppApkStatus,
   type ExamPaperRule,
@@ -36,14 +37,14 @@ const defaultExamCategoryCounts: Record<string, number> = {
   'M3 飞机结构和系统': 182,
   'M5 航空涡轮发动机': 70,
   'M9 航空英语': 60,
-  'M9 new': 60,
 };
 type AccessKeyRow = { id: string; key: string; status: string; expiresAt: string; createdAt: string };
-type AdminSheet = 'operations' | 'questions' | 'users' | 'security';
-const sheets: Array<{ key: AdminSheet; label: string }> = [
+type AdminSheet = 'operations' | 'questions' | 'users' | 'logs' | 'security';
+const sheets: Array<{ key: AdminSheet; label: string; superOnly?: boolean }> = [
   { key: 'questions', label: '学习资料' },
   { key: 'operations', label: '运营配置' },
   { key: 'users', label: '用户社区' },
+  { key: 'logs', label: '操作日志', superOnly: true },
   { key: 'security', label: '账号安全' },
 ];
 
@@ -108,6 +109,13 @@ export default function AdminPage() {
   const [topics, setTopics] = useState<ForumTopic[]>([]);
   const [newTopic, setNewTopic] = useState('');
 
+  // 操作日志(仅超管可见)。
+  const [operationLogs, setOperationLogs] = useState<AdminOperationLogItem[]>([]);
+  const [operationLogTotal, setOperationLogTotal] = useState(0);
+  const [operationLogAction, setOperationLogAction] = useState('');
+  const [operationLogKeyword, setOperationLogKeyword] = useState('');
+  const [operationLogPage, setOperationLogPage] = useState(1);
+
   // 新增业务管理员(仅超管)
   const [adminPhone, setAdminPhone] = useState('');
   const [adminPwd, setAdminPwd] = useState('');
@@ -145,8 +153,15 @@ export default function AdminPage() {
         }).catch(() => undefined);
         api.users().then(setUsers).catch(() => undefined);
         api.forumTopics().then(setTopics).catch(() => undefined);
-        // 卡密仅 super 可见
-        if (u.role === 'super') api.accessKeys().then(setKeys).catch(() => undefined);
+        // 卡密与操作日志仅 super 可见。
+        if (u.role === 'super') {
+          api.accessKeys().then(setKeys).catch(() => undefined);
+          api.operationLogs({ page: 1, pageSize: 50 }).then((r) => {
+            setOperationLogs(r.items);
+            setOperationLogTotal(r.total);
+            setOperationLogPage(r.page);
+          }).catch(() => undefined);
+        }
       })
       .catch(() => router.push('/login'));
   }, [router]);
@@ -167,6 +182,17 @@ export default function AdminPage() {
     const [names, managed] = await Promise.all([api.categories(), api.managedCategories()]);
     setCategories(names);
     setManagedCategories(managed);
+  };
+  const refreshOperationLogs = async (page = operationLogPage) => {
+    const r = await api.operationLogs({
+      action: operationLogAction.trim() || undefined,
+      keyword: operationLogKeyword.trim() || undefined,
+      page,
+      pageSize: 50,
+    });
+    setOperationLogs(r.items);
+    setOperationLogTotal(r.total);
+    setOperationLogPage(r.page);
   };
 
   const genCodes = wrap(async () => {
@@ -245,7 +271,7 @@ export default function AdminPage() {
     const name = file.name.toLowerCase();
     if (name.includes('r3m1')) return 'M1 航空概论';
     if (name.includes('3257')) return 'M9 航空英语';
-    if (name.includes('民用航空器维修人员执照英语参考试题m9')) return 'M9 new';
+    if (name.includes('民用航空器维修人员执照英语参考试题m9')) return 'M9 航空英语';
     return '';
   }
 
@@ -274,7 +300,7 @@ export default function AdminPage() {
       throw new Error('模拟考试题目数必须是 1-300 的整数');
     }
     const categoryCounts: Record<string, number> = {};
-    for (const category of Array.from(new Set([...categories, ...Object.keys(examRuleCategoryCounts)]))) {
+    for (const category of examRuleCategories) {
       const value = Number(examRuleCategoryCounts[category] ?? defaultExamCategoryCounts[category] ?? examRule?.totalCount ?? totalCount);
       if (!Number.isInteger(value) || value < 1 || value > 300) {
         throw new Error(`${category} 的题目数必须是 1-300 的整数`);
@@ -284,7 +310,9 @@ export default function AdminPage() {
     const saved = await api.updateExamRule(totalCount, categoryCounts);
     setExamRule(saved);
     setExamRuleCount(String(saved.totalCount));
-    setExamRuleCategoryCounts(Object.fromEntries(Object.entries(saved.categoryCounts).map(([k, v]) => [k, String(v)])));
+    setExamRuleCategoryCounts(
+      Object.fromEntries(Object.entries(saved.categoryCounts).filter(([k]) => examRuleCategories.includes(k)).map(([k, v]) => [k, String(v)])),
+    );
     setExamRuleMsg('模拟考试组卷规则已保存');
   });
 
@@ -423,8 +451,39 @@ export default function AdminPage() {
   const sourceLabel = (s?: AdminUser['source']) =>
     s === 'key' ? '卡密' : s === 'wechat' ? '微信' : s === 'register' ? '注册' : '';
 
+  const actionLabel = (action: string) =>
+    ({
+      question_import: '导入题库',
+      question_purge_category: '按科目清空题目',
+      question_delete_one: '删除单题',
+      question_delete_many: '批量删除题目',
+      question_update_one: '编辑题目',
+      question_category_create: '新增科目',
+      question_category_rename: '重命名科目',
+      question_category_delete: '删除科目',
+      exam_rule_update: '保存考试规则',
+      app_apk_upload: '上传 App 安装包',
+      access_key_generate: '生成卡密',
+      access_key_update_ttl: '修改卡密有效期',
+      access_key_revoke: '作废卡密',
+      access_key_cleanup: '清理卡密',
+      recharge_code_generate: '生成充值码',
+      wallet_manual_recharge: '手动充值',
+      course_create: '创建课程',
+      chapter_create: '创建章节',
+      lesson_create: '创建课时',
+      admin_create: '添加业务管理员',
+      user_delete: '删除用户',
+    })[action] ?? action;
+
+  const detailSummary = (detail: Record<string, unknown> | null) => {
+    if (!detail) return '';
+    const pairs = Object.entries(detail).slice(0, 4);
+    return pairs.map(([k, v]) => `${k}: ${typeof v === 'object' ? JSON.stringify(v) : String(v)}`).join(' · ');
+  };
+
   const examRuleCategories = Array.from(
-    new Set([...Object.keys(defaultExamCategoryCounts), ...categories, ...Object.keys(examRuleCategoryCounts)]),
+    new Set([...Object.keys(defaultExamCategoryCounts), ...categories]),
   );
 
   if (!ready) {
@@ -447,7 +506,7 @@ export default function AdminPage() {
       {err && <p className="mb-4 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-600">{err}</p>}
 
       <nav className="mb-5 flex gap-2 overflow-x-auto rounded-xl bg-white/55 p-2 ring-1 ring-white/60">
-        {sheets.map((sheet) => (
+        {sheets.filter((sheet) => !sheet.superOnly || isSuper).map((sheet) => (
           <button
             key={sheet.key}
             onClick={() => setActiveSheet(sheet.key)}
@@ -1031,6 +1090,103 @@ export default function AdminPage() {
           )}
         </Card>
           </>
+        )}
+
+        {activeSheet === 'logs' && isSuper && (
+          <Card title="操作日志">
+            <div className="space-y-4">
+              <div className="grid gap-3 sm:grid-cols-[1fr_1fr_auto]">
+                <input
+                  className={input}
+                  placeholder="操作类型,如 question_import"
+                  value={operationLogAction}
+                  onChange={(e) => setOperationLogAction(e.target.value)}
+                />
+                <input
+                  className={input}
+                  placeholder="账号/昵称/角色关键词"
+                  value={operationLogKeyword}
+                  onChange={(e) => setOperationLogKeyword(e.target.value)}
+                />
+                <button className={btn} onClick={wrap(() => refreshOperationLogs(1))}>
+                  查询
+                </button>
+              </div>
+
+              <p className="text-xs text-ink/45">
+                共 {operationLogTotal} 条,最多每页显示 50 条。业务管理员不可查看此页面。
+              </p>
+
+              <div className="overflow-auto rounded-lg bg-mist">
+                <table className="min-w-full text-left text-xs">
+                  <thead className="bg-mist text-ink/45">
+                    <tr>
+                      <th className="px-3 py-2 font-medium">时间</th>
+                      <th className="px-3 py-2 font-medium">账号</th>
+                      <th className="px-3 py-2 font-medium">操作</th>
+                      <th className="px-3 py-2 font-medium">对象</th>
+                      <th className="px-3 py-2 font-medium">详情</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-white/70">
+                    {operationLogs.length === 0 ? (
+                      <tr>
+                        <td className="px-3 py-6 text-center text-ink/40" colSpan={5}>
+                          暂无操作日志
+                        </td>
+                      </tr>
+                    ) : (
+                      operationLogs.map((log) => (
+                        <tr key={log.id} className="align-top text-ink/75">
+                          <td className="whitespace-nowrap px-3 py-2">{new Date(log.createdAt).toLocaleString()}</td>
+                          <td className="px-3 py-2">
+                            <div className="font-medium text-ink">
+                              {log.admin?.phone || log.admin?.nickname || log.admin?.id || '未知账号'}
+                            </div>
+                            <div className="text-ink/45">{log.admin ? roleLabel(log.admin.role) : log.id.slice(0, 8)}</div>
+                          </td>
+                          <td className="whitespace-nowrap px-3 py-2">
+                            <div>{actionLabel(log.action)}</div>
+                            <div className="font-mono text-ink/40">{log.action}</div>
+                          </td>
+                          <td className="px-3 py-2">
+                            <div>{log.targetType}</div>
+                            {log.targetId && <div className="font-mono text-ink/40">{log.targetId.slice(0, 12)}</div>}
+                          </td>
+                          <td className="min-w-64 px-3 py-2">
+                            <details>
+                              <summary className="cursor-pointer text-ink/65">{detailSummary(log.detail) || '查看详情'}</summary>
+                              <pre className="mt-2 max-w-md overflow-auto rounded bg-white/70 p-2 text-[11px] text-ink/65">
+                                {JSON.stringify(log.detail ?? {}, null, 2)}
+                              </pre>
+                            </details>
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="flex items-center justify-between text-sm">
+                <button
+                  className="text-sky disabled:text-ink/30"
+                  disabled={operationLogPage <= 1}
+                  onClick={wrap(() => refreshOperationLogs(operationLogPage - 1))}
+                >
+                  上一页
+                </button>
+                <span className="text-ink/45">第 {operationLogPage} 页</span>
+                <button
+                  className="text-sky disabled:text-ink/30"
+                  disabled={operationLogPage * 50 >= operationLogTotal}
+                  onClick={wrap(() => refreshOperationLogs(operationLogPage + 1))}
+                >
+                  下一页
+                </button>
+              </div>
+            </div>
+          </Card>
         )}
 
         {activeSheet === 'security' && (

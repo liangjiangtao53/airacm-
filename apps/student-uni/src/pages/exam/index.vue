@@ -11,8 +11,13 @@ const questions = ref<PaperQuestion[]>([]);
 const answers = ref<Record<string, string[]>>({});
 const result = ref<ExamResult | null>(null);
 const busy = ref(false);
+const currentIndex = ref(0);
+const touchStartX = ref(0);
 
 const answeredCount = computed(() => Object.values(answers.value).filter((v) => v.length > 0).length);
+const currentQuestion = computed(() => questions.value[currentIndex.value] || null);
+const canPrev = computed(() => currentIndex.value > 0);
+const canNext = computed(() => currentIndex.value < questions.value.length - 1);
 
 function toast(message: string) {
   uni.showToast({ title: message, icon: 'none' });
@@ -35,6 +40,7 @@ async function start() {
     questions.value = paper.questions;
     answers.value = {};
     result.value = null;
+    currentIndex.value = 0;
     phase.value = 'taking';
   } catch (e) {
     toast((e as Error).message);
@@ -47,9 +53,32 @@ function pick(q: PaperQuestion, key: string) {
   const cur = answers.value[q.id] || [];
   if (q.type === 'single') {
     answers.value[q.id] = [key];
+    if (currentQuestion.value?.id === q.id && canNext.value) {
+      setTimeout(() => {
+        if (currentQuestion.value?.id === q.id) moveQuestion(1);
+      }, 180);
+    }
     return;
   }
   answers.value[q.id] = cur.includes(key) ? cur.filter((k) => k !== key) : [...cur, key].sort();
+}
+
+function moveQuestion(delta: number) {
+  if (questions.value.length === 0) return;
+  const next = Math.min(questions.value.length - 1, Math.max(0, currentIndex.value + delta));
+  if (next === currentIndex.value) return;
+  currentIndex.value = next;
+}
+
+function onTouchStart(e: { changedTouches?: Array<{ clientX: number }>; touches?: Array<{ clientX: number }> }) {
+  touchStartX.value = e.changedTouches?.[0]?.clientX ?? e.touches?.[0]?.clientX ?? 0;
+}
+
+function onTouchEnd(e: { changedTouches?: Array<{ clientX: number }> }) {
+  const endX = e.changedTouches?.[0]?.clientX ?? 0;
+  const delta = endX - touchStartX.value;
+  if (Math.abs(delta) < 60) return;
+  moveQuestion(delta > 0 ? -1 : 1);
 }
 
 async function submit() {
@@ -93,25 +122,30 @@ onShow(() => {
       <button class="btn" :loading="busy" @tap="start">开始考试</button>
     </view>
 
-    <view v-if="phase === 'taking'" class="taking">
+    <view v-if="phase === 'taking'" class="taking" @touchstart="onTouchStart" @touchend="onTouchEnd">
       <text class="progress">共 {{ questions.length }} 题 · 已答 {{ answeredCount }}</text>
-      <view v-for="(q, index) in questions" :key="q.id" class="card question-card">
+      <view v-if="currentQuestion" class="card question-card">
         <view class="question-head">
-          <text class="badge">{{ index + 1 }} · {{ q.type === 'single' ? '单选' : '多选' }}</text>
-          <text class="stem">{{ q.stem }}</text>
-          <image v-for="url in q.imageUrls || []" :key="url" :src="assetUrl(url)" mode="widthFix" class="question-image" />
+          <text class="badge">{{ currentIndex + 1 }} / {{ questions.length }} · {{ currentQuestion.type === 'single' ? '单选' : '多选' }}</text>
+          <text class="stem">{{ currentQuestion.stem }}</text>
+          <image v-for="url in currentQuestion.imageUrls || []" :key="url" :src="assetUrl(url)" mode="widthFix" class="question-image" />
         </view>
         <view class="options">
           <view
-            v-for="option in q.options"
+            v-for="option in currentQuestion.options"
             :key="option.key"
-            :class="['option', (answers[q.id] || []).includes(option.key) && 'chosen']"
-            @tap="pick(q, option.key)"
+            :class="['option', (answers[currentQuestion.id] || []).includes(option.key) && 'chosen']"
+            @tap="pick(currentQuestion, option.key)"
           >
             <text class="option-key">{{ option.key }}</text>
             <text class="option-text">{{ option.text }}</text>
           </view>
         </view>
+      </view>
+      <view class="question-nav">
+        <button class="btn secondary nav-btn" :disabled="!canPrev" @tap="moveQuestion(-1)">上一题</button>
+        <text class="nav-text">{{ currentIndex + 1 }} / {{ questions.length }}</text>
+        <button class="btn secondary nav-btn" :disabled="!canNext" @tap="moveQuestion(1)">下一题</button>
       </view>
       <button class="btn submit" :loading="busy" @tap="submit">交卷</button>
     </view>
@@ -141,6 +175,7 @@ onShow(() => {
 .question-card,
 .question-head,
 .options,
+.question-nav,
 .result-list,
 .review-card {
   display: flex;
@@ -242,6 +277,23 @@ onShow(() => {
 
 .submit {
   margin-top: 8rpx;
+}
+
+.question-nav {
+  align-items: center;
+  flex-direction: row;
+  gap: 16rpx;
+  justify-content: space-between;
+}
+
+.nav-btn {
+  min-height: 72rpx;
+  min-width: 160rpx;
+}
+
+.nav-text {
+  color: rgba(17, 24, 39, 0.55);
+  font-size: 26rpx;
 }
 
 .score-card {

@@ -909,16 +909,16 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
       expect(res.status).toBe(400);
     });
 
-    it('GET /questions/categories 返回 9 个科目', async () => {
+    it('GET /questions/categories 返回 8 个正式科目', async () => {
       const { token } = await makeUser('user');
       const res = await request(app.getHttpServer())
         .get('/questions/categories')
         .set('Authorization', `Bearer ${token}`);
       expect(res.status).toBe(200);
       expect(res.body.data).toContain('M9 航空英语');
-      expect(res.body.data).toContain('M9 new');
+      expect(res.body.data).not.toContain('M9 new');
       expect(res.body.data).toContain('无人机');
-      expect(res.body.data).toHaveLength(9);
+      expect(res.body.data).toHaveLength(8);
     });
   });
 
@@ -1218,6 +1218,32 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
         .set('Authorization', `Bearer ${admin.token}`);
       expect(cleanup.status).toBe(200);
       expect(cleanup.body.data.deleted).toBeGreaterThanOrEqual(1);
+    });
+
+    it('操作日志仅超管可查看,并返回操作账号与时间', async () => {
+      const sup = await makeUser('super');
+      const biz = await makeUser('admin');
+
+      const denied = await request(app.getHttpServer())
+        .get('/admin/operation-logs')
+        .set('Authorization', `Bearer ${biz.token}`);
+      expect(denied.status).toBe(401);
+
+      const gen = await request(app.getHttpServer())
+        .post('/admin/recharge-codes')
+        .set('Authorization', `Bearer ${sup.token}`)
+        .send({ count: 1, amount: 100 });
+      expect(gen.status).toBe(201);
+
+      const logs = await request(app.getHttpServer())
+        .get('/admin/operation-logs?action=recharge_code_generate')
+        .set('Authorization', `Bearer ${sup.token}`);
+      expect(logs.status).toBe(200);
+      expect(logs.body.data.total).toBeGreaterThanOrEqual(1);
+      expect(logs.body.data.items[0].action).toBe('recharge_code_generate');
+      expect(logs.body.data.items[0].admin.id).toBe(sup.user.userId);
+      expect(logs.body.data.items[0].admin.role).toBe('super');
+      expect(logs.body.data.items[0].createdAt).toBeTruthy();
     });
   });
 

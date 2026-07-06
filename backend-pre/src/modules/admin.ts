@@ -7,13 +7,14 @@ import {
   Module,
   Param,
   Post,
+  Query,
   UseGuards,
   BadRequestException,
   ForbiddenException,
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository, TypeOrmModule } from '@nestjs/typeorm';
-import { DataSource, Repository } from 'typeorm';
+import { DataSource, In, Like, Repository } from 'typeorm';
 import {
   IsIn,
   IsInt,
@@ -25,9 +26,11 @@ import {
   Min,
   MinLength,
 } from 'class-validator';
+import { Type } from 'class-transformer';
 import * as crypto from 'crypto';
 import * as bcrypt from 'bcryptjs';
 import {
+  AdminOperationLog,
   Chapter,
   Course,
   Lesson,
@@ -87,6 +90,37 @@ class ManualRechargeDto {
   @Min(1)
   @Max(10_000_000)
   amount!: number; // 分
+}
+
+class OperationLogQuery {
+  @IsOptional()
+  @IsString()
+  action?: string;
+
+  @IsOptional()
+  @IsString()
+  keyword?: string;
+
+  @IsOptional()
+  @IsString()
+  from?: string;
+
+  @IsOptional()
+  @IsString()
+  to?: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  page?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  pageSize?: number;
 }
 
 class CreateCourseDto {
@@ -156,9 +190,29 @@ export class AdminService {
     @InjectRepository(Chapter) private readonly chapters: Repository<Chapter>,
     @InjectRepository(Lesson) private readonly lessons: Repository<Lesson>,
     @InjectRepository(User) private readonly users: Repository<User>,
+    @InjectRepository(AdminOperationLog) private readonly operationLogs: Repository<AdminOperationLog>,
     private readonly wallet: WalletService,
     private readonly dataSource: DataSource,
   ) {}
+
+  private async logAdminOperation(
+    admin: AuthUser,
+    action: string,
+    targetType: string,
+    targetId: string | null,
+    detail: Record<string, unknown>,
+  ): Promise<void> {
+    await this.operationLogs.save(
+      this.operationLogs.create({
+        tenantId: admin.tenantId,
+        adminId: admin.userId,
+        action,
+        targetType,
+        targetId,
+        detail,
+      }),
+    );
+  }
 
   // 批量生成激活码。码用加密随机,避免被枚举猜测。
   async generateCodes(admin: AuthUser, count: number, amount: number): Promise<{ codes: string[] }> {
@@ -172,6 +226,10 @@ export class AdminService {
       );
     }
     await this.codes.save(rows);
+    await this.logAdminOperation(admin, 'recharge_code_generate', 'recharge_code', null, {
+      count: rows.length,
+      amount,
+    });
     return { codes: codeStrings };
   }
 
@@ -192,11 +250,17 @@ export class AdminService {
     const balance = await this.dataSource.transaction((m) =>
       this.wallet.creditWithin(m, { userId, tenantId: admin.tenantId, role: 'user' }, amount, refId),
     );
+    await this.logAdminOperation(admin, 'wallet_manual_recharge', 'user', userId, {
+      phone: target.phone,
+      nickname: target.nickname,
+      amount,
+      balance,
+    });
     return { balance };
   }
 
   async createCourse(admin: AuthUser, dto: CreateCourseDto): Promise<Course> {
-    return this.courses.save(
+    const course = await this.courses.save(
       this.courses.create({
         tenantId: admin.tenantId,
         title: dto.title,
@@ -205,6 +269,8 @@ export class AdminService {
         originalPrice: dto.originalPrice ?? dto.price,
       }),
     );
+    await this.logAdminOperation(admin, 'course_create', 'course', course.id, { title: course.title, price: course.price });
+    return course;
   }
 
   async createChapter(admin: AuthUser, dto: CreateChapterDto): Promise<Chapter> {
@@ -221,6 +287,10 @@ export class AdminService {
       }),
     );
     await this.courses.update(course.id, { chapterCount: course.chapterCount + 1 });
+    await this.logAdminOperation(admin, 'chapter_create', 'chapter', chapter.id, {
+      courseId: chapter.courseId,
+      title: chapter.title,
+    });
     return chapter;
   }
 
@@ -247,6 +317,11 @@ export class AdminService {
     if (course) {
       await this.courses.update(course.id, { lessonCount: course.lessonCount + 1 });
     }
+    await this.logAdminOperation(admin, 'lesson_create', 'lesson', lesson.id, {
+      courseId: lesson.courseId,
+      chapterId: lesson.chapterId,
+      title: lesson.title,
+    });
     return lesson;
   }
 
@@ -275,6 +350,11 @@ export class AdminService {
       );
       await m.save(m.create(Wallet, { tenantId: caller.tenantId, userId: u.id, balance: 0 }));
       return u.id;
+    });
+    await this.logAdminOperation(caller, 'admin_create', 'user', userId, {
+      phone,
+      nickname: nick,
+      role: 'admin',
     });
     return { id: userId, phone, nickname: nick, role: 'admin' };
   }
@@ -322,7 +402,81 @@ export class AdminService {
       await m.delete(Wallet, { tenantId: caller.tenantId, userId: targetId });
       await m.delete(User, { tenantId: caller.tenantId, id: targetId });
     });
+    await this.logAdminOperation(caller, 'user_delete', 'user', targetId, {
+      phone: target.phone,
+      nickname: target.nickname,
+      role: target.role,
+    });
     return { deleted: 1 };
+  }
+
+  async listOperationLogs(
+    caller: AuthUser,
+    q: OperationLogQuery,
+  ): Promise<{
+    items: Array<{
+      id: string;
+      action: string;
+      targetType: string;
+      targetId: string | null;
+      detail: Record<string, unknown> | null;
+      createdAt: Date;
+      admin: { id: string; phone: string; nickname: string; role: string } | null;
+    }>;
+    total: number;
+    page: number;
+    pageSize: number;
+  }> {
+    const page = q.page ?? 1;
+    const pageSize = q.pageSize ?? 50;
+    const qb = this.operationLogs
+      .createQueryBuilder('l')
+      .where('l.tenantId = :tenantId', { tenantId: caller.tenantId });
+    if (q.action?.trim()) qb.andWhere('l.action = :action', { action: q.action.trim() });
+    const from = q.from?.trim() ? new Date(q.from.trim()) : null;
+    if (from && !Number.isNaN(from.getTime())) qb.andWhere('l.createdAt >= :from', { from });
+    const to = q.to?.trim() ? new Date(q.to.trim()) : null;
+    if (to && !Number.isNaN(to.getTime())) qb.andWhere('l.createdAt <= :to', { to });
+    const keyword = q.keyword?.trim();
+    if (keyword) {
+      const adminsByKeyword = await this.users.find({
+        where: [
+          { tenantId: caller.tenantId, phone: Like(`%${keyword}%`) },
+          { tenantId: caller.tenantId, nickname: Like(`%${keyword}%`) },
+        ],
+        select: ['id'],
+        take: 500,
+      });
+      const adminIds = adminsByKeyword.map((u) => u.id);
+      if (adminIds.length === 0) return { items: [], total: 0, page, pageSize };
+      qb.andWhere('l.adminId IN (:...adminIds)', { adminIds });
+    }
+    const [rows, total] = await qb
+      .orderBy('l.createdAt', 'DESC')
+      .skip((page - 1) * pageSize)
+      .take(pageSize)
+      .getManyAndCount();
+    const admins = rows.length
+      ? await this.users.find({
+          where: { tenantId: caller.tenantId, id: In([...new Set(rows.map((r) => r.adminId))]) },
+          select: ['id', 'phone', 'nickname', 'role'],
+        })
+      : [];
+    const adminMap = new Map(admins.map((u) => [u.id, u]));
+    const items = rows
+      .map((row) => {
+        const admin = adminMap.get(row.adminId);
+        return {
+          id: row.id,
+          action: row.action,
+          targetType: row.targetType,
+          targetId: row.targetId,
+          detail: row.detail,
+          createdAt: row.createdAt,
+          admin: admin ? { id: admin.id, phone: admin.phone, nickname: admin.nickname, role: admin.role } : null,
+        };
+      });
+    return { items, total, page, pageSize };
   }
 }
 
@@ -376,11 +530,16 @@ export class AdminController {
   createLesson(@CurrentUser() admin: AuthUser, @Body() dto: CreateLessonDto) {
     return this.svc.createLesson(admin, dto);
   }
+
+  @Get('operation-logs')
+  operationLogs(@CurrentUser() admin: AuthUser, @Query() q: OperationLogQuery) {
+    return this.svc.listOperationLogs(admin, q);
+  }
 }
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([RechargeCode, Course, Chapter, Lesson, User]),
+    TypeOrmModule.forFeature([RechargeCode, Course, Chapter, Lesson, User, AdminOperationLog]),
     WalletModule,
   ],
   controllers: [AdminController],

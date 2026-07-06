@@ -9,8 +9,11 @@ import {
   UseInterceptors,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
+import { InjectRepository, TypeOrmModule } from '@nestjs/typeorm';
 import { mkdir, stat, writeFile } from 'fs/promises';
 import { dirname, resolve } from 'path';
+import { Repository } from 'typeorm';
+import { AdminOperationLog } from '../entities';
 import { AuthUser, CurrentUser, JwtAuthGuard, Roles, RolesGuard } from '../common';
 
 interface UploadedApk {
@@ -37,6 +40,8 @@ const APK_PATH =
 @Roles('admin')
 @Controller('admin/app')
 export class AppReleaseController {
+  constructor(@InjectRepository(AdminOperationLog) private readonly operationLogs: Repository<AdminOperationLog>) {}
+
   @Get('apk')
   async apkStatus(): Promise<AppApkStatus> {
     return appApkStatus();
@@ -44,14 +49,30 @@ export class AppReleaseController {
 
   @Post('apk')
   @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 200 * 1024 * 1024 } }))
-  async uploadApk(@CurrentUser() _admin: AuthUser, @UploadedFile() file: UploadedApk): Promise<AppApkStatus> {
+  async uploadApk(@CurrentUser() admin: AuthUser, @UploadedFile() file: UploadedApk): Promise<AppApkStatus> {
     if (!file?.buffer?.length) throw new BadRequestException('请上传 APK 文件');
     if (!file.originalname.toLowerCase().endsWith('.apk')) {
       throw new BadRequestException('只支持上传 .apk 安装包');
     }
     await mkdir(dirname(APK_PATH), { recursive: true });
     await writeFile(APK_PATH, file.buffer);
-    return appApkStatus();
+    const status = await appApkStatus();
+    await this.operationLogs.save(
+      this.operationLogs.create({
+        tenantId: admin.tenantId,
+        adminId: admin.userId,
+        action: 'app_apk_upload',
+        targetType: 'app_apk',
+        targetId: null,
+        detail: {
+          fileName: file.originalname,
+          size: file.size,
+          path: status.path,
+          updatedAt: status.updatedAt,
+        },
+      }),
+    );
+    return status;
   }
 }
 
@@ -71,6 +92,7 @@ async function appApkStatus(): Promise<AppApkStatus> {
 }
 
 @Module({
+  imports: [TypeOrmModule.forFeature([AdminOperationLog])],
   controllers: [AppReleaseController],
 })
 export class AppReleaseModule {}

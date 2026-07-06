@@ -20,7 +20,7 @@ import { DataSource, LessThan, Repository } from 'typeorm';
 import { IsInt, IsOptional, IsString, Length, Matches, Max, Min } from 'class-validator';
 import { Throttle } from '@nestjs/throttler';
 import * as crypto from 'crypto';
-import { AccessKey, User, Wallet } from '../entities';
+import { AccessKey, AdminOperationLog, User, Wallet } from '../entities';
 import { AuthUser, CurrentUser, JwtAuthGuard, Roles, RolesGuard, JwtPayload } from '../common';
 import { SessionService } from '../session';
 import { env } from '../config';
@@ -75,16 +75,37 @@ export class AccessKeyService {
     @InjectRepository(AccessKey) private readonly keys: Repository<AccessKey>,
     @InjectRepository(Wallet) private readonly wallets: Repository<Wallet>,
     @InjectRepository(User) private readonly users: Repository<User>,
+    @InjectRepository(AdminOperationLog) private readonly operationLogs: Repository<AdminOperationLog>,
     private readonly jwt: JwtService,
     private readonly session: SessionService,
     private readonly dataSource: DataSource,
   ) {}
+
+  private async logAdminOperation(
+    admin: AuthUser,
+    action: string,
+    targetType: string,
+    targetId: string | null,
+    detail: Record<string, unknown>,
+  ): Promise<void> {
+    await this.operationLogs.save(
+      this.operationLogs.create({
+        tenantId: admin.tenantId,
+        adminId: admin.userId,
+        action,
+        targetType,
+        targetId,
+        detail,
+      }),
+    );
+  }
 
   // 批量生成卡密。count/ttlDays 不传则用配置(默认 20 个 / 30 天)。
   async generate(
     tenantId: string,
     count?: number,
     ttlDays?: number,
+    admin?: AuthUser,
   ): Promise<{ keys: string[]; expiresAt: Date }> {
     const n = count ?? env.accessKey.batch;
     const days = ttlDays ?? env.accessKey.ttlDays;
@@ -98,6 +119,13 @@ export class AccessKeyService {
       rows.push(this.keys.create({ tenantId, key: code, expiresAt, status: 'active' }));
     }
     await this.keys.save(rows);
+    if (admin) {
+      await this.logAdminOperation(admin, 'access_key_generate', 'access_key', null, {
+        count: rows.length,
+        ttlDays: days,
+        expiresAt,
+      });
+    }
     return { keys: strings, expiresAt };
   }
 
@@ -185,27 +213,48 @@ export class AccessKeyService {
   }
 
   // 作废一张卡密(立即失效,不可再登录)。
-  async revoke(tenantId: string, id: string): Promise<{ ok: boolean }> {
+  async revoke(tenantId: string, id: string, admin?: AuthUser): Promise<{ ok: boolean }> {
     const k = await this.keys.findOne({ where: { tenantId, id } });
     if (!k) throw new NotFoundException('卡密不存在');
     await this.keys.update(k.id, { status: 'revoked' });
+    if (admin) {
+      await this.logAdminOperation(admin, 'access_key_revoke', 'access_key', id, {
+        key: k.key,
+        userId: k.userId,
+      });
+    }
     return { ok: true };
   }
 
-  async updateExpiresAt(tenantId: string, id: string, ttlDays: number): Promise<AccessKey> {
+  async updateExpiresAt(tenantId: string, id: string, ttlDays: number, admin?: AuthUser): Promise<AccessKey> {
     const k = await this.keys.findOne({ where: { tenantId, id } });
     if (!k) throw new NotFoundException('卡密不存在');
     if (k.status === 'revoked') throw new BadRequestException('已作废卡密不能修改有效期');
     const expiresAt = new Date(Date.now() + ttlDays * DAY_MS);
     await this.keys.update(k.id, { expiresAt });
+    if (admin) {
+      await this.logAdminOperation(admin, 'access_key_update_ttl', 'access_key', id, {
+        key: k.key,
+        ttlDays,
+        expiresAt,
+      });
+    }
     return { ...k, expiresAt };
   }
 
   // 清理:删除已过期 + 已作废的卡密("删除用过/失效的")。
-  async cleanup(tenantId: string): Promise<{ deleted: number }> {
+  async cleanup(tenantId: string, admin?: AuthUser): Promise<{ deleted: number }> {
     const r1 = await this.keys.delete({ tenantId, expiresAt: LessThan(new Date()) });
     const r2 = await this.keys.delete({ tenantId, status: 'revoked' });
-    return { deleted: (r1.affected ?? 0) + (r2.affected ?? 0) };
+    const deleted = (r1.affected ?? 0) + (r2.affected ?? 0);
+    if (admin && deleted > 0) {
+      await this.logAdminOperation(admin, 'access_key_cleanup', 'access_key', null, {
+        expired: r1.affected ?? 0,
+        revoked: r2.affected ?? 0,
+        deleted,
+      });
+    }
+    return { deleted };
   }
 
   private randomKey(): string {
@@ -223,7 +272,7 @@ export class AccessKeyAdminController {
 
   @Post()
   generate(@CurrentUser() admin: AuthUser, @Body() dto: GenKeysDto) {
-    return this.svc.generate(admin.tenantId, dto.count, dto.ttlDays);
+    return this.svc.generate(admin.tenantId, dto.count, dto.ttlDays, admin);
   }
 
   @Get()
@@ -234,17 +283,17 @@ export class AccessKeyAdminController {
   // 清理过期/作废卡密。静态路由置于 :id 之前。
   @Delete('cleanup')
   cleanup(@CurrentUser() admin: AuthUser) {
-    return this.svc.cleanup(admin.tenantId);
+    return this.svc.cleanup(admin.tenantId, admin);
   }
 
   @Post(':id/revoke')
   revoke(@CurrentUser() admin: AuthUser, @Param('id') id: string) {
-    return this.svc.revoke(admin.tenantId, id);
+    return this.svc.revoke(admin.tenantId, id, admin);
   }
 
   @Post(':id')
   update(@CurrentUser() admin: AuthUser, @Param('id') id: string, @Body() dto: UpdateKeyDto) {
-    return this.svc.updateExpiresAt(admin.tenantId, id, dto.ttlDays);
+    return this.svc.updateExpiresAt(admin.tenantId, id, dto.ttlDays, admin);
   }
 }
 
@@ -292,7 +341,7 @@ export class KeyLoginController {
 }
 
 @Module({
-  imports: [TypeOrmModule.forFeature([AccessKey, Wallet, User])],
+  imports: [TypeOrmModule.forFeature([AccessKey, Wallet, User, AdminOperationLog])],
   controllers: [AccessKeyAdminController, KeyLoginController],
   providers: [AccessKeyService, PendingAuthGuard],
   exports: [AccessKeyService],

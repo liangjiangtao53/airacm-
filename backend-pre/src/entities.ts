@@ -68,7 +68,6 @@ export const QUESTION_CATEGORIES = [
   'M5 航空涡轮发动机',
   'M6 航空活塞发动机',
   'M9 航空英语',
-  'M9 new',
   '无人机',
 ] as const;
 export type QuestionCategory = (typeof QUESTION_CATEGORIES)[number];
