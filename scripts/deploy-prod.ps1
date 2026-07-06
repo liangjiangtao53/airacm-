@@ -62,6 +62,10 @@ elif [ -d "`$BASE/current/uploads" ]; then
 else
   mkdir -p uploads/app uploads/question-images
 fi
+if [ -f frontend/public/downloads/app/airacm-android.apk ]; then
+  mkdir -p uploads/app
+  cp -f frontend/public/downloads/app/airacm-android.apk uploads/app/airacm-android.apk
+fi
 echo "release=`$PWD"
 
 "@
