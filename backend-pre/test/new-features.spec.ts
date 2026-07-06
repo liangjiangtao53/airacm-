@@ -307,6 +307,7 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
   // ===== 考试组卷 + 判分 =====
   describe('考试答题判分', () => {
     const COURSE = 'exam-course-1';
+    const CATEGORY = 'M1 航空概论';
     const correctByStem: Record<string, string> = { E1: 'A', E2: 'B', E3: 'AC' };
 
     beforeAll(async () => {
@@ -315,6 +316,7 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
         repo.create({
           tenantId: TENANT,
           courseId: COURSE,
+          category: CATEGORY,
           type: answer.length > 1 ? 'multiple' : 'single',
           stem,
           options: [
@@ -341,12 +343,21 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
       return a;
     }
 
-    it('组卷返回不含答案的卷面,全对得 100', async () => {
+    it('不选科目不能开始模拟考试', async () => {
       const user = await makeUser('user');
       const start = await request(app.getHttpServer())
         .post('/exams/start')
         .set('Authorization', `Bearer ${user.token}`)
         .send({ courseId: COURSE });
+      expect(start.status).toBe(400);
+    });
+
+    it('组卷返回不含答案的卷面,全对得 100', async () => {
+      const user = await makeUser('user');
+      const start = await request(app.getHttpServer())
+        .post('/exams/start')
+        .set('Authorization', `Bearer ${user.token}`)
+        .send({ courseId: COURSE, category: CATEGORY });
       expect(start.status).toBe(201);
       expect(start.body.data.questions).toHaveLength(3);
       expect(start.body.data.questions[0].answer).toBeUndefined(); // 卷面不泄露答案
@@ -381,10 +392,10 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
       const saved = await request(app.getHttpServer())
         .patch('/admin/exam/rule')
         .set('Authorization', `Bearer ${admin.token}`)
-        .send({ totalCount: 2 });
+        .send({ totalCount: 2, categoryCounts: { [CATEGORY]: 2 } });
       expect(saved.status).toBe(200);
       expect(saved.body.data.totalCount).toBe(2);
-      expect(saved.body.data.categoryCounts['M1 航空概论']).toBe(32);
+      expect(saved.body.data.categoryCounts[CATEGORY]).toBe(2);
 
       const current = await request(app.getHttpServer())
         .get('/admin/exam/rule')
@@ -395,7 +406,7 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
       const start = await request(app.getHttpServer())
         .post('/exams/start')
         .set('Authorization', `Bearer ${user.token}`)
-        .send({ courseId: COURSE, count: 1 });
+        .send({ courseId: COURSE, category: CATEGORY, count: 1 });
       expect(start.status).toBe(201);
       expect(start.body.data.questions).toHaveLength(2);
 
@@ -410,7 +421,7 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
       const start = await request(app.getHttpServer())
         .post('/exams/start')
         .set('Authorization', `Bearer ${token}`)
-        .send({ courseId: COURSE });
+        .send({ courseId: COURSE, category: CATEGORY });
       const attemptId = start.body.data.attemptId;
       const wrong = pickAnswers(start.body.data.questions, () => 'D'); // 全选 D,均错
 
@@ -432,7 +443,7 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
       const start = await request(app.getHttpServer())
         .post('/exams/start')
         .set('Authorization', `Bearer ${token}`)
-        .send({ courseId: COURSE });
+        .send({ courseId: COURSE, category: CATEGORY });
       await request(app.getHttpServer())
         .post(`/exams/${start.body.data.attemptId}/submit`)
         .set('Authorization', `Bearer ${token}`)
@@ -506,7 +517,7 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
             tenantId: TENANT,
             userId: user.user.userId,
             questionId: q.id,
-            source: 'exam',
+            source: 'study',
             wrongCount: i + 1,
             status: 'open',
             lastWrongAt: now,
@@ -612,11 +623,12 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
     it('question pool cache refreshes after import and delete', async () => {
       const admin = await makeUser('admin');
       const user = await makeUser('user');
+      const category = 'M1 航空概论';
       const courseId = `cache-course-${phoneSeq++}`;
       const stem = `CACHE-EXAM-${phoneSeq++}`;
 
       const imported = await request(app.getHttpServer())
-        .post(`/admin/questions/import?usage=exam&courseId=${encodeURIComponent(courseId)}`)
+        .post(`/admin/questions/import?usage=exam&courseId=${encodeURIComponent(courseId)}&category=${encodeURIComponent(category)}`)
         .set('Authorization', `Bearer ${admin.token}`)
         .attach('file', buildXlsx([[stem, 'A', 'B', '', '', 'A', 'cache analysis']]), 'cache.xlsx');
       expect(imported.status).toBe(201);
@@ -625,7 +637,7 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
       const start = await request(app.getHttpServer())
         .post('/exams/start')
         .set('Authorization', `Bearer ${user.token}`)
-        .send({ courseId });
+        .send({ courseId, category });
       expect(start.status).toBe(201);
       expect(start.body.data.questions).toHaveLength(1);
       expect(start.body.data.questions[0].stem).toBe(stem);
@@ -640,7 +652,7 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
       const afterDelete = await request(app.getHttpServer())
         .post('/exams/start')
         .set('Authorization', `Bearer ${user.token}`)
-        .send({ courseId });
+        .send({ courseId, category });
       expect(afterDelete.status).toBe(400);
     });
 
@@ -730,6 +742,7 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
   // ===== 错题本 =====
   describe('错题本', () => {
     const COURSE = 'wrong-course-1';
+    const CATEGORY = 'M1 航空概论';
     const correctByStem: Record<string, string> = { W1: 'A', W2: 'B' };
 
     beforeAll(async () => {
@@ -747,6 +760,7 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
           answer,
           analysis: `${stem} 解析`,
           usage: 'exam',
+          category: CATEGORY,
           order: 0,
         });
       await repo.save([mk('W1', 'A'), mk('W2', 'B')]);
@@ -756,14 +770,14 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
       const r = await request(app.getHttpServer())
         .post('/exams/start')
         .set('Authorization', `Bearer ${token}`)
-        .send({ courseId: COURSE });
+        .send({ courseId: COURSE, category: CATEGORY });
       return r.body.data as { attemptId: string; questions: Array<{ id: string; stem: string }> };
     }
 
-    it('答错进错题本,标记掌握移出,答对自动移出', async () => {
+    it('只收集顺序学习错题,模拟考试错题留在考试回顾', async () => {
       const { token } = await makeUser('user');
 
-      // 全错 → 两题都进错题本
+      // 模拟考试全错不会进入错题本。
       const paper = await startCourseExam(token);
       const wrong: Record<string, string> = {};
       paper.questions.forEach((q) => (wrong[q.id] = 'A' === correctByStem[q.stem] ? 'B' : 'A'));
@@ -776,28 +790,27 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
         .get('/exams/wrong-book')
         .set('Authorization', `Bearer ${token}`);
       expect(book.status).toBe(200);
-      expect(book.body.data).toHaveLength(2);
+      expect(book.body.data).toHaveLength(0);
+
+      const studyWrong = await request(app.getHttpServer())
+        .post('/exams/wrong-book/study')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ questionId: paper.questions[0].id, answer: wrong[paper.questions[0].id] });
+      expect(studyWrong.status).toBe(201);
+
+      book = await request(app.getHttpServer())
+        .get('/exams/wrong-book')
+        .set('Authorization', `Bearer ${token}`);
+      expect(book.body.data).toHaveLength(1);
+      expect(book.body.data[0].source).toBe('study');
+      expect(book.body.data[0].category).toBe(CATEGORY);
       expect(book.body.data[0].answer).toBeDefined(); // 错题本含答案供复习
 
-      // 标记其一已掌握 → 剩 1
       const masterId = book.body.data[0].questionId;
       const m = await request(app.getHttpServer())
         .post(`/exams/wrong-book/${masterId}/master`)
         .set('Authorization', `Bearer ${token}`);
       expect(m.status).toBe(201);
-      book = await request(app.getHttpServer())
-        .get('/exams/wrong-book')
-        .set('Authorization', `Bearer ${token}`);
-      expect(book.body.data).toHaveLength(1);
-
-      // 再考全对 → 剩余 open 题答对自动 mastered → 错题本清空
-      const paper2 = await startCourseExam(token);
-      const right: Record<string, string> = {};
-      paper2.questions.forEach((q) => (right[q.id] = correctByStem[q.stem]));
-      await request(app.getHttpServer())
-        .post(`/exams/${paper2.attemptId}/submit`)
-        .set('Authorization', `Bearer ${token}`)
-        .send({ answers: right });
       book = await request(app.getHttpServer())
         .get('/exams/wrong-book')
         .set('Authorization', `Bearer ${token}`);

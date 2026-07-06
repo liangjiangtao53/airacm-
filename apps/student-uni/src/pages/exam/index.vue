@@ -3,6 +3,14 @@ import { onShow } from '@dcloudio/uni-app';
 import { computed, ref } from 'vue';
 import { api, assetUrl, requireLogin, type ExamResult, type PaperQuestion } from '@/utils/api';
 
+const EXAM_CATEGORY_COUNTS: Record<string, number> = {
+  'M1 航空概论': 32,
+  'M2 航空器维修': 50,
+  'M3 飞机结构和系统': 182,
+  'M5 航空涡轮发动机': 70,
+  'M9 航空英语': 60,
+};
+
 const categories = ref<string[]>([]);
 const category = ref('');
 const phase = ref<'idle' | 'taking' | 'result'>('idle');
@@ -25,7 +33,10 @@ function toast(message: string) {
 
 async function loadCategories() {
   try {
-    categories.value = await api.categories();
+    categories.value = (await api.categories()).filter((name) => EXAM_CATEGORY_COUNTS[name]);
+    if (!category.value && categories.value.length > 0) {
+      category.value = categories.value[0];
+    }
   } catch {
     categories.value = [];
   }
@@ -33,9 +44,13 @@ async function loadCategories() {
 
 async function start() {
   if (!requireLogin()) return;
+  if (!category.value) {
+    toast('请选择考试科目');
+    return;
+  }
   busy.value = true;
   try {
-    const paper = await api.startExam(category.value || undefined);
+    const paper = await api.startExam(category.value);
     attemptId.value = paper.attemptId;
     questions.value = paper.questions;
     answers.value = {};
@@ -99,7 +114,7 @@ async function submit() {
 
 function changeCategory(e: { detail: { value: number } }) {
   const idx = Number(e.detail.value);
-  category.value = idx <= 0 ? '' : categories.value[idx - 1] || '';
+  category.value = categories.value[idx] || '';
 }
 
 onShow(() => {
@@ -112,13 +127,14 @@ onShow(() => {
   <view class="page exam-page">
     <view class="header">
       <text class="title">在线考试</text>
-      <text class="subtitle">随机组卷,交卷后自动判分并进入错题本。</text>
+      <text class="subtitle">选择单科考试,交卷后自动判分并进入考试回顾。</text>
     </view>
 
     <view v-if="phase === 'idle'" class="card start-card">
-      <picker mode="selector" :range="['全部科目', ...categories]" @change="changeCategory">
-        <view class="select">{{ category || '全部科目' }}</view>
+      <picker mode="selector" :range="categories" @change="changeCategory">
+        <view class="select">{{ category || '请选择考试科目' }}</view>
       </picker>
+      <text v-if="category" class="hint">本次考试 {{ EXAM_CATEGORY_COUNTS[category] }} 题，考完为止</text>
       <button class="btn" :loading="busy" @tap="start">开始考试</button>
     </view>
 
@@ -205,6 +221,7 @@ onShow(() => {
 }
 
 .progress,
+.hint,
 .summary,
 .analysis {
   color: rgba(17, 24, 39, 0.6);

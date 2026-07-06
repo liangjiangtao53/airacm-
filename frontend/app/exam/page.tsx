@@ -7,6 +7,14 @@ import Comments from '@/components/Comments';
 
 type Phase = 'idle' | 'taking' | 'result';
 
+const EXAM_CATEGORY_COUNTS: Record<string, number> = {
+  'M1 航空概论': 32,
+  'M2 航空器维修': 50,
+  'M3 飞机结构和系统': 182,
+  'M5 航空涡轮发动机': 70,
+  'M9 航空英语': 60,
+};
+
 export default function ExamPage() {
   const router = useRouter();
   const [phase, setPhase] = useState<Phase>('idle');
@@ -24,14 +32,25 @@ export default function ExamPage() {
       router.push('/login');
       return;
     }
-    api.categories().then(setCategories).catch(() => undefined);
+    api
+      .categories()
+      .then((list) => {
+        const examCategories = list.filter((name) => EXAM_CATEGORY_COUNTS[name]);
+        setCategories(examCategories);
+        setCategory((current) => current || examCategories[0] || '');
+      })
+      .catch(() => undefined);
   }, [router]);
 
   async function start() {
     setErr('');
+    if (!category) {
+      setErr('请选择考试科目');
+      return;
+    }
     setBusy(true);
     try {
-      const r = await api.startExam(undefined, category || undefined);
+      const r = await api.startExam(undefined, category);
       setAttemptId(r.attemptId);
       setQuestions(r.questions);
       setAnswers({});
@@ -89,13 +108,15 @@ export default function ExamPage() {
                 value={category}
                 onChange={(e) => setCategory(e.target.value)}
               >
-                <option value="">全部科目</option>
                 {categories.map((c) => (
                   <option key={c} value={c}>
                     {c}
                   </option>
                 ))}
               </select>
+              {category && (
+                <p className="mt-1 text-xs text-ink/45">本次考试 {EXAM_CATEGORY_COUNTS[category]} 题，考完为止</p>
+              )}
             </div>
             <button
               onClick={start}

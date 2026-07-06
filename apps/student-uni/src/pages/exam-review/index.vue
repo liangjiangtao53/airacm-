@@ -1,15 +1,23 @@
 <script setup lang="ts">
 import { onShow } from '@dcloudio/uni-app';
-import { ref } from 'vue';
+import { computed, ref } from 'vue';
 import { api, assetUrl, requireLogin, type ExamAttemptSummary, type GradedItem } from '@/utils/api';
 
 const attempts = ref<ExamAttemptSummary[]>([]);
 const details = ref<Record<string, GradedItem[]>>({});
 const openId = ref('');
 const loading = ref(false);
+const category = ref('');
+const categories = computed(() => Array.from(new Set(attempts.value.map((item) => item.category).filter(Boolean))).sort());
+const filteredAttempts = computed(() => attempts.value.filter((item) => !category.value || item.category === category.value));
 
 function toast(message: string) {
   uni.showToast({ title: message, icon: 'none' });
+}
+
+function changeCategory(e: { detail: { value: number } }) {
+  const idx = Number(e.detail.value);
+  category.value = idx === 0 ? '' : categories.value[idx - 1] || '';
 }
 
 async function load() {
@@ -57,14 +65,23 @@ onShow(load);
       <text class="subtitle">历次已交卷考试,点开逐题复盘。</text>
     </view>
 
+    <view class="filter">
+      <picker mode="selector" :range="['全部模块', ...categories]" @change="changeCategory">
+        <view class="select">{{ category || '全部模块' }}</view>
+      </picker>
+      <text class="count">{{ filteredAttempts.length }} 次</text>
+    </view>
+
     <view v-if="loading" class="empty">加载中...</view>
     <view v-else-if="attempts.length === 0" class="empty">还没有考试记录。去在线考试做一套吧。</view>
+    <view v-else-if="filteredAttempts.length === 0" class="empty">当前模块暂无考试记录。</view>
 
     <view class="attempt-list">
-      <view v-for="(a, index) in attempts" :key="a.id" class="card attempt-card">
+      <view v-for="(a, index) in filteredAttempts" :key="a.id" class="card attempt-card">
         <view class="attempt-head" @tap="toggle(a)">
           <view>
-            <text class="attempt-title">第 {{ attempts.length - index }} 次考试</text>
+            <text class="attempt-title">第 {{ filteredAttempts.length - index }} 次考试</text>
+            <text class="time">{{ a.category || '未标记模块' }}</text>
             <text class="time">{{ timeLabel(a.submittedAt) }}</text>
           </view>
           <view class="score-box">
@@ -91,6 +108,7 @@ onShow(load);
 .review-page,
 .attempt-list,
 .attempt-card,
+.filter,
 .detail-list,
 .detail {
   display: flex;
@@ -107,6 +125,27 @@ onShow(load);
 .attempt-card,
 .detail {
   gap: 16rpx;
+}
+
+.filter {
+  align-items: center;
+  flex-direction: row;
+  gap: 16rpx;
+}
+
+.select {
+  background: #fff;
+  border: 2rpx solid rgba(17, 24, 39, 0.1);
+  border-radius: 16rpx;
+  color: #111827;
+  font-size: 26rpx;
+  min-width: 260rpx;
+  padding: 18rpx 22rpx;
+}
+
+.count {
+  color: rgba(17, 24, 39, 0.45);
+  font-size: 24rpx;
 }
 
 .empty,

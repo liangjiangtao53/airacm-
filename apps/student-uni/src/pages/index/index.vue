@@ -53,7 +53,7 @@ const appTiles: Tile[] = [
   },
   {
     title: '错题本',
-    desc: '错题自动收集,重做核对与标记掌握',
+    desc: '顺序学习错题自动收集,重做核对与标记掌握',
     url: '/pages/wrong/index',
     type: 'tab',
   },

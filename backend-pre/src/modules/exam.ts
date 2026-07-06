@@ -45,7 +45,7 @@ class StartExamDto {
   @IsString()
   courseId?: string;
 
-  // 按科目组卷(可空=全科目混合)。
+  // 模拟考试必须按单科目组卷；start() 会校验必填。
   @IsOptional()
   @IsString()
   category?: string;
@@ -100,6 +100,7 @@ interface PaperQuestion {
 
 interface GradedItem {
   questionId: string;
+  category: string;
   stem: string;
   options: QuestionOption[];
   imageUrls: string[];
@@ -112,6 +113,7 @@ interface GradedItem {
 // 错题本条目:题目详情(含答案/解析,供复习)+ 错题元数据。
 interface WrongBookItem {
   questionId: string;
+  category: string;
   type: 'single' | 'multiple';
   stem: string;
   options: QuestionOption[];
@@ -184,14 +186,18 @@ export class ExamService {
     dto: StartExamDto,
   ): Promise<{ attemptId: string; total: number; questions: PaperQuestion[] }> {
     const rule = await this.getRule(user.tenantId);
-    const count = dto.category ? (rule.categoryCounts[dto.category] ?? rule.totalCount) : rule.totalCount;
-    const picked = await this.pickExamQuestions(user, dto, count);
+    const category = dto.category?.trim();
+    if (!category) throw new BadRequestException('请选择考试科目');
+    const count = rule.categoryCounts[category];
+    if (!count) throw new BadRequestException('该科目暂未配置考试题数');
+    const picked = await this.pickExamQuestions(user, { courseId: dto.courseId, category }, count);
     if (picked.length === 0) throw new BadRequestException('暂无考试题目');
     const attempt = await this.attempts.save(
       this.attempts.create({
         tenantId: user.tenantId,
         userId: user.userId,
         courseId: dto.courseId ?? null,
+        category,
         questionIds: picked.map((q) => q.id),
         answers: {},
         total: picked.length,
@@ -199,7 +205,7 @@ export class ExamService {
       }),
     );
     await this.activity.record(user, 'exam_start', 'exam_attempt', attempt.id, {
-      category: dto.category ?? null,
+      category,
       courseId: dto.courseId ?? null,
       total: picked.length,
     });
@@ -223,7 +229,7 @@ export class ExamService {
       reloadIfEmpty: true,
     });
     const target = this.sanitizeCount(count);
-    const wrongQuestionIds = await this.loadOpenExamWrongQuestionIds(user, pool);
+    const wrongQuestionIds = await this.loadOpenStudyWrongQuestionIds(user, pool);
     const wrongSet = new Set(wrongQuestionIds);
     const wrongPool = pool.filter((q) => wrongSet.has(q.id));
     const wrongTarget = wrongPool.length > 0 ? Math.max(1, Math.floor(target * WRONG_QUESTION_RATIO)) : 0;
@@ -255,8 +261,6 @@ export class ExamService {
 
     const normalized: Record<string, string> = {};
     const details: GradedItem[] = [];
-    const wrongIds: string[] = [];
-    const correctIds: string[] = [];
     let correct = 0;
     // 按卷面顺序判分,保证复盘顺序稳定。
     for (const qid of attempt.questionIds) {
@@ -267,12 +271,10 @@ export class ExamService {
       const isCorrect = your === q.answer;
       if (isCorrect) {
         correct++;
-        correctIds.push(qid);
-      } else {
-        wrongIds.push(qid);
       }
       details.push({
         questionId: qid,
+        category: q.category,
         stem: q.stem,
         options: q.options,
         imageUrls: q.imageUrls ?? [],
@@ -294,7 +296,6 @@ export class ExamService {
     });
 
     await this.syncQuestionPractice(user, details);
-    await this.syncWrongBook(user, wrongIds, correctIds);
     await this.activity.record(user, 'exam_submit', 'exam_attempt', attempt.id, {
       total,
       correct,
@@ -317,12 +318,12 @@ export class ExamService {
     return counts;
   }
 
-  private async loadOpenExamWrongQuestionIds(user: AuthUser, pool: Array<Pick<Question, 'id'>>): Promise<string[]> {
+  private async loadOpenStudyWrongQuestionIds(user: AuthUser, pool: Array<Pick<Question, 'id'>>): Promise<string[]> {
     const ids = pool.map((q) => q.id);
     if (ids.length === 0) return [];
     const idSet = new Set(ids);
     const wrongs = await this.wrongBookRepo.find({
-      where: { tenantId: user.tenantId, userId: user.userId, status: 'open', source: 'exam' },
+      where: { tenantId: user.tenantId, userId: user.userId, status: 'open', source: 'study' },
       select: ['questionId', 'wrongCount', 'lastWrongAt'],
       order: { wrongCount: 'DESC', lastWrongAt: 'DESC' },
     });
@@ -389,25 +390,6 @@ export class ExamService {
   private quotePracticeColumn(name: string): string {
     const type = this.practices.manager.connection.options.type;
     return type === 'mysql' || type === 'mariadb' ? `\`${name}\`` : `"${name}"`;
-  }
-
-  // 同步错题本:答错的题录入/累加(置 open),答对且已在本中的题置 mastered。
-  private async syncWrongBook(
-    user: AuthUser,
-    wrongIds: string[],
-    correctIds: string[],
-  ): Promise<void> {
-    const now = new Date();
-    for (const qid of wrongIds) {
-      await this.recordWrong(user, qid, 'exam', now);
-    }
-    if (correctIds.length > 0) {
-      // 模拟考试答对则标记该来源已掌握(仅影响本中已有记录)。
-      await this.wrongBookRepo.update(
-        { tenantId: user.tenantId, userId: user.userId, questionId: In(correctIds), source: 'exam', status: 'open' },
-        { status: 'mastered' },
-      );
-    }
   }
 
   // 录入/累加单条错题。首次插入若撞唯一索引(并发交卷),回退为计数更新,避免 500。
@@ -483,7 +465,7 @@ export class ExamService {
   // 错题本列表:默认只看未掌握(open),带题目详情供复习。
   async wrongBook(user: AuthUser): Promise<WrongBookItem[]> {
     const rows = await this.wrongBookRepo.find({
-      where: { tenantId: user.tenantId, userId: user.userId, status: 'open' },
+      where: { tenantId: user.tenantId, userId: user.userId, status: 'open', source: 'study' },
       order: { lastWrongAt: 'DESC' },
       take: 200,
     });
@@ -498,6 +480,7 @@ export class ExamService {
       if (!q) continue; // 题已删,跳过
       items.push({
         questionId: q.id,
+        category: q.category,
         type: q.type,
         stem: q.stem,
         options: q.options,
@@ -513,7 +496,7 @@ export class ExamService {
   }
 
   // 手动标记已掌握:从错题本移出。
-  async master(user: AuthUser, questionId: string, source: WrongQuestionSource = 'exam'): Promise<{ ok: boolean }> {
+  async master(user: AuthUser, questionId: string, source: WrongQuestionSource = 'study'): Promise<{ ok: boolean }> {
     const row = await this.wrongBookRepo.findOne({
       where: { tenantId: user.tenantId, userId: user.userId, questionId, source },
     });
@@ -559,6 +542,7 @@ export class ExamService {
       const your = attempt.answers[qid] ?? '';
       details.push({
         questionId: qid,
+        category: q.category,
         stem: q.stem,
         options: q.options,
         imageUrls: q.imageUrls ?? [],

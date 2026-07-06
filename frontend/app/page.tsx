@@ -15,7 +15,7 @@ const publicTiles: Tile[] = [
 
 const signedInTiles: Tile[] = [
   { href: '/study', title: '专题学习', desc: '顺序学习与模拟考试都在这里进入' },
-  { href: '/wrong', title: '错题本', desc: '复盘考试错题,掌握后移出错题本' },
+  { href: '/wrong', title: '错题本', desc: '复盘顺序学习错题,掌握后移出错题本' },
 ];
 
 const adminTiles: Tile[] = [

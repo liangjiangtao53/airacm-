@@ -5,7 +5,7 @@ import { api, assetUrl, requireLogin, type CommentItem, type WrongBookItem, type
 
 const items = ref<WrongBookItem[]>([]);
 const revealed = ref<Record<string, boolean>>({});
-const tab = ref<WrongQuestionSource>('study');
+const category = ref('');
 const loading = ref(false);
 const commentOpen = ref<Record<string, boolean>>({});
 const commentInputs = ref<Record<string, string>>({});
@@ -15,12 +15,16 @@ function toast(message: string) {
   uni.showToast({ title: message, icon: 'none' });
 }
 
-const filteredItems = computed(() => items.value.filter((item) => item.source === tab.value));
-const studyCount = computed(() => items.value.filter((item) => item.source === 'study').length);
-const examCount = computed(() => items.value.filter((item) => item.source === 'exam').length);
+const categories = computed(() => Array.from(new Set(items.value.map((item) => item.category).filter(Boolean))).sort());
+const filteredItems = computed(() => items.value.filter((item) => !category.value || item.category === category.value));
 
 function itemKey(q: WrongBookItem) {
   return `${q.source}:${q.questionId}`;
+}
+
+function changeCategory(e: { detail: { value: number } }) {
+  const idx = Number(e.detail.value);
+  category.value = idx === 0 ? '' : categories.value[idx - 1] || '';
 }
 
 async function load() {
@@ -77,23 +81,19 @@ onShow(load);
   <view class="page wrong-page">
     <view class="header">
       <text class="title">错题本</text>
-      <text class="subtitle">顺序学习和模拟考试错题分开查看。</text>
+      <text class="subtitle">顺序学习答错的题会进入错题本，模拟考试错题请在考试回顾里查看。</text>
     </view>
 
-    <view class="tabs">
-      <view :class="['tab', tab === 'study' && 'active']" @tap="tab = 'study'">
-        <text>顺序学习</text>
-        <text class="tab-count">{{ studyCount }} 题</text>
-      </view>
-      <view :class="['tab', tab === 'exam' && 'active']" @tap="tab = 'exam'">
-        <text>模拟考试</text>
-        <text class="tab-count">{{ examCount }} 题</text>
-      </view>
+    <view class="filter">
+      <picker mode="selector" :range="['全部模块', ...categories]" @change="changeCategory">
+        <view class="select">{{ category || '全部模块' }}</view>
+      </picker>
+      <text class="count">{{ filteredItems.length }} 题</text>
     </view>
 
     <view v-if="loading" class="empty">加载中...</view>
     <view v-else-if="filteredItems.length === 0" class="empty">
-      {{ tab === 'study' ? '顺序学习暂无错题。' : '模拟考试暂无错题。' }}
+      暂无顺序学习错题。
     </view>
 
     <view class="wrong-list">
@@ -155,7 +155,7 @@ onShow(load);
 .wrong-list,
 .wrong-card,
 .options,
-.tabs,
+.filter,
 .comment-box {
   display: flex;
   flex-direction: column;
@@ -179,34 +179,25 @@ onShow(load);
   text-align: center;
 }
 
-.tabs {
-  display: grid;
+.filter {
+  align-items: center;
+  flex-direction: row;
   gap: 16rpx;
-  grid-template-columns: 1fr 1fr;
 }
 
-.tab {
-  background: rgba(255, 255, 255, 0.7);
-  border: 2rpx solid rgba(255, 255, 255, 0.7);
-  border-radius: 22rpx;
-  color: rgba(17, 24, 39, 0.58);
-  font-size: 28rpx;
-  font-weight: 700;
-  padding: 22rpx;
-}
-
-.tab.active {
-  background: rgba(31, 111, 235, 0.08);
-  border-color: rgba(31, 111, 235, 0.3);
+.select {
+  background: #fff;
+  border: 2rpx solid rgba(17, 24, 39, 0.1);
+  border-radius: 16rpx;
   color: #111827;
+  font-size: 26rpx;
+  min-width: 260rpx;
+  padding: 18rpx 22rpx;
 }
 
-.tab-count {
-  color: rgba(17, 24, 39, 0.42);
-  display: block;
-  font-size: 22rpx;
-  font-weight: 500;
-  margin-top: 8rpx;
+.count {
+  color: rgba(17, 24, 39, 0.45);
+  font-size: 24rpx;
 }
 
 .question-head {

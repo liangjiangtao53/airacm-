@@ -182,6 +182,7 @@ export interface ExamStart {
 
 export interface GradedItem {
   questionId: string;
+  category: string;
   stem: string;
   options: QuestionOption[];
   imageUrls?: string[];
@@ -201,6 +202,7 @@ export interface ExamResult {
 export interface ExamAttemptSummary {
   id: string;
   courseId: string | null;
+  category: string;
   total: number;
   correct: number;
   score: number;
@@ -210,6 +212,7 @@ export interface ExamAttemptSummary {
 // 错题本条目(含答案/解析,供复习)。
 export interface WrongBookItem {
   questionId: string;
+  category: string;
   type: 'single' | 'multiple';
   stem: string;
   options: QuestionOption[];
@@ -375,7 +378,7 @@ export const api = {
   wrongBook: () => req<WrongBookItem[]>('/exams/wrong-book'),
   recordStudyWrong: (questionId: string, answer: string) =>
     req<{ ok: true; recorded: boolean }>('/exams/wrong-book/study', { method: 'POST', body: { questionId, answer } }),
-  masterWrong: (questionId: string, source: WrongQuestionSource = 'exam') =>
+  masterWrong: (questionId: string, source: WrongQuestionSource = 'study') =>
     req<{ ok: boolean }>(`/exams/wrong-book/${questionId}/master`, { method: 'POST', body: { source } }),
   comments: (id: string) => req<CommentItem[]>(`/questions/${id}/comments`),
   addComment: (id: string, content: string) =>

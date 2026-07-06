@@ -454,8 +454,8 @@ watch(
 }
 
 .option.correct {
-  background: rgba(31, 111, 235, 0.08);
-  border-color: rgba(31, 111, 235, 0.35);
+  background: rgba(22, 163, 74, 0.08);
+  border-color: rgba(22, 163, 74, 0.35);
 }
 
 .option.wrong {
@@ -466,6 +466,18 @@ watch(
 .option-key,
 .answer {
   color: #1f6feb;
+  font-weight: 700;
+}
+
+.option.correct .option-key,
+.option.correct .option-text {
+  color: #16a34a;
+  font-weight: 700;
+}
+
+.option.wrong .option-key,
+.option.wrong .option-text {
+  color: #dc2626;
   font-weight: 700;
 }
 

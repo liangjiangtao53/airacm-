@@ -7,8 +7,11 @@ import { api, assetUrl, getToken, type ExamAttemptSummary, type GradedItem } fro
 export default function ExamReviewPage() {
   const router = useRouter();
   const [attempts, setAttempts] = useState<ExamAttemptSummary[]>([]);
+  const [category, setCategory] = useState('');
   const [err, setErr] = useState('');
   const [loading, setLoading] = useState(true);
+  const categories = Array.from(new Set(attempts.map((item) => item.category).filter(Boolean))).sort();
+  const filteredAttempts = attempts.filter((item) => !category || item.category === category);
 
   useEffect(() => {
     if (!getToken()) {
@@ -33,15 +36,35 @@ export default function ExamReviewPage() {
       </a>
       <h1 className="mb-1 mt-1 text-3xl font-semibold tracking-tight text-ink">考试回顾</h1>
       <p className="mb-6 text-sm text-ink/55">历次已交卷考试,点开逐题复盘。</p>
+      <div className="mb-6 flex flex-wrap items-center gap-3">
+        <select
+          className="rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm outline-none focus:border-sky"
+          value={category}
+          onChange={(e) => setCategory(e.target.value)}
+        >
+          <option value="">全部模块</option>
+          {categories.map((name) => (
+            <option key={name} value={name}>
+              {name}
+            </option>
+          ))}
+        </select>
+        <span className="text-sm text-ink/45">{filteredAttempts.length} 次</span>
+      </div>
       {err && <p className="mb-4 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-600">{err}</p>}
       {attempts.length === 0 && !err && (
         <p className="rounded-2xl bg-white/60 backdrop-blur-xl p-8 text-center text-ink/50 shadow-sm ring-1 ring-white/55">
           还没有考试记录。去「在线考试」考一场吧。
         </p>
       )}
+      {attempts.length > 0 && filteredAttempts.length === 0 && !err && (
+        <p className="rounded-2xl bg-white/60 backdrop-blur-xl p-8 text-center text-ink/50 shadow-sm ring-1 ring-white/55">
+          当前模块暂无考试记录。
+        </p>
+      )}
       <div className="space-y-3">
-        {attempts.map((a, i) => (
-          <AttemptCard key={a.id} a={a} index={attempts.length - i} />
+        {filteredAttempts.map((a, i) => (
+          <AttemptCard key={a.id} a={a} index={filteredAttempts.length - i} />
         ))}
       </div>
     </main>
@@ -72,6 +95,7 @@ function AttemptCard({ a, index }: { a: ExamAttemptSummary; index: number }) {
       <button onClick={toggle} className="flex w-full items-center justify-between gap-4 p-5 text-left">
         <div>
           <p className="font-medium text-ink">第 {index} 次考试</p>
+          <p className="mt-0.5 text-xs text-ink/45">{a.category || '未标记模块'}</p>
           <p className="mt-0.5 text-xs text-ink/45">{when}</p>
         </div>
         <div className="flex items-center gap-4">

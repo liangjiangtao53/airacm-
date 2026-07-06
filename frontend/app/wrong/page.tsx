@@ -5,14 +5,14 @@ import { useRouter } from 'next/navigation';
 import { api, assetUrl, getToken, type WrongBookItem } from '@/lib/api';
 import Comments from '@/components/Comments';
 
-type WrongTab = 'study' | 'exam';
-
 export default function WrongBookPage() {
   const router = useRouter();
   const [items, setItems] = useState<WrongBookItem[]>([]);
-  const [tab, setTab] = useState<WrongTab>('study');
+  const [category, setCategory] = useState('');
   const [err, setErr] = useState('');
   const [loading, setLoading] = useState(true);
+  const categories = Array.from(new Set(items.map((item) => item.category).filter(Boolean))).sort();
+  const filteredItems = items.filter((item) => !category || item.category === category);
 
   useEffect(() => {
     if (!getToken()) {
@@ -26,8 +26,8 @@ export default function WrongBookPage() {
       .finally(() => setLoading(false));
   }, [router]);
 
-  function remove(questionId: string) {
-    setItems((l) => l.filter((i) => !(i.questionId === questionId && i.source === tab)));
+  function remove(questionId: string, source: WrongBookItem['source']) {
+    setItems((l) => l.filter((i) => !(i.questionId === questionId && i.source === source)));
   }
 
   if (loading) {
@@ -41,42 +41,33 @@ export default function WrongBookPage() {
       </a>
       <h1 className="mb-1 mt-1 text-3xl font-semibold tracking-tight text-ink">错题本</h1>
       <p className="mb-6 text-sm text-ink/55">
-        顺序学习和模拟考试答错的题会分别收集,可查看答案和评论。
+        顺序学习答错的题会进入错题本；模拟考试错题请在考试回顾里查看。
       </p>
-      <div className="mb-6 grid grid-cols-2 gap-3">
-        {([
-          ['study', '顺序学习'],
-          ['exam', '模拟考试'],
-        ] as const).map(([value, label]) => {
-          const count = items.filter((item) => item.source === value).length;
-          return (
-            <button
-              key={value}
-              onClick={() => setTab(value)}
-              className={`rounded-2xl px-4 py-3 text-left transition ${
-                tab === value
-                  ? 'bg-sky/10 font-semibold text-ink ring-1 ring-sky/30'
-                  : 'bg-white/60 text-ink/60 ring-1 ring-white/55 hover:text-ink'
-              }`}
-            >
-              <span>{label}</span>
-              <span className="ml-2 text-sm text-ink/45">{count} 题</span>
-            </button>
-          );
-        })}
+      <div className="mb-6 flex flex-wrap items-center gap-3">
+        <select
+          className="rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm outline-none focus:border-sky"
+          value={category}
+          onChange={(e) => setCategory(e.target.value)}
+        >
+          <option value="">全部模块</option>
+          {categories.map((name) => (
+            <option key={name} value={name}>
+              {name}
+            </option>
+          ))}
+        </select>
+        <span className="text-sm text-ink/45">{filteredItems.length} 题</span>
       </div>
       {err && <p className="mb-4 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-600">{err}</p>}
-      {items.filter((item) => item.source === tab).length === 0 && !err && (
+      {filteredItems.length === 0 && !err && (
         <p className="rounded-2xl bg-white/60 backdrop-blur-xl p-8 text-center text-ink/50 shadow-sm ring-1 ring-white/55">
-          {tab === 'study' ? '顺序学习暂无错题。' : '模拟考试暂无错题。'}
+          暂无顺序学习错题。
         </p>
       )}
       <div className="space-y-4">
-        {items
-          .filter((item) => item.source === tab)
-          .map((q, i) => (
-            <WrongCard key={`${q.source}:${q.questionId}`} q={q} index={i + 1} onMaster={() => remove(q.questionId)} />
-          ))}
+        {filteredItems.map((q, i) => (
+          <WrongCard key={`${q.source}:${q.questionId}`} q={q} index={i + 1} onMaster={() => remove(q.questionId, q.source)} />
+        ))}
       </div>
     </main>
   );

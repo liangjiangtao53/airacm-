@@ -576,6 +576,9 @@ export class ExamAttempt {
   @Column({ type: 'varchar', nullable: true })
   courseId!: string | null;
 
+  @Column({ type: 'varchar', default: '' })
+  category!: string;
+
   // 本次卷子的题目 id 顺序(组卷时锁定)。
   @Column({ type: 'simple-json' })
   questionIds!: string[];
