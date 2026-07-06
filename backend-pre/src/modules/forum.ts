@@ -17,7 +17,7 @@ import { InjectRepository, TypeOrmModule } from '@nestjs/typeorm';
 import { In, Repository } from 'typeorm';
 import { IsInt, IsNotEmpty, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
 import { Type } from 'class-transformer';
-import { ForumTopic, Post, PostReply, User } from '../entities';
+import { AdminOperationLog, ForumTopic, Post, PostReply, User } from '../entities';
 import { AuthUser, CurrentUser, JwtAuthGuard, Roles, RolesGuard } from '../common';
 import { env } from '../config';
 
@@ -110,7 +110,27 @@ export class ForumService {
     @InjectRepository(PostReply) private readonly replies: Repository<PostReply>,
     @InjectRepository(ForumTopic) private readonly topics: Repository<ForumTopic>,
     @InjectRepository(User) private readonly users: Repository<User>,
+    @InjectRepository(AdminOperationLog) private readonly operationLogs: Repository<AdminOperationLog>,
   ) {}
+
+  private async logAdminOperation(
+    admin: AuthUser,
+    action: string,
+    targetType: string,
+    targetId: string | null,
+    detail: Record<string, unknown>,
+  ): Promise<void> {
+    await this.operationLogs.save(
+      this.operationLogs.create({
+        tenantId: admin.tenantId,
+        adminId: admin.userId,
+        action,
+        targetType,
+        targetId,
+        detail,
+      }),
+    );
+  }
 
   // 批量解析 userId→昵称,避免逐条查(N+1)。查不到(如已删用户/旧卡密帖)回退短 id。
   private async resolveNicknames(tenantId: string, ids: string[]): Promise<Map<string, string>> {
@@ -131,25 +151,40 @@ export class ForumService {
     return this.topics.find({ where: { tenantId }, order: { order: 'ASC', createdAt: 'ASC' } });
   }
 
-  createTopic(tenantId: string, name: string, order?: number): Promise<ForumTopic> {
-    return this.topics.save(this.topics.create({ tenantId, name: name.trim(), order: order ?? 0 }));
+  async createTopic(admin: AuthUser, name: string, order?: number): Promise<ForumTopic> {
+    const topic = await this.topics.save(this.topics.create({ tenantId: admin.tenantId, name: name.trim(), order: order ?? 0 }));
+    await this.logAdminOperation(admin, 'forum_topic_create', 'forum_topic', topic.id, {
+      name: topic.name,
+      order: topic.order,
+    });
+    return topic;
   }
 
-  async updateTopic(tenantId: string, id: string, patch: UpdateTopicDto): Promise<ForumTopic> {
-    const t = await this.topics.findOne({ where: { tenantId, id } });
+  async updateTopic(admin: AuthUser, id: string, patch: UpdateTopicDto): Promise<ForumTopic> {
+    const t = await this.topics.findOne({ where: { tenantId: admin.tenantId, id } });
     if (!t) throw new NotFoundException('主题不存在');
+    const before = { name: t.name, order: t.order };
     if (patch.name !== undefined) t.name = patch.name.trim();
     if (patch.order !== undefined) t.order = patch.order;
-    return this.topics.save(t);
+    const topic = await this.topics.save(t);
+    await this.logAdminOperation(admin, 'forum_topic_update', 'forum_topic', topic.id, {
+      before,
+      after: { name: topic.name, order: topic.order },
+    });
+    return topic;
   }
 
   // 删除主题:该主题下还有帖子则拒绝,避免帖子失去归属。
-  async deleteTopic(tenantId: string, id: string): Promise<{ deleted: boolean }> {
-    const t = await this.topics.findOne({ where: { tenantId, id } });
+  async deleteTopic(admin: AuthUser, id: string): Promise<{ deleted: boolean }> {
+    const t = await this.topics.findOne({ where: { tenantId: admin.tenantId, id } });
     if (!t) throw new NotFoundException('主题不存在');
-    const used = await this.posts.count({ where: { tenantId, topicId: id } });
+    const used = await this.posts.count({ where: { tenantId: admin.tenantId, topicId: id } });
     if (used > 0) throw new BadRequestException(`该主题下还有 ${used} 个帖子,不能删除`);
     await this.topics.delete(t.id);
+    await this.logAdminOperation(admin, 'forum_topic_delete', 'forum_topic', t.id, {
+      name: t.name,
+      order: t.order,
+    });
     return { deleted: true };
   }
 
@@ -273,17 +308,17 @@ export class ForumAdminController {
 
   @HttpPost()
   create(@CurrentUser() user: AuthUser, @Body() dto: CreateTopicDto) {
-    return this.svc.createTopic(user.tenantId, dto.name, dto.order);
+    return this.svc.createTopic(user, dto.name, dto.order);
   }
 
   @Patch(':id')
   update(@CurrentUser() user: AuthUser, @Param('id') id: string, @Body() dto: UpdateTopicDto) {
-    return this.svc.updateTopic(user.tenantId, id, dto);
+    return this.svc.updateTopic(user, id, dto);
   }
 
   @Delete(':id')
   remove(@CurrentUser() user: AuthUser, @Param('id') id: string) {
-    return this.svc.deleteTopic(user.tenantId, id);
+    return this.svc.deleteTopic(user, id);
   }
 }
 
@@ -315,7 +350,7 @@ export class ForumController {
 }
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Post, PostReply, ForumTopic, User])],
+  imports: [TypeOrmModule.forFeature([Post, PostReply, ForumTopic, User, AdminOperationLog])],
   controllers: [ForumController, ForumTopicController, ForumAdminController],
   providers: [ForumService],
 })

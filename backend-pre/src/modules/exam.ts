@@ -96,7 +96,6 @@ interface PaperQuestion {
   type: 'single' | 'multiple';
   stem: string;
   options: QuestionOption[];
-  imageUrls: string[];
 }
 
 interface GradedItem {
@@ -207,7 +206,7 @@ export class ExamService {
     return {
       attemptId: attempt.id,
       total: picked.length,
-      questions: picked.map((q) => ({ id: q.id, type: q.type, stem: q.stem, options: q.options, imageUrls: q.imageUrls ?? [] })),
+      questions: picked.map((q) => ({ id: q.id, type: q.type, stem: q.stem, options: q.options })),
     };
   }
 
@@ -471,7 +470,7 @@ export class ExamService {
       ['tenantId', 'userId', 'category', 'courseId'],
     );
     await this.recordQuestionPractice(user, questionId, isCorrect, now);
-    await this.activity.record(user, 'study_answer', 'question', questionId, {
+    await this.activity.record(user, 'study_progress', 'study_category', null, {
       category: q.category,
       courseId: q.courseId ?? null,
       isCorrect,
@@ -520,6 +519,12 @@ export class ExamService {
     });
     if (!row) throw new NotFoundException('错题不存在');
     await this.wrongBookRepo.update(row.id, { status: 'mastered' });
+    const q = await this.questions.findOne({ where: { tenantId: user.tenantId, id: questionId } });
+    await this.activity.record(user, 'wrong_question_master', 'wrong_question', null, {
+      category: q?.category ?? null,
+      courseId: q?.courseId ?? null,
+      source,
+    });
     return { ok: true };
   }
 

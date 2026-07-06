@@ -121,7 +121,6 @@ export default function ExamPage() {
                 </span>
                 <div className="min-w-0 flex-1">
                   <p className="font-medium text-ink">{q.stem}</p>
-                  <QuestionImages urls={q.imageUrls} />
                 </div>
               </div>
               <div className="space-y-2">
@@ -192,15 +191,17 @@ function ResultCard({ d, index }: { d: GradedItem; index: number }) {
         </span>
         <div className="min-w-0 flex-1">
           <p className="font-medium text-ink">{d.stem}</p>
-          <QuestionImages urls={d.imageUrls} />
         </div>
       </div>
       <p className="text-sm text-ink/70">
         你的答案:<span className="font-mono">{d.yourAnswer || '(未答)'}</span> · 正确答案:
-        <span className="font-mono text-sky">{d.correctAnswer}</span>
+        <span className="font-mono text-green-600">{d.correctAnswer}</span>
       </p>
-      {d.analysis && (
-        <p className="mt-2 rounded-lg bg-mist px-4 py-2 text-sm text-ink/65">解析:{d.analysis}</p>
+      {(d.analysis || d.imageUrls?.length) && (
+        <div className="mt-2 rounded-lg bg-mist px-4 py-2 text-sm text-ink/65">
+          {d.analysis && <p>解析:{d.analysis}</p>}
+          <QuestionImages urls={d.imageUrls} />
+        </div>
       )}
       <button
         onClick={() => setShowComments((s) => !s)}
@@ -221,7 +222,7 @@ function QuestionImages({ urls }: { urls?: string[] }) {
         <img
           key={url}
           src={assetUrl(url)}
-          alt="题目配图"
+          alt="解析配图"
           className="max-h-[520px] max-w-full rounded-lg border border-ink/10 object-contain"
         />
       ))}

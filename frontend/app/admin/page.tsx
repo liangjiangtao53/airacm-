@@ -40,6 +40,56 @@ const defaultExamCategoryCounts: Record<string, number> = {
   'M5 航空涡轮发动机': 70,
   'M9 航空英语': 60,
 };
+const operationActionOptions = [
+  { value: 'question_import', label: '导入题库' },
+  { value: 'question_purge_category', label: '按科目清空题目' },
+  { value: 'question_delete_one', label: '删除单题' },
+  { value: 'question_delete_many', label: '批量删除题目' },
+  { value: 'question_update_one', label: '编辑题目' },
+  { value: 'question_category_create', label: '新增科目' },
+  { value: 'question_category_rename', label: '重命名科目' },
+  { value: 'question_category_delete', label: '删除科目' },
+  { value: 'exam_rule_update', label: '保存考试规则' },
+  { value: 'app_apk_upload', label: '上传 App' },
+  { value: 'access_key_generate', label: '生成卡密' },
+  { value: 'access_key_update_ttl', label: '改有效期' },
+  { value: 'access_key_revoke', label: '作废卡密' },
+  { value: 'access_key_cleanup', label: '清理卡密' },
+  { value: 'access_key_delete', label: '删除卡密' },
+  { value: 'recharge_code_generate', label: '生成充值码' },
+  { value: 'wallet_manual_recharge', label: '手动充值' },
+  { value: 'course_create', label: '创建课程' },
+  { value: 'chapter_create', label: '创建章节' },
+  { value: 'lesson_create', label: '创建课时' },
+  { value: 'forum_topic_create', label: '新增论坛主题' },
+  { value: 'forum_topic_update', label: '编辑论坛主题' },
+  { value: 'forum_topic_delete', label: '删除论坛主题' },
+  { value: 'admin_create', label: '添加管理员' },
+  { value: 'user_delete', label: '删除用户' },
+];
+const activityActionOptions = [
+  { value: 'login_access_key', label: '卡密登录' },
+  { value: 'login_password', label: '账号登录' },
+  { value: 'study_progress', label: '顺序学习' },
+  { value: 'lesson_complete', label: '课时完成' },
+  { value: 'wrong_question_master', label: '错题掌握' },
+  { value: 'wallet_recharge_code', label: '激活码充值' },
+  { value: 'exam_start', label: '开始模拟考试' },
+  { value: 'exam_submit', label: '提交模拟考试' },
+];
+const formatDateTime = (value?: string | Date | null) =>
+  value
+    ? new Intl.DateTimeFormat('zh-CN', {
+        timeZone: 'Asia/Shanghai',
+        year: 'numeric',
+        month: 'numeric',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false,
+      }).format(new Date(value))
+    : '-';
 type AccessKeyRow = AccessKeyItem;
 type AdminSheet = 'operations' | 'questions' | 'users' | 'logs' | 'security';
 const sheets: Array<{ key: AdminSheet; label: string; superOnly?: boolean }> = [
@@ -118,12 +168,12 @@ export default function AdminPage() {
   // 操作日志(仅超管可见)。
   const [operationLogs, setOperationLogs] = useState<AdminOperationLogItem[]>([]);
   const [operationLogTotal, setOperationLogTotal] = useState(0);
-  const [operationLogAction, setOperationLogAction] = useState('');
+  const [operationLogActions, setOperationLogActions] = useState<string[]>([]);
   const [operationLogKeyword, setOperationLogKeyword] = useState('');
   const [operationLogPage, setOperationLogPage] = useState(1);
   const [activityLogs, setActivityLogs] = useState<UserActivityLogItem[]>([]);
   const [activityLogTotal, setActivityLogTotal] = useState(0);
-  const [activityLogAction, setActivityLogAction] = useState('');
+  const [activityLogActions, setActivityLogActions] = useState<string[]>([]);
   const [activityLogKeyword, setActivityLogKeyword] = useState('');
   const [activityLogPage, setActivityLogPage] = useState(1);
 
@@ -216,7 +266,7 @@ export default function AdminPage() {
   };
   const refreshUserActivityLogs = async (page = activityLogPage) => {
     const r = await api.userActivityLogs({
-      action: activityLogAction.trim() || undefined,
+      actions: activityLogActions,
       keyword: activityLogKeyword.trim() || undefined,
       page,
       pageSize: 50,
@@ -227,7 +277,7 @@ export default function AdminPage() {
   };
   const refreshOperationLogs = async (page = operationLogPage) => {
     const r = await api.operationLogs({
-      action: operationLogAction.trim() || undefined,
+      actions: operationLogActions,
       keyword: operationLogKeyword.trim() || undefined,
       page,
       pageSize: 50,
@@ -498,6 +548,10 @@ export default function AdminPage() {
   const roleLabel = (r: UserRole) =>
     r === 'super' ? '超级管理员' : r === 'admin' ? '业务管理员' : '学员';
 
+  const toggleAction = (value: string, values: string[], setter: (next: string[]) => void) => {
+    setter(values.includes(value) ? values.filter((item) => item !== value) : [...values, value]);
+  };
+
   const sourceLabel = (s?: AdminUser['source']) =>
     s === 'key' ? '卡密' : s === 'wechat' ? '微信' : s === 'register' ? '注册' : '';
 
@@ -517,11 +571,15 @@ export default function AdminPage() {
       access_key_update_ttl: '修改卡密有效期',
       access_key_revoke: '作废卡密',
       access_key_cleanup: '清理卡密',
+      access_key_delete: '删除卡密',
       recharge_code_generate: '生成充值码',
       wallet_manual_recharge: '手动充值',
       course_create: '创建课程',
       chapter_create: '创建章节',
       lesson_create: '创建课时',
+      forum_topic_create: '新增论坛主题',
+      forum_topic_update: '编辑论坛主题',
+      forum_topic_delete: '删除论坛主题',
       admin_create: '添加业务管理员',
       user_delete: '删除用户',
     })[action] ?? action;
@@ -531,6 +589,11 @@ export default function AdminPage() {
       login_password: '账号登录',
       login_access_key: '卡密登录',
       study_answer: '顺序学习',
+      study_progress: '顺序学习',
+      lesson_start: '开始课时',
+      lesson_complete: '完成课时',
+      wrong_question_master: '错题掌握',
+      wallet_recharge_code: '激活码充值',
       exam_start: '开始模拟考试',
       exam_submit: '提交模拟考试',
     })[action] ?? action;
@@ -741,7 +804,7 @@ export default function AdminPage() {
               {apkStatus?.exists && (
                 <p className="mt-1">
                   文件大小 {(apkStatus.size / 1024 / 1024).toFixed(2)} MB
-                  {apkStatus.updatedAt ? ` · 更新时间 ${new Date(apkStatus.updatedAt).toLocaleString()}` : ''}
+                  {apkStatus.updatedAt ? ` · 更新时间 ${formatDateTime(apkStatus.updatedAt)}` : ''}
                 </p>
               )}
               <p className="mt-1">
@@ -1023,8 +1086,8 @@ export default function AdminPage() {
                             <td className="px-3 py-2">{validDays} 天</td>
                             <td className="px-3 py-2">{usedDays} 天</td>
                             <td className="px-3 py-2">{remainingDays} 天</td>
-                            <td className="whitespace-nowrap px-3 py-2">{k.firstLoginAt ? new Date(k.firstLoginAt).toLocaleString() : '-'}</td>
-                            <td className="whitespace-nowrap px-3 py-2">{k.lastLoginAt ? new Date(k.lastLoginAt).toLocaleString() : '-'}</td>
+                            <td className="whitespace-nowrap px-3 py-2">{formatDateTime(k.firstLoginAt)}</td>
+                            <td className="whitespace-nowrap px-3 py-2">{formatDateTime(k.lastLoginAt)}</td>
                             <td className="sticky right-0 bg-mist px-3 py-2 text-right">
                               <span className="inline-flex items-center gap-2">
                                 {!dead && (
@@ -1203,22 +1266,47 @@ export default function AdminPage() {
           <>
           <Card title="操作日志">
             <div className="space-y-4">
-              <div className="grid gap-3 sm:grid-cols-[1fr_1fr_auto]">
-                <input
-                  className={input}
-                  placeholder="操作类型,如 question_import"
-                  value={operationLogAction}
-                  onChange={(e) => setOperationLogAction(e.target.value)}
-                />
-                <input
-                  className={input}
-                  placeholder="账号/昵称/角色关键词"
-                  value={operationLogKeyword}
-                  onChange={(e) => setOperationLogKeyword(e.target.value)}
-                />
-                <button className={btn} onClick={wrap(() => refreshOperationLogs(1))}>
-                  查询
-                </button>
+              <div className="space-y-3">
+                <div className="flex flex-wrap gap-2">
+                  {operationActionOptions.map((option) => {
+                    const active = operationLogActions.includes(option.value);
+                    return (
+                      <button
+                        key={option.value}
+                        type="button"
+                        className={`rounded-lg border px-3 py-1.5 text-xs ${
+                          active ? 'border-steel bg-steel text-white' : 'border-ink/10 bg-white/70 text-ink/65'
+                        }`}
+                        onClick={() => toggleAction(option.value, operationLogActions, setOperationLogActions)}
+                      >
+                        {option.label}
+                      </button>
+                    );
+                  })}
+                  {operationLogActions.length > 0 && (
+                    <button
+                      type="button"
+                      className="rounded-lg border border-ink/10 bg-white/70 px-3 py-1.5 text-xs text-ink/45"
+                      onClick={() => setOperationLogActions([])}
+                    >
+                      清空
+                    </button>
+                  )}
+                </div>
+                <div className="grid gap-3 sm:grid-cols-[1fr_auto]">
+                  <input
+                    className={input}
+                    placeholder="账号/昵称/角色关键词"
+                    value={operationLogKeyword}
+                    onChange={(e) => setOperationLogKeyword(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') refreshOperationLogs(1);
+                    }}
+                  />
+                  <button className={btn} onClick={wrap(() => refreshOperationLogs(1))}>
+                    查询
+                  </button>
+                </div>
               </div>
 
               <p className="text-xs text-ink/45">
@@ -1246,7 +1334,7 @@ export default function AdminPage() {
                     ) : (
                       operationLogs.map((log) => (
                         <tr key={log.id} className="align-top text-ink/75">
-                          <td className="whitespace-nowrap px-3 py-2">{new Date(log.createdAt).toLocaleString()}</td>
+                          <td className="whitespace-nowrap px-3 py-2">{formatDateTime(log.createdAt)}</td>
                           <td className="px-3 py-2">
                             <div className="font-medium text-ink">
                               {log.admin?.phone || log.admin?.nickname || log.admin?.id || '未知账号'}
@@ -1298,27 +1386,47 @@ export default function AdminPage() {
 
           <Card title="用户行为日志">
             <div className="space-y-4">
-              <div className="grid gap-3 sm:grid-cols-[180px_1fr_auto]">
-                <select className={input} value={activityLogAction} onChange={(e) => setActivityLogAction(e.target.value)}>
-                  <option value="">全部行为</option>
-                  <option value="login_access_key">卡密登录</option>
-                  <option value="login_password">账号登录</option>
-                  <option value="study_answer">顺序学习</option>
-                  <option value="exam_start">开始模拟考试</option>
-                  <option value="exam_submit">提交模拟考试</option>
-                </select>
-                <input
-                  className={input}
-                  placeholder="按卡号/手机号/昵称搜索"
-                  value={activityLogKeyword}
-                  onChange={(e) => setActivityLogKeyword(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') refreshUserActivityLogs(1);
-                  }}
-                />
-                <button className={btn} onClick={wrap(() => refreshUserActivityLogs(1))}>
-                  查询
-                </button>
+              <div className="space-y-3">
+                <div className="flex flex-wrap gap-2">
+                  {activityActionOptions.map((option) => {
+                    const active = activityLogActions.includes(option.value);
+                    return (
+                      <button
+                        key={option.value}
+                        type="button"
+                        className={`rounded-lg border px-3 py-1.5 text-xs ${
+                          active ? 'border-steel bg-steel text-white' : 'border-ink/10 bg-white/70 text-ink/65'
+                        }`}
+                        onClick={() => toggleAction(option.value, activityLogActions, setActivityLogActions)}
+                      >
+                        {option.label}
+                      </button>
+                    );
+                  })}
+                  {activityLogActions.length > 0 && (
+                    <button
+                      type="button"
+                      className="rounded-lg border border-ink/10 bg-white/70 px-3 py-1.5 text-xs text-ink/45"
+                      onClick={() => setActivityLogActions([])}
+                    >
+                      清空
+                    </button>
+                  )}
+                </div>
+                <div className="grid gap-3 sm:grid-cols-[1fr_auto]">
+                  <input
+                    className={input}
+                    placeholder="按卡号/手机号/昵称搜索"
+                    value={activityLogKeyword}
+                    onChange={(e) => setActivityLogKeyword(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') refreshUserActivityLogs(1);
+                    }}
+                  />
+                  <button className={btn} onClick={wrap(() => refreshUserActivityLogs(1))}>
+                    查询
+                  </button>
+                </div>
               </div>
 
               <p className="text-xs text-ink/45">共 {activityLogTotal} 条,每页 50 条。可按完整或部分卡号搜索。</p>
@@ -1344,7 +1452,7 @@ export default function AdminPage() {
                     ) : (
                       activityLogs.map((log) => (
                         <tr key={log.id} className="align-top text-ink/75">
-                          <td className="whitespace-nowrap px-3 py-2">{new Date(log.createdAt).toLocaleString()}</td>
+                          <td className="whitespace-nowrap px-3 py-2">{formatDateTime(log.createdAt)}</td>
                           <td className="px-3 py-2">
                             <div className="font-mono text-ink">{log.accessKey?.key || '-'}</div>
                             <div className="text-ink/45">{log.user?.phone || log.user?.nickname || log.user?.id || '未补全账号'}</div>

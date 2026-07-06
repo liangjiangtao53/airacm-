@@ -7,6 +7,7 @@ import { AuthUser } from '../common';
 
 export interface UserActivityQuery {
   action?: string;
+  actions?: string | string[];
   keyword?: string;
   page?: number;
   pageSize?: number;
@@ -112,8 +113,9 @@ export class UserActivityService {
     const page = Math.max(1, Number(q.page) || 1);
     const pageSize = Math.min(100, Math.max(1, Number(q.pageSize) || 50));
     const qb = this.logs.createQueryBuilder('l').where('l.tenantId = :tenantId', { tenantId });
-    if (q.action?.trim()) {
-      qb.andWhere('l.action = :action', { action: q.action.trim() });
+    const actions = this.parseActions(q.actions ?? q.action);
+    if (actions.length > 0) {
+      qb.andWhere('l.action IN (:...actions)', { actions });
     }
 
     const keyword = q.keyword?.trim();
@@ -187,6 +189,14 @@ export class UserActivityService {
 
   private hashKey(key: string): string {
     return createHash('sha256').update(key.trim().toUpperCase()).digest('hex');
+  }
+
+  private parseActions(value?: string | string[]): string[] {
+    const raw = Array.isArray(value) ? value : value ? [value] : [];
+    return raw
+      .flatMap((item) => item.split(','))
+      .map((item) => item.trim())
+      .filter(Boolean);
   }
 
   private async runBestEffort(action: string, work: () => Promise<void>): Promise<void> {

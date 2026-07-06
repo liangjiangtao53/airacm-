@@ -102,7 +102,6 @@ function AttemptCard({ a, index }: { a: ExamAttemptSummary; index: number }) {
                   </span>
                   <div className="min-w-0 flex-1">
                     <p className="text-sm font-medium text-ink">{d.stem}</p>
-                    <QuestionImages urls={d.imageUrls} />
                   </div>
                 </div>
 
@@ -116,7 +115,7 @@ function AttemptCard({ a, index }: { a: ExamAttemptSummary; index: number }) {
                         key={o.key}
                         className={`flex items-center gap-2 rounded px-2 py-1 text-xs ${
                           isAnswer
-                            ? 'bg-sky/10 text-sky'
+                            ? 'bg-green-50 text-green-700'
                             : isYours
                               ? 'bg-red-50 text-red-500'
                               : 'text-ink/65'
@@ -133,9 +132,14 @@ function AttemptCard({ a, index }: { a: ExamAttemptSummary; index: number }) {
 
                 <p className="text-xs text-ink/60">
                   你的答案:<span className="font-mono">{d.yourAnswer || '(未答)'}</span> · 正确答案:
-                  <span className="font-mono text-sky">{d.correctAnswer}</span>
+                  <span className="font-mono text-green-600">{d.correctAnswer}</span>
                 </p>
-                {d.analysis && <p className="mt-1 text-xs text-ink/55">解析:{d.analysis}</p>}
+                {(d.analysis || d.imageUrls?.length) && (
+                  <div className="mt-1 text-xs text-ink/55">
+                    {d.analysis && <p>解析:{d.analysis}</p>}
+                    <QuestionImages urls={d.imageUrls} />
+                  </div>
+                )}
               </div>
             ))
           )}
@@ -153,7 +157,7 @@ function QuestionImages({ urls }: { urls?: string[] }) {
         <img
           key={url}
           src={assetUrl(url)}
-          alt="题目配图"
+          alt="解析配图"
           className="max-h-[420px] max-w-full rounded-md border border-ink/10 object-contain"
         />
       ))}

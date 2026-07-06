@@ -100,6 +100,10 @@ class OperationLogQuery {
 
   @IsOptional()
   @IsString()
+  actions?: string;
+
+  @IsOptional()
+  @IsString()
   keyword?: string;
 
   @IsOptional()
@@ -214,6 +218,14 @@ export class AdminService {
         detail,
       }),
     );
+  }
+
+  private parseActions(action?: string, actions?: string): string[] {
+    return [actions, action]
+      .filter((item): item is string => Boolean(item))
+      .flatMap((item) => item.split(','))
+      .map((item) => item.trim())
+      .filter(Boolean);
   }
 
   // 批量生成激活码。码用加密随机,避免被枚举猜测。
@@ -434,7 +446,8 @@ export class AdminService {
     const qb = this.operationLogs
       .createQueryBuilder('l')
       .where('l.tenantId = :tenantId', { tenantId: caller.tenantId });
-    if (q.action?.trim()) qb.andWhere('l.action = :action', { action: q.action.trim() });
+    const actions = this.parseActions(q.action, q.actions);
+    if (actions.length > 0) qb.andWhere('l.action IN (:...actions)', { actions });
     const from = q.from?.trim() ? new Date(q.from.trim()) : null;
     if (from && !Number.isNaN(from.getTime())) qb.andWhere('l.createdAt >= :from', { from });
     const to = q.to?.trim() ? new Date(q.to.trim()) : null;

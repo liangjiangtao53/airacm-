@@ -39,7 +39,7 @@ export interface QuestionOption {
   text: string;
 }
 
-// 学习列表项:后端默认不下发 answer/analysis。
+// 学习列表项:后端默认不下发 answer/analysis/imageUrls。
 export interface QuestionItem {
   id: string;
   courseId: string | null;
@@ -362,7 +362,7 @@ export const api = {
     const suffix = qs.toString() ? `?${qs}` : '';
     return req<{ items: QuestionItem[]; total: number; page: number; pageSize: number }>(`/questions${suffix}`);
   },
-  questionAnswer: (id: string) => req<{ answer: string; analysis: string }>(`/questions/${id}/answer`),
+  questionAnswer: (id: string) => req<{ answer: string; analysis: string; imageUrls?: string[] }>(`/questions/${id}/answer`),
 
   // ---- 考试 ----
   startExam: (courseId?: string, category?: string) =>
@@ -411,7 +411,7 @@ export const api = {
   // ---- 钱包 / 支付 ----
   wallet: () => req<{ balance: number }>('/wallet'),
   rechargeByCode: (code: string) =>
-    req<{ balance: number }>('/wallet/recharge-code', { method: 'POST', body: { code } }),
+    req<{ balance: number; amount: number }>('/wallet/recharge', { method: 'POST', body: { code } }),
   prepay: (amount: number) =>
     req<{ outTradeNo: string; [k: string]: string }>('/payment/recharge/prepay', {
       method: 'POST',
@@ -429,15 +429,21 @@ export const api = {
     req<{ id: string }>('/admin/chapters', { method: 'POST', body: { courseId, title } }),
   adminCreateLesson: (chapterId: string, title: string, type: LessonType, access: LessonAccess) =>
     req<{ id: string }>('/admin/lessons', { method: 'POST', body: { chapterId, title, type, access } }),
-  operationLogs: (params: { action?: string; keyword?: string; from?: string; to?: string; page?: number; pageSize?: number } = {}) => {
+  operationLogs: (params: { action?: string; actions?: string[]; keyword?: string; from?: string; to?: string; page?: number; pageSize?: number } = {}) => {
     const qs = new URLSearchParams();
-    Object.entries(params).forEach(([k, v]) => v !== undefined && v !== '' && qs.set(k, String(v)));
+    Object.entries(params).forEach(([k, v]) => {
+      if (v === undefined || v === '') return;
+      qs.set(k, Array.isArray(v) ? v.join(',') : String(v));
+    });
     const suffix = qs.toString() ? `?${qs}` : '';
     return req<{ items: AdminOperationLogItem[]; total: number; page: number; pageSize: number }>(`/admin/operation-logs${suffix}`);
   },
-  userActivityLogs: (params: { action?: string; keyword?: string; page?: number; pageSize?: number } = {}) => {
+  userActivityLogs: (params: { action?: string; actions?: string[]; keyword?: string; page?: number; pageSize?: number } = {}) => {
     const qs = new URLSearchParams();
-    Object.entries(params).forEach(([k, v]) => v !== undefined && v !== '' && qs.set(k, String(v)));
+    Object.entries(params).forEach(([k, v]) => {
+      if (v === undefined || v === '') return;
+      qs.set(k, Array.isArray(v) ? v.join(',') : String(v));
+    });
     const suffix = qs.toString() ? `?${qs}` : '';
     return req<{ items: UserActivityLogItem[]; total: number; page: number; pageSize: number }>(`/admin/user-activity-logs${suffix}`);
   },

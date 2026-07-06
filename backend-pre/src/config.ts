@@ -33,6 +33,7 @@ export const env = {
   dbUser: process.env.DB_USER || 'airacm',
   dbPassword: process.env.DB_PASSWORD || '',
   dbDatabase: process.env.DB_DATABASE || 'airacm.sqlite',
+  dbTimezone: process.env.DB_TIMEZONE || '+08:00',
   dbPoolMax: Number(process.env.DB_POOL_MAX) || 20,
   dbMigrationsRun: process.env.DB_MIGRATIONS_RUN !== 'false',
   throttleTtlMs: Number(process.env.THROTTLE_TTL_MS) || 60_000,
@@ -117,7 +118,7 @@ export function buildDataSourceOptions(): DataSourceOptions {
       migrations: [__dirname + '/migrations/*.{ts,js}'],
       migrationsRun: env.dbMigrationsRun,
       charset: 'utf8mb4',
-      timezone: 'Z',
+      timezone: env.dbTimezone,
       extra: {
         connectionLimit: env.dbPoolMax,
         connectTimeout: 5000,

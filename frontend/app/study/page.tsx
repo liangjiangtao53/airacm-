@@ -219,26 +219,32 @@ export default function StudyPage() {
 
 function QuestionCard({ q, index }: { q: QuestionItem; index: number }) {
   const [picked, setPicked] = useState<string[]>([]);
-  const [answer, setAnswer] = useState<{ answer: string; analysis: string } | null>(null);
+  const [answer, setAnswer] = useState<{ answer: string; analysis: string; imageUrls?: string[] } | null>(null);
+  const [revealing, setRevealing] = useState(false);
   const [showComments, setShowComments] = useState(false);
 
   function toggle(key: string) {
     if (answer) return; // 已揭晓答案后锁定
     if (q.type === 'single') {
       setPicked([key]);
+      void reveal([key]);
     } else {
       setPicked((p) => (p.includes(key) ? p.filter((k) => k !== key) : [...p, key]));
     }
   }
 
-  async function reveal() {
+  async function reveal(nextPicked = picked) {
+    if (answer || revealing) return;
+    setRevealing(true);
     try {
       const result = await api.questionAnswer(q.id);
       setAnswer(result);
-      const pickedKey = [...picked].sort().join('');
+      const pickedKey = [...nextPicked].sort().join('');
       await api.recordStudyWrong(q.id, pickedKey || result.answer);
     } catch {
       /* 静默:答案获取失败不致命,用户可重试 */
+    } finally {
+      setRevealing(false);
     }
   }
 
@@ -254,7 +260,6 @@ function QuestionCard({ q, index }: { q: QuestionItem; index: number }) {
         </span>
         <div className="min-w-0 flex-1">
           <p className="font-medium text-ink">{q.stem}</p>
-          <QuestionImages urls={q.imageUrls} />
         </div>
       </div>
 
@@ -264,7 +269,7 @@ function QuestionCard({ q, index }: { q: QuestionItem; index: number }) {
           const correct = answer && correctSet.has(o.key);
           const cls = answer
             ? correct
-              ? 'border-sky/50 bg-sky/5 text-ink'
+              ? 'border-green-300 bg-green-50 text-green-700'
               : chosen
                 ? 'border-red-300 bg-red-50 text-red-600'
                 : 'border-ink/10 text-ink/60'
@@ -278,7 +283,9 @@ function QuestionCard({ q, index }: { q: QuestionItem; index: number }) {
               className={`flex w-full items-center gap-3 rounded-lg border px-3 py-2 text-left transition ${cls}`}
             >
               <span className="font-mono text-sm">{o.key}</span>
-              <span className="text-sm">{o.text}</span>
+              <span className="flex-1 text-sm">{o.text}</span>
+              {correct && <span className="shrink-0 text-xs text-green-600">正确答案</span>}
+              {chosen && answer && !correct && <span className="shrink-0 text-xs text-red-500">你的选择</span>}
             </button>
           );
         })}
@@ -287,13 +294,14 @@ function QuestionCard({ q, index }: { q: QuestionItem; index: number }) {
       <div className="mt-4 flex items-center gap-3">
         {!answer ? (
           <button
-            onClick={reveal}
+            onClick={() => reveal()}
+            disabled={revealing}
             className="rounded-lg bg-sky px-5 py-2 text-sm font-medium text-white hover:bg-steel"
           >
-            查看答案
+            {revealing ? '判定中...' : '查看答案'}
           </button>
         ) : (
-          <span className={`text-sm font-medium ${isRight ? 'text-sky' : 'text-red-500'}`}>
+          <span className={`text-sm font-medium ${isRight ? 'text-green-600' : 'text-red-500'}`}>
             {picked.length ? (isRight ? '回答正确' : '回答错误') : '正确答案'} · {answer.answer}
           </span>
         )}
@@ -305,8 +313,11 @@ function QuestionCard({ q, index }: { q: QuestionItem; index: number }) {
         </button>
       </div>
 
-      {answer?.analysis && (
-        <p className="mt-3 rounded-lg bg-mist px-4 py-3 text-sm text-ink/70">解析:{answer.analysis}</p>
+      {answer && (answer.analysis || answer.imageUrls?.length) && (
+        <div className="mt-3 rounded-lg bg-mist px-4 py-3 text-sm text-ink/70">
+          {answer.analysis && <p>解析:{answer.analysis}</p>}
+          <QuestionImages urls={answer.imageUrls} />
+        </div>
       )}
 
       {showComments && <Comments questionId={q.id} />}
@@ -322,7 +333,7 @@ function QuestionImages({ urls }: { urls?: string[] }) {
         <img
           key={url}
           src={assetUrl(url)}
-          alt="题目配图"
+          alt="解析配图"
           className="max-h-[520px] max-w-full rounded-lg border border-ink/10 object-contain"
         />
       ))}

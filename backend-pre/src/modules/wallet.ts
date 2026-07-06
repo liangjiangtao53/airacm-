@@ -16,6 +16,7 @@ import { IsInt, IsOptional, IsString, Min } from 'class-validator';
 import { Type } from 'class-transformer';
 import { RechargeCode, Wallet, WalletTxn } from '../entities';
 import { AuthUser, CurrentUser, JwtAuthGuard } from '../common';
+import { UserActivityModule, UserActivityService } from './user-activity';
 
 class RechargeByCodeDto {
   @IsString()
@@ -42,6 +43,7 @@ export class WalletService {
     @InjectRepository(Wallet) private readonly wallets: Repository<Wallet>,
     @InjectRepository(WalletTxn) private readonly txns: Repository<WalletTxn>,
     private readonly dataSource: DataSource,
+    private readonly activity: UserActivityService,
   ) {}
 
   async getBalance(user: AuthUser): Promise<{ balance: number }> {
@@ -74,7 +76,8 @@ export class WalletService {
   // 激活码充值:原子认领 code(status unused→used,影响行数=1 才生效),再入账,一个事务。
   // 并发/重复使用只生效一次(CRITICAL 路径)。
   async rechargeByCode(user: AuthUser, code: string): Promise<{ balance: number; amount: number }> {
-    return this.dataSource.transaction(async (m) => {
+    let rechargeCodeId: string | null = null;
+    const result = await this.dataSource.transaction(async (m) => {
       const claimed = await m
         .createQueryBuilder()
         .update(RechargeCode)
@@ -92,9 +95,15 @@ export class WalletService {
         where: { tenantId: user.tenantId, code },
       });
       const amount = codeRow!.amount;
+      rechargeCodeId = codeRow!.id;
       const balance = await this.creditWithin(m, user, amount, codeRow!.id);
       return { balance, amount };
     });
+    await this.activity.record(user, 'wallet_recharge_code', 'recharge_code', rechargeCodeId, {
+      amount: result.amount,
+      balance: result.balance,
+    });
+    return result;
   }
 
   // 入账(增加余额 + 流水)。供激活码 / 微信支付到账复用。在调用方事务内执行。
@@ -193,7 +202,7 @@ export class WalletController {
 }
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Wallet, WalletTxn, RechargeCode])],
+  imports: [TypeOrmModule.forFeature([Wallet, WalletTxn, RechargeCode]), UserActivityModule],
   controllers: [WalletController],
   providers: [WalletService],
   exports: [WalletService],

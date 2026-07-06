@@ -15,6 +15,7 @@ import { IsIn, IsInt, IsString, Min } from 'class-validator';
 import { Lesson, Progress } from '../entities';
 import { AuthUser, CurrentUser, JwtAuthGuard } from '../common';
 import { cacheGet, cacheSet } from '../cache';
+import { UserActivityModule, UserActivityService } from './user-activity';
 
 class UpsertProgressDto {
   @IsString()
@@ -35,6 +36,7 @@ export class ProgressService {
   constructor(
     @InjectRepository(Progress) private readonly progress: Repository<Progress>,
     @InjectRepository(Lesson) private readonly lessons: Repository<Lesson>,
+    private readonly activity: UserActivityService,
   ) {}
 
   // 上报学习进度(高频写)。优化:课时存在性走缓存省一次查询 + 数据库原生 upsert 一次写完成。
@@ -51,6 +53,12 @@ export class ProgressService {
     }
     if (!exists) throw new NotFoundException('课时不存在');
 
+    const previous = dto.status === 'done'
+      ? await this.progress.findOne({
+          where: { tenantId: user.tenantId, userId: user.userId, lessonId: dto.lessonId },
+        })
+      : null;
+
     // 数据库原生 upsert(INSERT ... ON CONFLICT DO UPDATE):一次写,无"先查后写"竞态。
     await this.progress.upsert(
       {
@@ -62,6 +70,9 @@ export class ProgressService {
       },
       ['tenantId', 'userId', 'lessonId'],
     );
+    if (dto.status === 'done' && previous?.status !== 'done') {
+      await this.activity.record(user, 'lesson_complete', 'lesson', dto.lessonId, { position: dto.position });
+    }
     return { ok: true };
   }
 
@@ -93,7 +104,7 @@ export class ProgressController {
 }
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Progress, Lesson])],
+  imports: [TypeOrmModule.forFeature([Progress, Lesson]), UserActivityModule],
   providers: [ProgressService],
   controllers: [ProgressController],
   exports: [ProgressService],

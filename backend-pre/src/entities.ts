@@ -31,7 +31,17 @@ export type QuestionType = 'single' | 'multiple';
 export type QuestionUsage = 'study' | 'exam' | 'both';
 export type WrongQuestionSource = 'study' | 'exam';
 export type QuestionImportStatus = 'completed' | 'failed';
-export type UserActivityAction = 'login_password' | 'login_access_key' | 'study_answer' | 'exam_start' | 'exam_submit';
+export type UserActivityAction =
+  | 'login_password'
+  | 'login_access_key'
+  | 'study_answer'
+  | 'study_progress'
+  | 'lesson_start'
+  | 'lesson_complete'
+  | 'wrong_question_master'
+  | 'wallet_recharge_code'
+  | 'exam_start'
+  | 'exam_submit';
 
 @Entity('exam_paper_rule')
 @Index(['tenantId'], { unique: true })

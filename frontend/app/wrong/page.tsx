@@ -114,7 +114,6 @@ function WrongCard({
           </span>
           <div className="min-w-0 flex-1">
             <p className="font-medium text-ink">{q.stem}</p>
-            <QuestionImages urls={q.imageUrls} />
           </div>
         </div>
         <span className="shrink-0 rounded-md bg-red-50 px-2 py-0.5 text-xs text-red-500">
@@ -125,7 +124,7 @@ function WrongCard({
       {revealed && <div className="space-y-2">
         {q.options.map((o) => {
           const correct = correctSet.has(o.key);
-          const cls = correct ? 'border-sky/50 bg-sky/5 text-ink' : 'border-ink/10 text-ink/60';
+          const cls = correct ? 'border-green-300 bg-green-50 text-green-700' : 'border-ink/10 text-ink/60';
           return (
             <div
               key={o.key}
@@ -133,7 +132,7 @@ function WrongCard({
             >
               <span className="font-mono text-sm">{o.key}</span>
               <span className="text-sm">{o.text}</span>
-              {correct && <span className="ml-auto text-xs text-sky">正确答案</span>}
+              {correct && <span className="ml-auto text-xs text-green-600">正确答案</span>}
             </div>
           );
         })}
@@ -149,7 +148,7 @@ function WrongCard({
           </button>
         ) : (
           <>
-            <span className="text-sm font-medium text-sky">正确答案 · {q.answer}</span>
+            <span className="text-sm font-medium text-green-600">正确答案 · {q.answer}</span>
             <button
               onClick={master}
               className="rounded-lg border border-sky/40 px-4 py-1.5 text-sm font-medium text-sky hover:bg-sky/5"
@@ -163,8 +162,11 @@ function WrongCard({
         </button>
       </div>
 
-      {revealed && q.analysis && (
-        <p className="mt-3 rounded-lg bg-mist px-4 py-2 text-sm text-ink/65">解析:{q.analysis}</p>
+      {revealed && (q.analysis || q.imageUrls?.length) && (
+        <div className="mt-3 rounded-lg bg-mist px-4 py-2 text-sm text-ink/65">
+          {q.analysis && <p>解析:{q.analysis}</p>}
+          <QuestionImages urls={q.imageUrls} />
+        </div>
       )}
 
       {showComments && <Comments questionId={q.questionId} />}
@@ -180,7 +182,7 @@ function QuestionImages({ urls }: { urls?: string[] }) {
         <img
           key={url}
           src={assetUrl(url)}
-          alt="题目配图"
+          alt="解析配图"
           className="max-h-[520px] max-w-full rounded-lg border border-ink/10 object-contain"
         />
       ))}

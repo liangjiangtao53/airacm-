@@ -875,11 +875,16 @@ export class QuestionService {
     return { stem, options, answer, analysis: cell(colMap.analysis) };
   }
 
-  // 学习刷题列表:默认不下发 answer/analysis(点"查看答案"再单独请求)。
+  // 学习刷题列表:默认不下发 answer/analysis/imageUrls,图片作为解析内容在查看答案后返回。
   async list(
     user: AuthUser,
     q: ListQuery,
-  ): Promise<{ items: Array<Omit<Question, 'answer' | 'analysis' | 'importBatchId'>>; total: number; page: number; pageSize: number }> {
+  ): Promise<{
+    items: Array<Omit<Question, 'answer' | 'analysis' | 'importBatchId' | 'imageUrls'> & { imageUrls?: string[] }>;
+    total: number;
+    page: number;
+    pageSize: number;
+  }> {
     const page = q.page ?? 1;
     const pageSize = q.pageSize ?? 20;
     {
@@ -903,7 +908,6 @@ export class QuestionService {
         'q.type',
         'q.stem',
         'q.options',
-        'q.imageUrls',
         'q.usage',
         'q.order',
         'q.createdAt',
@@ -922,7 +926,12 @@ export class QuestionService {
           q.category,
           q.courseId ?? '',
         );
-        return { items: rows, total: allRows.length, page: currentPage, pageSize: SEQUENTIAL_STUDY_BATCH_SIZE };
+        return {
+          items: rows.map((row) => ({ ...row, imageUrls: [] })),
+          total: allRows.length,
+          page: currentPage,
+          pageSize: SEQUENTIAL_STUDY_BATCH_SIZE,
+        };
       }
 
       const countCacheKey = [
@@ -945,7 +954,7 @@ export class QuestionService {
       if (dbType === 'mysql' || dbType === 'mariadb') rowsQb.useIndex(this.questionListIndex(q));
 
       const rows = await rowsQb.getMany();
-      const items = rows.map(({ answer: _a, analysis: _an, ...rest }) => rest);
+      const items = rows.map(({ answer: _a, analysis: _an, imageUrls: _img, ...rest }) => rest);
       return { items, total, page, pageSize };
     }
   }
@@ -979,8 +988,8 @@ export class QuestionService {
     };
   }
 
-  // 查看答案:单独端点,返回正确答案 + 解析。
-  async answer(user: AuthUser, id: string): Promise<{ answer: string; analysis: string }> {
+  // 查看答案:单独端点,返回正确答案 + 解析 + 解析配图。
+  async answer(user: AuthUser, id: string): Promise<{ answer: string; analysis: string; imageUrls: string[] }> {
     const q = await this.questions.findOne({ where: { tenantId: user.tenantId, id } });
     if (!q) throw new NotFoundException('题目不存在');
     // 纯考试题答案不可单独查看,否则考生可在考试中拉答案作弊(组卷已下发题 id)。
@@ -988,7 +997,7 @@ export class QuestionService {
     if (q.usage === 'exam') {
       throw new ForbiddenException('考试题答案不可查看');
     }
-    return { answer: q.answer, analysis: q.analysis };
+    return { answer: q.answer, analysis: q.analysis, imageUrls: q.imageUrls ?? [] };
   }
 
   // 顺序学习按最近一次学习位置续取,不参与新题/原题/错题混排。

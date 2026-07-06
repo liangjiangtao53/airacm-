@@ -259,6 +259,7 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
         .post('/admin/questions/import?usage=study')
         .set('Authorization', `Bearer ${admin.token}`)
         .attach('file', buildXlsx([['学习题', '对', '错', '', '', 'A', '因为对']]), 'q.xlsx');
+      await ds.getRepository(Question).update({ tenantId: TENANT, stem: '学习题' }, { imageUrls: ['/uploads/analysis.png'] });
 
       const user = await makeUser('user');
       const list = await request(app.getHttpServer())
@@ -269,6 +270,7 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
       expect(item).toBeTruthy();
       expect(item.answer).toBeUndefined(); // 列表不含答案
       expect(item.analysis).toBeUndefined();
+      expect(item.imageUrls).toBeUndefined();
 
       const ans = await request(app.getHttpServer())
         .get(`/questions/${item.id}/answer`)
@@ -276,6 +278,7 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
       expect(ans.status).toBe(200);
       expect(ans.body.data.answer).toBe('A');
       expect(ans.body.data.analysis).toBe('因为对');
+      expect(ans.body.data.imageUrls).toEqual(['/uploads/analysis.png']);
     });
 
     it('学习端可对题目评论并读取', async () => {
@@ -322,6 +325,7 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
           ],
           answer,
           analysis: `${stem} 解析`,
+          imageUrls: [`/uploads/${stem}.png`],
           usage,
           order: 0,
         });
@@ -346,6 +350,7 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
       expect(start.status).toBe(201);
       expect(start.body.data.questions).toHaveLength(3);
       expect(start.body.data.questions[0].answer).toBeUndefined(); // 卷面不泄露答案
+      expect(start.body.data.questions[0].imageUrls).toBeUndefined(); // 解析配图不在答题卷面下发
 
       const answers = pickAnswers(start.body.data.questions, (s) => correctByStem[s]);
       const sub = await request(app.getHttpServer())
@@ -356,6 +361,7 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
       expect(sub.body.data.score).toBe(100);
       expect(sub.body.data.correct).toBe(3);
       expect(sub.body.data.details.every((d: { isCorrect: boolean }) => d.isCorrect)).toBe(true);
+      expect(sub.body.data.details.every((d: { imageUrls?: string[] }) => (d.imageUrls ?? []).length === 1)).toBe(true);
       const examLogs = await ds.getRepository(UserActivityLog).find({
         where: { tenantId: TENANT, userId: user.user.userId, targetId: start.body.data.attemptId },
       });
@@ -714,9 +720,10 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
       });
       expect(progress?.questionId).toBe(q.id);
       const activityLogs = await ds.getRepository(UserActivityLog).find({
-        where: { tenantId: TENANT, userId: user.user.userId, action: 'study_answer', targetId: q.id },
+        where: { tenantId: TENANT, userId: user.user.userId, action: 'study_progress', targetType: 'study_category' },
       });
       expect(activityLogs).toHaveLength(2);
+      expect(activityLogs.every((log) => log.targetId === null)).toBe(true);
     });
   });
 
@@ -1047,7 +1054,7 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
       expect(denied.status).toBe(401);
 
       const logs = await request(app.getHttpServer())
-        .get(`/admin/user-activity-logs?action=login_access_key&keyword=${encodeURIComponent(key.slice(0, 8))}`)
+        .get(`/admin/user-activity-logs?actions=login_access_key,wallet_recharge_code&keyword=${encodeURIComponent(key.slice(0, 8))}`)
         .set('Authorization', `Bearer ${sup.token}`);
       expect(logs.status).toBe(200);
       expect(logs.body.data.total).toBeGreaterThanOrEqual(1);
@@ -1067,6 +1074,31 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
       expect(
         afterDelete.body.data.items.some((log: { accessKey?: { key?: string; status?: string } }) => log.accessKey?.key === `****${key.slice(-4)}` && log.accessKey.status === 'deleted'),
       ).toBe(true);
+    });
+
+    it('激活码充值成功后记录用户行为日志', async () => {
+      const sup = await makeUser('super');
+      const user = await makeUser('user');
+      const gen = await request(app.getHttpServer())
+        .post('/admin/recharge-codes')
+        .set('Authorization', `Bearer ${sup.token}`)
+        .send({ count: 1, amount: 600 });
+      expect(gen.status).toBe(201);
+
+      const recharge = await request(app.getHttpServer())
+        .post('/wallet/recharge')
+        .set('Authorization', `Bearer ${user.token}`)
+        .send({ code: gen.body.data.codes[0] });
+      expect(recharge.status).toBe(201);
+      expect(recharge.body.data.amount).toBe(600);
+
+      const logs = await request(app.getHttpServer())
+        .get('/admin/user-activity-logs?actions=wallet_recharge_code')
+        .set('Authorization', `Bearer ${sup.token}`);
+      expect(logs.status).toBe(200);
+      expect(logs.body.data.items.some((log: { action: string; user?: { id?: string }; detail?: { amount?: number } }) => (
+        log.action === 'wallet_recharge_code' && log.user?.id === user.user.userId && log.detail?.amount === 600
+      ))).toBe(true);
     });
 
     it('自定义数量与有效期', async () => {
@@ -1346,7 +1378,7 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
       expect(gen.status).toBe(201);
 
       const logs = await request(app.getHttpServer())
-        .get('/admin/operation-logs?action=recharge_code_generate')
+        .get('/admin/operation-logs?actions=recharge_code_generate,forum_topic_create')
         .set('Authorization', `Bearer ${sup.token}`);
       expect(logs.status).toBe(200);
       expect(logs.body.data.total).toBeGreaterThanOrEqual(1);
@@ -1354,6 +1386,37 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
       expect(logs.body.data.items[0].admin.id).toBe(sup.user.userId);
       expect(logs.body.data.items[0].admin.role).toBe('super');
       expect(logs.body.data.items[0].createdAt).toBeTruthy();
+    });
+
+    it('论坛主题增删改进入后台操作日志,并支持多选操作筛选', async () => {
+      const sup = await makeUser('super');
+      const suffix = Date.now();
+
+      const created = await request(app.getHttpServer())
+        .post('/admin/forum/topics')
+        .set('Authorization', `Bearer ${sup.token}`)
+        .send({ name: `主题${suffix}`, order: 1 });
+      expect(created.status).toBe(201);
+
+      const updated = await request(app.getHttpServer())
+        .patch(`/admin/forum/topics/${created.body.data.id}`)
+        .set('Authorization', `Bearer ${sup.token}`)
+        .send({ name: `主题${suffix}-改`, order: 2 });
+      expect(updated.status).toBe(200);
+
+      const removed = await request(app.getHttpServer())
+        .delete(`/admin/forum/topics/${created.body.data.id}`)
+        .set('Authorization', `Bearer ${sup.token}`);
+      expect(removed.status).toBe(200);
+
+      const logs = await request(app.getHttpServer())
+        .get('/admin/operation-logs?actions=forum_topic_create,forum_topic_update,forum_topic_delete&page=1&pageSize=10')
+        .set('Authorization', `Bearer ${sup.token}`);
+      expect(logs.status).toBe(200);
+      const actions = logs.body.data.items.map((log: { action: string }) => log.action);
+      expect(actions).toEqual(expect.arrayContaining(['forum_topic_create', 'forum_topic_update', 'forum_topic_delete']));
+      expect(logs.body.data.page).toBe(1);
+      expect(logs.body.data.pageSize).toBe(10);
     });
   });
 
