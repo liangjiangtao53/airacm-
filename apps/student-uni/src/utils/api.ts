@@ -66,7 +66,6 @@ export interface PaperQuestion {
   type: 'single' | 'multiple';
   stem: string;
   options: QuestionOption[];
-  imageUrls?: string[];
 }
 
 export interface ExamStart {
@@ -201,7 +200,7 @@ export const api = {
     const qs = pairs.length ? `?${new URLSearchParams(pairs.map(([k, v]) => [k, String(v)])).toString()}` : '';
     return request<{ items: QuestionItem[]; total: number; page: number; pageSize: number }>(`/questions${qs}`);
   },
-  questionAnswer: (id: string) => request<{ answer: string; analysis: string }>(`/questions/${id}/answer`),
+  questionAnswer: (id: string) => request<{ answer: string; analysis: string; imageUrls?: string[] }>(`/questions/${id}/answer`),
   startExam: (category?: string) =>
     request<ExamStart>('/exams/start', { method: 'POST', data: { category } }),
   submitExam: (attemptId: string, answers: Record<string, string>) =>

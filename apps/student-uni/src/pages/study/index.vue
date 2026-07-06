@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onShow } from '@dcloudio/uni-app';
-import { computed, ref } from 'vue';
+import { computed, ref, watch } from 'vue';
 import { api, assetUrl, requireLogin, type CommentItem, type QuestionItem } from '@/utils/api';
 
 const categories = ref<string[]>([]);
@@ -8,13 +8,15 @@ const category = ref('');
 const keyword = ref('');
 const questions = ref<QuestionItem[]>([]);
 const picked = ref<Record<string, string[]>>({});
-const answers = ref<Record<string, { answer: string; analysis: string }>>({});
+const answers = ref<Record<string, { answer: string; analysis: string; imageUrls?: string[] }>>({});
+const autoRevealed = ref<Record<string, boolean>>({});
 const page = ref(1);
 const pageSize = ref(20);
 const total = ref(0);
 const loading = ref(false);
 const currentIndex = ref(0);
 const touchStartX = ref(0);
+const showCorrectAnswer = ref(false);
 const commentOpen = ref<Record<string, boolean>>({});
 const commentInputs = ref<Record<string, string>>({});
 const commentLists = ref<Record<string, CommentItem[]>>({});
@@ -62,16 +64,39 @@ async function loadQuestions(reset = false, targetIndex = 0) {
   }
 }
 
-async function reveal(id: string) {
-  if (answers.value[id]) return;
+async function reveal(id: string, recordPractice = true, autoDisplay = false) {
+  if (answers.value[id]) {
+    if (!autoDisplay) {
+      autoRevealed.value[id] = false;
+      if (recordPractice) {
+        const pickedKey = [...(picked.value[id] || [])].sort().join('');
+        await api.recordStudyWrong(id, pickedKey || answers.value[id].answer);
+      }
+    }
+    return;
+  }
   try {
     const result = await api.questionAnswer(id);
     answers.value[id] = result;
+    autoRevealed.value[id] = autoDisplay;
+    if (!recordPractice) return;
     const pickedKey = [...(picked.value[id] || [])].sort().join('');
     await api.recordStudyWrong(id, pickedKey || result.answer);
   } catch (e) {
     toast((e as Error).message);
   }
+}
+
+function toggleCorrectAnswer() {
+  showCorrectAnswer.value = !showCorrectAnswer.value;
+  const q = currentQuestion.value;
+  if (showCorrectAnswer.value && q) {
+    reveal(q.id, false, true);
+  }
+}
+
+function shouldShowAnswer(id: string) {
+  return Boolean(answers.value[id] && (!autoRevealed.value[id] || showCorrectAnswer.value));
 }
 
 function toggle(q: QuestionItem, key: string) {
@@ -159,11 +184,23 @@ onShow(async () => {
     toast((e as Error).message);
   }
 });
+
+watch(
+  () => [showCorrectAnswer.value, currentQuestion.value?.id] as const,
+  ([enabled, id]) => {
+    if (enabled && id) {
+      reveal(String(id), false, true);
+    }
+  },
+);
 </script>
 
 <template>
   <view class="page study-page">
     <view class="header">
+      <view class="top-row">
+        <button :class="['answer-toggle', showCorrectAnswer && 'active']" @tap="toggleCorrectAnswer">正确答案</button>
+      </view>
       <text class="title">专题学习</text>
       <text class="subtitle">顺序学习与模拟考试。</text>
     </view>
@@ -200,13 +237,6 @@ onShow(async () => {
         <view class="question-head">
           <text class="badge">{{ currentNumber }} / {{ total }} · {{ currentQuestion.type === 'single' ? '单选' : '多选' }}</text>
           <text class="stem">{{ currentQuestion.stem }}</text>
-          <image
-            v-for="url in currentQuestion.imageUrls || []"
-            :key="url"
-            :src="assetUrl(url)"
-            mode="widthFix"
-            class="question-image"
-          />
         </view>
         <view class="options">
           <view
@@ -215,8 +245,8 @@ onShow(async () => {
             :class="[
               'option',
               (picked[currentQuestion.id] || []).includes(option.key) && 'chosen',
-              answers[currentQuestion.id] && isCorrect(currentQuestion.id, option.key) && 'correct',
-              answers[currentQuestion.id] && (picked[currentQuestion.id] || []).includes(option.key) && !isCorrect(currentQuestion.id, option.key) && 'wrong',
+              shouldShowAnswer(currentQuestion.id) && isCorrect(currentQuestion.id, option.key) && 'correct',
+              shouldShowAnswer(currentQuestion.id) && (picked[currentQuestion.id] || []).includes(option.key) && !isCorrect(currentQuestion.id, option.key) && 'wrong',
             ]"
             @tap="toggle(currentQuestion, option.key)"
           >
@@ -225,14 +255,21 @@ onShow(async () => {
           </view>
         </view>
         <view class="question-actions">
-          <button v-if="!answers[currentQuestion.id]" class="btn secondary action" @tap="reveal(currentQuestion.id)">查看答案</button>
+          <button v-if="!shouldShowAnswer(currentQuestion.id)" class="btn secondary action" @tap="reveal(currentQuestion.id)">查看答案</button>
           <button class="btn secondary action" @tap="toggleComments(currentQuestion.id)">
             {{ commentOpen[currentQuestion.id] ? '收起评论' : '评论' }}
           </button>
         </view>
-        <view v-if="answers[currentQuestion.id]" class="answer-box">
+        <view v-if="shouldShowAnswer(currentQuestion.id)" class="answer-box">
           <text class="answer">答案: {{ answers[currentQuestion.id].answer }}</text>
           <text v-if="answers[currentQuestion.id].analysis" class="analysis">解析: {{ answers[currentQuestion.id].analysis }}</text>
+          <image
+            v-for="url in answers[currentQuestion.id].imageUrls || []"
+            :key="url"
+            :src="assetUrl(url)"
+            mode="widthFix"
+            class="question-image"
+          />
         </view>
         <view v-if="commentOpen[currentQuestion.id]" class="comment-box">
           <view class="comment-form">
@@ -276,6 +313,30 @@ onShow(async () => {
 
 .subprojects {
   gap: 18rpx;
+}
+
+.top-row {
+  align-items: center;
+  display: flex;
+  flex-direction: row;
+  justify-content: flex-start;
+}
+
+.answer-toggle {
+  background: rgba(255, 255, 255, 0.72);
+  border: 2rpx solid rgba(17, 24, 39, 0.12);
+  border-radius: 999rpx;
+  color: rgba(17, 24, 39, 0.68);
+  font-size: 24rpx;
+  line-height: 1;
+  min-height: 56rpx;
+  padding: 0 22rpx;
+}
+
+.answer-toggle.active {
+  background: #1f6feb;
+  border-color: #1f6feb;
+  color: #fff;
 }
 
 .subproject {

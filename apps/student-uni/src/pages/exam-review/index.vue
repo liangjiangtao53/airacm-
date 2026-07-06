@@ -76,9 +76,9 @@ onShow(load);
           <view v-for="(d, i) in details[a.id] || []" :key="d.questionId" class="detail">
             <text :class="['badge', d.isCorrect ? 'ok' : 'bad']">{{ i + 1 }} · {{ d.isCorrect ? '正确' : '错误' }}</text>
             <text class="stem">{{ d.stem }}</text>
-            <image v-for="url in d.imageUrls || []" :key="url" :src="assetUrl(url)" mode="widthFix" class="question-image" />
             <text class="summary">你的答案: {{ d.yourAnswer || '(未答)' }} · 正确答案: {{ d.correctAnswer }}</text>
             <text v-if="d.analysis" class="analysis">解析: {{ d.analysis }}</text>
+            <image v-for="url in d.imageUrls || []" :key="url" :src="assetUrl(url)" mode="widthFix" class="question-image" />
           </view>
           <text v-if="details[a.id]?.length === 0" class="empty-detail">暂无复盘明细</text>
         </view>

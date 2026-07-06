@@ -103,7 +103,6 @@ onShow(load);
           <text class="wrong-count">错 {{ q.wrongCount }} 次</text>
         </view>
         <text class="stem">{{ q.stem }}</text>
-        <image v-for="url in q.imageUrls || []" :key="url" :src="assetUrl(url)" mode="widthFix" class="question-image" />
         <view v-if="revealed[itemKey(q)]" class="options">
           <view
             v-for="option in q.options"
@@ -128,6 +127,13 @@ onShow(load);
           </button>
         </view>
         <text v-if="revealed[itemKey(q)] && q.analysis" class="analysis">解析: {{ q.analysis }}</text>
+        <image
+          v-for="url in revealed[itemKey(q)] ? q.imageUrls || [] : []"
+          :key="url"
+          :src="assetUrl(url)"
+          mode="widthFix"
+          class="question-image"
+        />
         <view v-if="commentOpen[q.questionId]" class="comment-box">
           <view class="comment-form">
             <input v-model="commentInputs[q.questionId]" class="comment-input" placeholder="写下你的想法..." />

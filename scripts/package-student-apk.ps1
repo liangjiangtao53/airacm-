@@ -4,12 +4,40 @@ param(
   [string]$ApiBase = "https://weixiuzhiyi.com.cn/api",
   [string]$DownloadBase = "https://weixiuzhiyi.com.cn",
   [string]$ApkName = "airacm-android.apk",
+  [switch]$AllowScreenshots,
+  [switch]$BuildBoth,
   [switch]$SkipPublicCopy
 )
 
 $ErrorActionPreference = "Stop"
 
 $repo = Resolve-Path (Join-Path $PSScriptRoot "..")
+
+if ($BuildBoth) {
+  $commonArgs = @{
+    AndroidHome = $AndroidHome
+    OutDir = $OutDir
+    ApiBase = $ApiBase
+    DownloadBase = $DownloadBase
+  }
+  if ($SkipPublicCopy) {
+    $commonArgs.SkipPublicCopy = $true
+  }
+  & $PSCommandPath @commonArgs -ApkName "airacm-android.apk"
+  if ($LASTEXITCODE -ne 0) {
+    throw "Secure APK build failed"
+  }
+  & $PSCommandPath @commonArgs -ApkName "airacm-android-screenshot.apk" -AllowScreenshots
+  if ($LASTEXITCODE -ne 0) {
+    throw "Screenshot APK build failed"
+  }
+  return
+}
+
+if ($AllowScreenshots -and $ApkName -eq "airacm-android.apk") {
+  $ApkName = "airacm-android-screenshot.apk"
+}
+
 $uniDir = Join-Path $repo "apps\student-uni"
 $shellDir = Join-Path $repo "apps\student-android-shell"
 $workDir = Join-Path $repo ".tmp\student-apk"
@@ -67,9 +95,19 @@ Copy-Item -Recurse -Force (Join-Path $uniDir "dist\build\h5\*") $wwwDir
 $classesDir = Join-Path $workDir "classes"
 $dexDir = Join-Path $workDir "dex"
 $resDir = Join-Path $workDir "res"
-New-Item -ItemType Directory -Force $classesDir, $dexDir, $resDir | Out-Null
+$generatedSrcDir = Join-Path $workDir "src"
+New-Item -ItemType Directory -Force $classesDir, $dexDir, $resDir, $generatedSrcDir | Out-Null
 
-Invoke-Checked { javac --release 8 -encoding UTF-8 -cp $androidJar -d $classesDir (Join-Path $shellDir "src\com\airacm\student\MainActivity.java") }
+$sourceMain = Join-Path $shellDir "src\com\airacm\student\MainActivity.java"
+$generatedMain = Join-Path $generatedSrcDir "com\airacm\student\MainActivity.java"
+New-Item -ItemType Directory -Force (Split-Path $generatedMain) | Out-Null
+$mainSource = Get-Content -Raw -Encoding UTF8 $sourceMain
+if ($AllowScreenshots) {
+  $mainSource = $mainSource -replace '(?s)\s*// SCREENSHOT_PROTECTION_START.*?// SCREENSHOT_PROTECTION_END', "`r`n    // Screenshot-enabled APK: FLAG_SECURE intentionally omitted."
+}
+[System.IO.File]::WriteAllText($generatedMain, $mainSource, [System.Text.UTF8Encoding]::new($false))
+
+Invoke-Checked { javac --release 8 -encoding UTF-8 -cp $androidJar -d $classesDir $generatedMain }
 $classFiles = Get-ChildItem -Recurse -File -Filter "*.class" $classesDir | ForEach-Object { $_.FullName }
 Invoke-Checked { & (Join-Path $buildTools "d8.bat") --lib $androidJar --output $dexDir $classFiles }
 
@@ -93,6 +131,6 @@ Invoke-Checked { & (Join-Path $buildTools "apksigner.bat") sign --ks $keystore -
 Invoke-Checked { & (Join-Path $buildTools "apksigner.bat") verify $final }
 
 if (!$SkipPublicCopy) {
-  Copy-Item -Force $final (Join-Path $repo "frontend\public\downloads\app\airacm-android.apk")
+  Copy-Item -Force $final (Join-Path $repo "frontend\public\downloads\app\$ApkName")
 }
 Write-Output $final

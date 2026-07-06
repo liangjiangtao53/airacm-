@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { api, assetUrl, getToken, type QuestionItem } from '@/lib/api';
 import Comments from '@/components/Comments';
@@ -20,6 +20,7 @@ export default function StudyPage() {
   const [total, setTotal] = useState(0);
   const [err, setErr] = useState('');
   const [loading, setLoading] = useState(true);
+  const [showCorrectAnswer, setShowCorrectAnswer] = useState(false);
 
   // 搜索防抖 350ms,避免每个字符都打接口。
   useEffect(() => {
@@ -79,7 +80,20 @@ export default function StudyPage() {
       <a href="/" className="text-sm font-bold text-ink hover:text-sky">
         ← 返回首页
       </a>
-      <h1 className="mb-4 mt-1 text-3xl font-semibold tracking-tight text-ink">专题学习</h1>
+      <div className="mb-4 mt-1 flex flex-col items-start gap-3">
+        <button
+          type="button"
+          onClick={() => setShowCorrectAnswer((v) => !v)}
+          className={`rounded-full border px-3 py-1.5 text-sm font-medium transition ${
+            showCorrectAnswer
+              ? 'border-sky bg-sky text-white'
+              : 'border-ink/15 bg-white/70 text-ink/65 hover:border-sky/35 hover:text-ink'
+          }`}
+        >
+          正确答案
+        </button>
+        <h1 className="text-3xl font-semibold tracking-tight text-ink">专题学习</h1>
+      </div>
 
       <div className="mb-6 grid grid-cols-1 gap-3 sm:grid-cols-2">
         <section className="rounded-2xl border border-sky/30 bg-sky/10 p-4">
@@ -149,7 +163,7 @@ export default function StudyPage() {
           )}
           <div className="space-y-4">
             {items.map((q, i) => (
-              <QuestionCard key={q.id} q={q} index={(page - 1) * pageSize + i + 1} />
+              <QuestionCard key={q.id} q={q} index={(page - 1) * pageSize + i + 1} showCorrectAnswer={showCorrectAnswer} />
             ))}
           </div>
 
@@ -217,11 +231,44 @@ export default function StudyPage() {
   );
 }
 
-function QuestionCard({ q, index }: { q: QuestionItem; index: number }) {
+function QuestionCard({ q, index, showCorrectAnswer }: { q: QuestionItem; index: number; showCorrectAnswer: boolean }) {
   const [picked, setPicked] = useState<string[]>([]);
   const [answer, setAnswer] = useState<{ answer: string; analysis: string; imageUrls?: string[] } | null>(null);
+  const [autoRevealed, setAutoRevealed] = useState(false);
   const [revealing, setRevealing] = useState(false);
   const [showComments, setShowComments] = useState(false);
+
+  const reveal = useCallback(async (nextPicked = picked, recordPractice = true, autoDisplay = false) => {
+    if (answer) {
+      if (!autoDisplay) {
+        setAutoRevealed(false);
+        if (recordPractice) {
+          const pickedKey = [...nextPicked].sort().join('');
+          await api.recordStudyWrong(q.id, pickedKey || answer.answer);
+        }
+      }
+      return;
+    }
+    if (revealing) return;
+    setRevealing(true);
+    try {
+      const result = await api.questionAnswer(q.id);
+      setAnswer(result);
+      setAutoRevealed(autoDisplay);
+      if (!recordPractice) return;
+      const pickedKey = [...nextPicked].sort().join('');
+      await api.recordStudyWrong(q.id, pickedKey || result.answer);
+    } catch {
+      /* 静默:答案获取失败不致命,用户可重试 */
+    } finally {
+      setRevealing(false);
+    }
+  }, [answer, picked, q.id, revealing]);
+
+  useEffect(() => {
+    if (!showCorrectAnswer || answer || revealing) return;
+    void reveal([], false, true);
+  }, [answer, q.id, reveal, revealing, showCorrectAnswer]);
 
   function toggle(key: string) {
     if (answer) return; // 已揭晓答案后锁定
@@ -233,24 +280,11 @@ function QuestionCard({ q, index }: { q: QuestionItem; index: number }) {
     }
   }
 
-  async function reveal(nextPicked = picked) {
-    if (answer || revealing) return;
-    setRevealing(true);
-    try {
-      const result = await api.questionAnswer(q.id);
-      setAnswer(result);
-      const pickedKey = [...nextPicked].sort().join('');
-      await api.recordStudyWrong(q.id, pickedKey || result.answer);
-    } catch {
-      /* 静默:答案获取失败不致命,用户可重试 */
-    } finally {
-      setRevealing(false);
-    }
-  }
-
   const correctSet = new Set(answer?.answer.split('') ?? []);
   const pickedKey = [...picked].sort().join('');
   const isRight = answer && pickedKey === answer.answer;
+  const shouldShowAnswer = Boolean(answer && (!autoRevealed || showCorrectAnswer));
+  const visibleAnswer = shouldShowAnswer ? answer : null;
 
   return (
     <section className="rounded-2xl bg-white/60 backdrop-blur-xl p-6 shadow-sm ring-1 ring-white/55">
@@ -266,8 +300,8 @@ function QuestionCard({ q, index }: { q: QuestionItem; index: number }) {
       <div className="space-y-2">
         {q.options.map((o) => {
           const chosen = picked.includes(o.key);
-          const correct = answer && correctSet.has(o.key);
-          const cls = answer
+          const correct = shouldShowAnswer && correctSet.has(o.key);
+          const cls = shouldShowAnswer
             ? correct
               ? 'border-green-300 bg-green-50 text-green-700'
               : chosen
@@ -285,14 +319,14 @@ function QuestionCard({ q, index }: { q: QuestionItem; index: number }) {
               <span className="font-mono text-sm">{o.key}</span>
               <span className="flex-1 text-sm">{o.text}</span>
               {correct && <span className="shrink-0 text-xs text-green-600">正确答案</span>}
-              {chosen && answer && !correct && <span className="shrink-0 text-xs text-red-500">你的选择</span>}
+              {chosen && shouldShowAnswer && !correct && <span className="shrink-0 text-xs text-red-500">你的选择</span>}
             </button>
           );
         })}
       </div>
 
       <div className="mt-4 flex items-center gap-3">
-        {!answer ? (
+        {!shouldShowAnswer ? (
           <button
             onClick={() => reveal()}
             disabled={revealing}
@@ -302,7 +336,7 @@ function QuestionCard({ q, index }: { q: QuestionItem; index: number }) {
           </button>
         ) : (
           <span className={`text-sm font-medium ${isRight ? 'text-green-600' : 'text-red-500'}`}>
-            {picked.length ? (isRight ? '回答正确' : '回答错误') : '正确答案'} · {answer.answer}
+            {picked.length ? (isRight ? '回答正确' : '回答错误') : '正确答案'} · {visibleAnswer?.answer}
           </span>
         )}
         <button
@@ -313,10 +347,10 @@ function QuestionCard({ q, index }: { q: QuestionItem; index: number }) {
         </button>
       </div>
 
-      {answer && (answer.analysis || answer.imageUrls?.length) && (
+      {visibleAnswer && (visibleAnswer.analysis || visibleAnswer.imageUrls?.length) && (
         <div className="mt-3 rounded-lg bg-mist px-4 py-3 text-sm text-ink/70">
-          {answer.analysis && <p>解析:{answer.analysis}</p>}
-          <QuestionImages urls={answer.imageUrls} />
+          {visibleAnswer.analysis && <p>解析:{visibleAnswer.analysis}</p>}
+          <QuestionImages urls={visibleAnswer.imageUrls} />
         </div>
       )}
 

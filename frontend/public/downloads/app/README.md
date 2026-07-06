@@ -1,9 +1,12 @@
-Android APK 固定文件名:
+Android APK files:
 
-frontend/public/downloads/app/airacm-android.apk
+- `airacm-android.apk`: production package. Screenshots and screen recording are blocked.
+- `airacm-android-screenshot.apk`: test package. Screenshots are allowed for QA and support.
 
-学员下载地址:
+Build both packages:
 
-/downloads/app/airacm-android.apk
+```powershell
+.\scripts\package-student-apk.ps1 -BuildBoth
+```
 
-后续更新建议在管理后台「App 安装包」上传,系统会自动覆盖这个文件。
+Student download keeps using `/downloads/app/airacm-android.apk` by default.
