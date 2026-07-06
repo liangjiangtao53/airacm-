@@ -64,14 +64,27 @@ export default function ExamReviewPage() {
       )}
       <div className="space-y-3">
         {filteredAttempts.map((a, i) => (
-          <AttemptCard key={a.id} a={a} index={filteredAttempts.length - i} />
+          <AttemptCard
+            key={a.id}
+            a={a}
+            index={filteredAttempts.length - i}
+            onDeleted={(id) => setAttempts((current) => current.filter((item) => item.id !== id))}
+          />
         ))}
       </div>
     </main>
   );
 }
 
-function AttemptCard({ a, index }: { a: ExamAttemptSummary; index: number }) {
+function AttemptCard({
+  a,
+  index,
+  onDeleted,
+}: {
+  a: ExamAttemptSummary;
+  index: number;
+  onDeleted: (id: string) => void;
+}) {
   const [open, setOpen] = useState(false);
   const [details, setDetails] = useState<GradedItem[] | null>(null);
 
@@ -86,6 +99,12 @@ function AttemptCard({ a, index }: { a: ExamAttemptSummary; index: number }) {
         setDetails([]);
       }
     }
+  }
+
+  async function remove() {
+    if (!window.confirm('确认删除这次考试记录吗？')) return;
+    await api.deleteExamAttempt(a.id);
+    onDeleted(a.id);
   }
 
   const when = a.submittedAt ? new Date(a.submittedAt).toLocaleString() : '';
@@ -108,6 +127,12 @@ function AttemptCard({ a, index }: { a: ExamAttemptSummary; index: number }) {
           <span className="text-xs text-ink/40">{open ? '收起 ▲' : '复盘 ▼'}</span>
         </div>
       </button>
+
+      <div className="px-5 pb-4">
+        <button onClick={remove} className="rounded-full bg-red-50 px-3 py-1 text-xs font-medium text-red-500 hover:bg-red-100">
+          删除
+        </button>
+      </div>
 
       {open && (
         <div className="space-y-3 border-t border-ink/5 px-5 py-4">

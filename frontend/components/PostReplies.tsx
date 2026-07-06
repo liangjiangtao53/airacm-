@@ -49,6 +49,35 @@ export default function PostReplies({
     }
   }
 
+  async function like(reply: PostReplyItem) {
+    setErr('');
+    try {
+      const res = await api.togglePostReplyLike(reply.id);
+      setList((current) =>
+        current.map((item) =>
+          item.id === reply.id ? { ...item, likedByMe: res.liked, likeCount: res.likeCount } : item,
+        ),
+      );
+    } catch (e) {
+      setErr((e as Error).message);
+    }
+  }
+
+  async function remove(reply: PostReplyItem) {
+    if (!window.confirm('确认删除这条回复吗？')) return;
+    setErr('');
+    try {
+      await api.deletePostReply(reply.id);
+      setList((current) => {
+        const next = current.filter((item) => item.id !== reply.id);
+        onCountChange?.(next.length);
+        return next;
+      });
+    } catch (e) {
+      setErr((e as Error).message);
+    }
+  }
+
   return (
     <div className="mt-4 border-t border-ink/5 pt-4">
       {canReply ? (
@@ -82,6 +111,19 @@ export default function PostReplies({
           <li key={reply.id} className="rounded-lg bg-mist px-3 py-2 text-sm text-ink/75">
             <span className="mr-2 font-medium text-ink/55">{reply.nickname}</span>
             {reply.content}
+            <div className="mt-1 flex gap-3 text-xs text-ink/45">
+              <button
+                onClick={() => like(reply)}
+                className={reply.likedByMe ? 'font-medium text-sky' : 'hover:text-ink'}
+              >
+                点赞 {reply.likeCount}
+              </button>
+              {reply.canDelete && (
+                <button onClick={() => remove(reply)} className="text-red-500 hover:text-red-600">
+                  删除
+                </button>
+              )}
+            </div>
           </li>
         ))}
       </ul>

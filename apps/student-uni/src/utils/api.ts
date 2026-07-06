@@ -127,6 +127,18 @@ export interface PostItem {
   replyCount: number;
 }
 
+export interface PostReplyItem {
+  id: string;
+  postId: string;
+  userId: string;
+  nickname: string;
+  content: string;
+  createdAt: string;
+  likeCount: number;
+  likedByMe: boolean;
+  canDelete: boolean;
+}
+
 export interface CommentItem {
   id: string;
   userId: string;
@@ -210,6 +222,8 @@ export const api = {
     request<ExamResult>(`/exams/${attemptId}/submit`, { method: 'POST', data: { answers } }),
   examHistory: () => request<ExamAttemptSummary[]>('/exams/history'),
   examReview: (attemptId: string) => request<ExamResult & { submittedAt: string | null }>(`/exams/${attemptId}/review`),
+  deleteExamAttempt: (attemptId: string) =>
+    request<{ deleted: boolean }>(`/exams/${attemptId}`, { method: 'DELETE' }),
   wrongBook: () => request<WrongBookItem[]>('/exams/wrong-book'),
   recordStudyWrong: (questionId: string, answer: string) =>
     request<{ ok: true; recorded: boolean }>('/exams/wrong-book/study', { method: 'POST', data: { questionId, answer } }),
@@ -226,4 +240,10 @@ export const api = {
   },
   createPost: (content: string, topicId: string) =>
     request<PostItem>('/posts', { method: 'POST', data: { content, topicId } }),
+  postReplies: (id: string) => request<PostReplyItem[]>(`/posts/${id}/replies`),
+  addPostReply: (id: string, content: string) =>
+    request<PostReplyItem>(`/posts/${id}/replies`, { method: 'POST', data: { content } }),
+  deletePostReply: (id: string) => request<{ deleted: boolean }>(`/posts/replies/${id}`, { method: 'DELETE' }),
+  togglePostReplyLike: (id: string) =>
+    request<{ liked: boolean; likeCount: number }>(`/posts/replies/${id}/like`, { method: 'POST' }),
 };

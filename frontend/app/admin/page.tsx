@@ -64,6 +64,7 @@ const operationActionOptions = [
   { value: 'forum_topic_create', label: '新增论坛主题' },
   { value: 'forum_topic_update', label: '编辑论坛主题' },
   { value: 'forum_topic_delete', label: '删除论坛主题' },
+  { value: 'forum_reply_delete', label: '删除论坛回复' },
   { value: 'admin_create', label: '添加管理员' },
   { value: 'user_delete', label: '删除用户' },
 ];
@@ -580,6 +581,7 @@ export default function AdminPage() {
       forum_topic_create: '新增论坛主题',
       forum_topic_update: '编辑论坛主题',
       forum_topic_delete: '删除论坛主题',
+      forum_reply_delete: '删除论坛回复',
       admin_create: '添加业务管理员',
       user_delete: '删除用户',
     })[action] ?? action;

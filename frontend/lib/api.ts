@@ -249,6 +249,9 @@ export interface PostReplyItem {
   nickname: string;
   content: string;
   createdAt: string;
+  likeCount: number;
+  likedByMe: boolean;
+  canDelete: boolean;
 }
 
 export function getToken(): string | null {
@@ -375,6 +378,8 @@ export const api = {
   examHistory: () => req<ExamAttemptSummary[]>('/exams/history'),
   examReview: (attemptId: string) =>
     req<ExamResult & { submittedAt: string | null }>(`/exams/${attemptId}/review`),
+  deleteExamAttempt: (attemptId: string) =>
+    req<{ deleted: boolean }>(`/exams/${attemptId}`, { method: 'DELETE' }),
   wrongBook: () => req<WrongBookItem[]>('/exams/wrong-book'),
   recordStudyWrong: (questionId: string, answer: string) =>
     req<{ ok: true; recorded: boolean }>('/exams/wrong-book/study', { method: 'POST', body: { questionId, answer } }),
@@ -399,9 +404,12 @@ export const api = {
   },
   createPost: (content: string, topicId: string) =>
     req<PostItem>('/posts', { method: 'POST', body: { content, topicId } }),
-  postReplies: (id: string) => req<PostReplyItem[]>(`/posts/${id}/replies`, { auth: false }),
+  postReplies: (id: string) => req<PostReplyItem[]>(`/posts/${id}/replies`),
   addPostReply: (id: string, content: string) =>
     req<PostReplyItem>(`/posts/${id}/replies`, { method: 'POST', body: { content } }),
+  deletePostReply: (id: string) => req<{ deleted: boolean }>(`/posts/replies/${id}`, { method: 'DELETE' }),
+  togglePostReplyLike: (id: string) =>
+    req<{ liked: boolean; likeCount: number }>(`/posts/replies/${id}/like`, { method: 'POST' }),
 
   // ---- 论坛主题管理(admin+super) ----
   adminCreateTopic: (name: string, order?: number) =>

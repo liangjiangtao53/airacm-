@@ -456,6 +456,39 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
       expect(hist.body.data).toHaveLength(1);
       expect(hist.body.data[0].score).toBe(100);
     });
+
+    it('用户可以单独删除自己的考试回顾记录', async () => {
+      const user = await makeUser('user');
+      const start = await request(app.getHttpServer())
+        .post('/exams/start')
+        .set('Authorization', `Bearer ${user.token}`)
+        .send({ courseId: COURSE, category: CATEGORY });
+      await request(app.getHttpServer())
+        .post(`/exams/${start.body.data.attemptId}/submit`)
+        .set('Authorization', `Bearer ${user.token}`)
+        .send({ answers: pickAnswers(start.body.data.questions, (s) => correctByStem[s]) });
+
+      const removed = await request(app.getHttpServer())
+        .delete(`/exams/${start.body.data.attemptId}`)
+        .set('Authorization', `Bearer ${user.token}`);
+      expect(removed.status).toBe(200);
+      expect(removed.body.data.deleted).toBe(true);
+
+      const hist = await request(app.getHttpServer())
+        .get('/exams/history')
+        .set('Authorization', `Bearer ${user.token}`);
+      expect(hist.body.data).toHaveLength(0);
+
+      const review = await request(app.getHttpServer())
+        .get(`/exams/${start.body.data.attemptId}/review`)
+        .set('Authorization', `Bearer ${user.token}`);
+      expect(review.status).toBe(404);
+
+      const logs = await ds.getRepository(UserActivityLog).find({
+        where: { tenantId: TENANT, userId: user.user.userId, action: 'exam_delete' },
+      });
+      expect(logs).toHaveLength(1);
+    });
   });
 
   describe('adaptive question picking', () => {
@@ -1430,6 +1463,89 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
       expect(actions).toEqual(expect.arrayContaining(['forum_topic_create', 'forum_topic_update', 'forum_topic_delete']));
       expect(logs.body.data.page).toBe(1);
       expect(logs.body.data.pageSize).toBe(10);
+    });
+  });
+
+  describe('forum replies', () => {
+    async function createTopicAndPost(ownerToken: string, adminToken: string) {
+      const suffix = crypto.randomUUID().slice(0, 8);
+      const topic = await request(app.getHttpServer())
+        .post('/admin/forum/topics')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ name: `topic-${suffix}`, order: 1 });
+      expect(topic.status).toBe(201);
+      const post = await request(app.getHttpServer())
+        .post('/posts')
+        .set('Authorization', `Bearer ${ownerToken}`)
+        .send({ topicId: topic.body.data.id, content: `post-${suffix}` });
+      expect(post.status).toBe(201);
+      return { postId: post.body.data.id };
+    }
+
+    it('回复支持点赞切换，且只允许本人或管理员删除', async () => {
+      const admin = await makeUser('admin');
+      const owner = await makeUser('user');
+      const other = await makeUser('user');
+      const { postId } = await createTopicAndPost(owner.token, admin.token);
+
+      const reply = await request(app.getHttpServer())
+        .post(`/posts/${postId}/replies`)
+        .set('Authorization', `Bearer ${owner.token}`)
+        .send({ content: 'reply-1' });
+      expect(reply.status).toBe(201);
+
+      const liked = await request(app.getHttpServer())
+        .post(`/posts/replies/${reply.body.data.id}/like`)
+        .set('Authorization', `Bearer ${other.token}`);
+      expect(liked.status).toBe(201);
+      expect(liked.body.data).toMatchObject({ liked: true, likeCount: 1 });
+
+      const list = await request(app.getHttpServer())
+        .get(`/posts/${postId}/replies`)
+        .set('Authorization', `Bearer ${other.token}`);
+      expect(list.status).toBe(200);
+      expect(list.body.data[0].likedByMe).toBe(true);
+      expect(list.body.data[0].likeCount).toBe(1);
+      expect(list.body.data[0].canDelete).toBe(false);
+
+      const publicList = await request(app.getHttpServer()).get(`/posts/${postId}/replies`);
+      expect(publicList.status).toBe(200);
+      expect(publicList.body.data[0]).toMatchObject({ likedByMe: false, canDelete: false, likeCount: 1 });
+
+      const denied = await request(app.getHttpServer())
+        .delete(`/posts/replies/${reply.body.data.id}`)
+        .set('Authorization', `Bearer ${other.token}`);
+      expect(denied.status).toBe(403);
+
+      const removed = await request(app.getHttpServer())
+        .delete(`/posts/replies/${reply.body.data.id}`)
+        .set('Authorization', `Bearer ${owner.token}`);
+      expect(removed.status).toBe(200);
+
+      const empty = await request(app.getHttpServer())
+        .get(`/posts/${postId}/replies`)
+        .set('Authorization', `Bearer ${owner.token}`);
+      expect(empty.body.data).toHaveLength(0);
+    });
+
+    it('业务管理员可以删除任何回复', async () => {
+      const admin = await makeUser('admin');
+      const owner = await makeUser('user');
+      const { postId } = await createTopicAndPost(owner.token, admin.token);
+      const reply = await request(app.getHttpServer())
+        .post(`/posts/${postId}/replies`)
+        .set('Authorization', `Bearer ${owner.token}`)
+        .send({ content: 'reply-admin-delete' });
+
+      const removed = await request(app.getHttpServer())
+        .delete(`/posts/replies/${reply.body.data.id}`)
+        .set('Authorization', `Bearer ${admin.token}`);
+      expect(removed.status).toBe(200);
+
+      const log = await ds.getRepository(AdminOperationLog).findOne({
+        where: { tenantId: TENANT, action: 'forum_reply_delete', targetId: reply.body.data.id },
+      });
+      expect(log).toBeTruthy();
     });
   });
 

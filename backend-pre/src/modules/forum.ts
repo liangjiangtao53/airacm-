@@ -9,17 +9,21 @@ import {
   Patch,
   Post as HttpPost,
   Query,
+  Req,
   UseGuards,
   BadRequestException,
+  ForbiddenException,
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository, TypeOrmModule } from '@nestjs/typeorm';
-import { In, Repository } from 'typeorm';
+import { In, IsNull, QueryFailedError, Repository } from 'typeorm';
 import { IsInt, IsNotEmpty, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
 import { Type } from 'class-transformer';
-import { AdminOperationLog, ForumTopic, Post, PostReply, User } from '../entities';
-import { AuthUser, CurrentUser, JwtAuthGuard, Roles, RolesGuard } from '../common';
+import { JwtService } from '@nestjs/jwt';
+import { AdminOperationLog, ForumTopic, Post, PostReply, PostReplyLike, User } from '../entities';
+import { AuthUser, CurrentUser, JwtAuthGuard, JwtPayload, Roles, RolesGuard } from '../common';
 import { env } from '../config';
+import { SessionService } from '../session';
 
 class CreatePostDto {
   @IsString()
@@ -101,6 +105,9 @@ interface ReplyView {
   nickname: string;
   content: string;
   createdAt: Date;
+  likeCount: number;
+  likedByMe: boolean;
+  canDelete: boolean;
 }
 
 @Injectable()
@@ -108,6 +115,7 @@ export class ForumService {
   constructor(
     @InjectRepository(Post) private readonly posts: Repository<Post>,
     @InjectRepository(PostReply) private readonly replies: Repository<PostReply>,
+    @InjectRepository(PostReplyLike) private readonly replyLikes: Repository<PostReplyLike>,
     @InjectRepository(ForumTopic) private readonly topics: Repository<ForumTopic>,
     @InjectRepository(User) private readonly users: Repository<User>,
     @InjectRepository(AdminOperationLog) private readonly operationLogs: Repository<AdminOperationLog>,
@@ -213,6 +221,7 @@ export class ForumService {
         .addSelect('COUNT(*)', 'c')
         .where('r.tenantId = :t', { t: tenantId })
         .andWhere('r.postId IN (:...ids)', { ids: rows.map((p) => p.id) })
+        .andWhere('r.deletedAt IS NULL')
         .groupBy('r.postId')
         .getRawMany<{ postId: string; c: string }>();
       raw.forEach((x) => countMap.set(x.postId, Number(x.c)));
@@ -250,15 +259,36 @@ export class ForumService {
     };
   }
 
-  async listReplies(tenantId: string, postId: string): Promise<ReplyView[]> {
+  async listReplies(tenantId: string, postId: string, user: AuthUser | null = null): Promise<ReplyView[]> {
     const post = await this.posts.findOne({ where: { tenantId, id: postId } });
     if (!post) throw new NotFoundException('帖子不存在');
     const rows = await this.replies.find({
-      where: { tenantId, postId },
+      where: { tenantId, postId, deletedAt: IsNull() },
       order: { createdAt: 'ASC' },
       take: 500,
     });
     const nickMap = await this.resolveNicknames(tenantId, rows.map((r) => r.userId));
+    const replyIds = rows.map((r) => r.id);
+    const likeCountMap = new Map<string, number>();
+    const likedSet = new Set<string>();
+    if (replyIds.length) {
+      const counts = await this.replyLikes
+        .createQueryBuilder('l')
+        .select('l.replyId', 'replyId')
+        .addSelect('COUNT(*)', 'c')
+        .where('l.tenantId = :tenantId', { tenantId })
+        .andWhere('l.replyId IN (:...replyIds)', { replyIds })
+        .groupBy('l.replyId')
+        .getRawMany<{ replyId: string; c: string }>();
+      counts.forEach((row) => likeCountMap.set(row.replyId, Number(row.c)));
+      if (user) {
+        const mine = await this.replyLikes.find({
+          where: { tenantId, userId: user.userId, replyId: In(replyIds) },
+          select: ['replyId'],
+        });
+        mine.forEach((row) => likedSet.add(row.replyId));
+      }
+    }
     return rows.map((r) => ({
       id: r.id,
       postId: r.postId,
@@ -266,6 +296,9 @@ export class ForumService {
       nickname: nickMap.get(r.userId) ?? `用户${r.userId.slice(0, 4)}`,
       content: r.content,
       createdAt: r.createdAt,
+      likeCount: likeCountMap.get(r.id) ?? 0,
+      likedByMe: likedSet.has(r.id),
+      canDelete: user ? this.canDeleteReply(user, r) : false,
     }));
   }
 
@@ -285,7 +318,52 @@ export class ForumService {
       nickname: nick.get(r.userId) ?? `用户${r.userId.slice(0, 4)}`,
       content: r.content,
       createdAt: r.createdAt,
+      likeCount: 0,
+      likedByMe: false,
+      canDelete: true,
     };
+  }
+
+  private canDeleteReply(user: AuthUser, reply: Pick<PostReply, 'userId'>): boolean {
+    return reply.userId === user.userId || user.role === 'admin' || user.role === 'super';
+  }
+
+  async deleteReply(user: AuthUser, replyId: string): Promise<{ deleted: boolean }> {
+    const reply = await this.replies.findOne({
+      where: { tenantId: user.tenantId, id: replyId, deletedAt: IsNull() },
+    });
+    if (!reply) throw new NotFoundException('回复不存在');
+    if (!this.canDeleteReply(user, reply)) throw new ForbiddenException('只能删除自己的回复');
+    await this.replies.update(reply.id, { deletedAt: new Date() });
+    await this.replyLikes.delete({ tenantId: user.tenantId, replyId: reply.id });
+    if (user.role === 'admin' || user.role === 'super') {
+      await this.logAdminOperation(user, 'forum_reply_delete', 'post_reply', reply.id, {
+        postId: reply.postId,
+        ownerUserId: reply.userId,
+      });
+    }
+    return { deleted: true };
+  }
+
+  async toggleReplyLike(user: AuthUser, replyId: string): Promise<{ liked: boolean; likeCount: number }> {
+    const reply = await this.replies.findOne({
+      where: { tenantId: user.tenantId, id: replyId, deletedAt: IsNull() },
+      select: ['id'],
+    });
+    if (!reply) throw new NotFoundException('回复不存在');
+    const existing = await this.replyLikes.findOne({
+      where: { tenantId: user.tenantId, replyId, userId: user.userId },
+    });
+    if (existing) {
+      await this.replyLikes.delete(existing.id);
+      return { liked: false, likeCount: await this.replyLikes.count({ where: { tenantId: user.tenantId, replyId } }) };
+    }
+    try {
+      await this.replyLikes.save(this.replyLikes.create({ tenantId: user.tenantId, replyId, userId: user.userId }));
+    } catch (e) {
+      if (!(e instanceof QueryFailedError)) throw e;
+    }
+    return { liked: true, likeCount: await this.replyLikes.count({ where: { tenantId: user.tenantId, replyId } }) };
   }
 }
 
@@ -324,7 +402,23 @@ export class ForumAdminController {
 
 @Controller('posts')
 export class ForumController {
-  constructor(private readonly svc: ForumService) {}
+  constructor(
+    private readonly svc: ForumService,
+    private readonly jwt: JwtService,
+    private readonly session: SessionService,
+  ) {}
+
+  private async optionalUser(req: { headers?: { authorization?: string } }): Promise<AuthUser | null> {
+    const header = req.headers?.authorization;
+    if (!header?.startsWith('Bearer ')) return null;
+    try {
+      const payload = this.jwt.verify<JwtPayload>(header.slice('Bearer '.length).trim(), { secret: env.jwtSecret });
+      await this.session.validate(payload);
+      return { userId: payload.sub, tenantId: payload.tenantId, role: payload.role ?? 'user' };
+    } catch {
+      return null;
+    }
+  }
 
   @Get()
   list(@Query() q: ListQuery) {
@@ -338,8 +432,9 @@ export class ForumController {
   }
 
   @Get(':id/replies')
-  replies(@Param('id') id: string) {
-    return this.svc.listReplies(env.defaultTenantId, id);
+  async replies(@Req() req: { headers?: { authorization?: string } }, @Param('id') id: string) {
+    const user = await this.optionalUser(req);
+    return this.svc.listReplies(user?.tenantId ?? env.defaultTenantId, id, user);
   }
 
   @HttpPost(':id/replies')
@@ -347,10 +442,22 @@ export class ForumController {
   addReply(@CurrentUser() user: AuthUser, @Param('id') id: string, @Body() dto: CreateReplyDto) {
     return this.svc.addReply(user, id, dto.content);
   }
+
+  @Delete('replies/:replyId')
+  @UseGuards(JwtAuthGuard)
+  deleteReply(@CurrentUser() user: AuthUser, @Param('replyId') replyId: string) {
+    return this.svc.deleteReply(user, replyId);
+  }
+
+  @HttpPost('replies/:replyId/like')
+  @UseGuards(JwtAuthGuard)
+  toggleReplyLike(@CurrentUser() user: AuthUser, @Param('replyId') replyId: string) {
+    return this.svc.toggleReplyLike(user, replyId);
+  }
 }
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Post, PostReply, ForumTopic, User, AdminOperationLog])],
+  imports: [TypeOrmModule.forFeature([Post, PostReply, PostReplyLike, ForumTopic, User, AdminOperationLog])],
   controllers: [ForumController, ForumTopicController, ForumAdminController],
   providers: [ForumService],
 })

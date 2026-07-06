@@ -48,6 +48,25 @@ async function toggle(attempt: ExamAttemptSummary) {
   }
 }
 
+async function removeAttempt(attempt: ExamAttemptSummary) {
+  uni.showModal({
+    title: '删除考试记录',
+    content: '删除后不再显示这次考试回顾，确认删除吗？',
+    success: async (res) => {
+      if (!res.confirm) return;
+      try {
+        await api.deleteExamAttempt(attempt.id);
+        attempts.value = attempts.value.filter((item) => item.id !== attempt.id);
+        delete details.value[attempt.id];
+        if (openId.value === attempt.id) openId.value = '';
+        toast('已删除');
+      } catch (e) {
+        toast((e as Error).message);
+      }
+    },
+  });
+}
+
 function timeLabel(iso: string | null) {
   if (!iso) return '';
   const d = new Date(iso);
@@ -89,6 +108,7 @@ onShow(load);
             <text class="time">{{ a.correct }}/{{ a.total }} 题</text>
           </view>
         </view>
+        <button class="delete-btn" @tap.stop="removeAttempt(a)">删除</button>
         <view v-if="openId === a.id" class="detail-list">
           <view v-for="(d, i) in details[a.id] || []" :key="d.questionId" class="detail">
             <text :class="['badge', d.isCorrect ? 'ok' : 'bad']">{{ i + 1 }} · {{ d.isCorrect ? '正确' : '错误' }}</text>
@@ -189,6 +209,18 @@ onShow(load);
   display: block;
   font-size: 42rpx;
   font-weight: 800;
+}
+
+.delete-btn {
+  align-self: flex-end;
+  background: #fee2e2;
+  border-radius: 999rpx;
+  color: #dc2626;
+  font-size: 24rpx;
+  line-height: 1;
+  margin: 0;
+  min-height: 56rpx;
+  padding: 14rpx 24rpx;
 }
 
 .detail {

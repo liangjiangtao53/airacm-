@@ -26,6 +26,7 @@ export default function ExamPage() {
   const [result, setResult] = useState<ExamResult | null>(null);
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
+  const [unansweredCursor, setUnansweredCursor] = useState(-1);
 
   useEffect(() => {
     if (!getToken()) {
@@ -54,6 +55,7 @@ export default function ExamPage() {
       setAttemptId(r.attemptId);
       setQuestions(r.questions);
       setAnswers({});
+      setUnansweredCursor(-1);
       setResult(null);
       setPhase('taking');
     } catch (e) {
@@ -88,6 +90,19 @@ export default function ExamPage() {
   }
 
   const answeredCount = questions.filter((q) => (answers[q.id] ?? []).length > 0).length;
+  const unfinishedCount = Math.max(0, questions.length - answeredCount);
+
+  function jumpToNextUnanswered() {
+    for (let step = 1; step <= questions.length; step++) {
+      const idx = (unansweredCursor + step) % questions.length;
+      const q = questions[idx];
+      if ((answers[q.id] ?? []).length === 0) {
+        setUnansweredCursor(idx);
+        document.getElementById(`exam-q-${q.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        return;
+      }
+    }
+  }
 
   return (
     <main className="mx-auto max-w-3xl px-6 py-10">
@@ -134,8 +149,14 @@ export default function ExamPage() {
           <p className="text-sm text-ink/55">
             共 {questions.length} 题 · 已答 {answeredCount}
           </p>
+          <div className="flex flex-wrap gap-2 text-sm font-medium">
+            <span className="rounded-full bg-green-50 px-3 py-1 text-green-700">已完成 {answeredCount}</span>
+            <button onClick={jumpToNextUnanswered} className="rounded-full bg-red-50 px-3 py-1 text-red-600">
+              未完成 {unfinishedCount}
+            </button>
+          </div>
           {questions.map((q, i) => (
-            <section key={q.id} className="rounded-2xl bg-white/60 backdrop-blur-xl p-6 shadow-sm ring-1 ring-white/55">
+            <section id={`exam-q-${q.id}`} key={q.id} className="rounded-2xl bg-white/60 backdrop-blur-xl p-6 shadow-sm ring-1 ring-white/55">
               <div className="mb-3 flex items-start gap-2">
                 <span className="rounded-md bg-mist px-2 py-0.5 text-xs font-medium text-ink/60">
                   {i + 1} · {q.type === 'single' ? '单选' : '多选'}

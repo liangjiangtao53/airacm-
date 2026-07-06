@@ -41,7 +41,8 @@ export type UserActivityAction =
   | 'wrong_question_master'
   | 'wallet_recharge_code'
   | 'exam_start'
-  | 'exam_submit';
+  | 'exam_submit'
+  | 'exam_delete';
 
 @Entity('exam_paper_rule')
 @Index(['tenantId'], { unique: true })
@@ -605,6 +606,9 @@ export class ExamAttempt {
 
   @Column({ type: TS_TYPE, nullable: true })
   submittedAt!: Date | null;
+
+  @Column({ type: TS_TYPE, nullable: true })
+  deletedAt!: Date | null;
 }
 
 // 用户题目练习记录:专题学习和模拟考试都会写入,用于新题/原题/错题混合出题。
@@ -875,6 +879,29 @@ export class PostReply {
 
   @CreateDateColumn()
   createdAt!: Date;
+
+  @Column({ type: TS_TYPE, nullable: true })
+  deletedAt!: Date | null;
+}
+
+@Entity('post_reply_like')
+@Index(['tenantId', 'replyId', 'userId'], { unique: true })
+@Index(['tenantId', 'replyId'])
+export class PostReplyLike {
+  @PrimaryGeneratedColumn('uuid')
+  id!: string;
+
+  @Column()
+  tenantId!: string;
+
+  @Column()
+  replyId!: string;
+
+  @Column()
+  userId!: string;
+
+  @CreateDateColumn()
+  createdAt!: Date;
 }
 
 export const ALL_ENTITIES = [
@@ -904,5 +931,6 @@ export const ALL_ENTITIES = [
   UserActivityLog,
   Post,
   PostReply,
+  PostReplyLike,
   ForumTopic,
 ];

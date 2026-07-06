@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Injectable,
   Module,
@@ -12,7 +13,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository, TypeOrmModule } from '@nestjs/typeorm';
-import { In, QueryFailedError, Repository } from 'typeorm';
+import { In, IsNull, QueryFailedError, Repository } from 'typeorm';
 import { IsInt, IsObject, IsOptional, IsString, Max, Min } from 'class-validator';
 import {
   ExamAttempt,
@@ -514,10 +515,30 @@ export class ExamService {
   // 历史成绩列表(摘要)。
   async history(user: AuthUser): Promise<ExamAttempt[]> {
     return this.attempts.find({
-      where: { tenantId: user.tenantId, userId: user.userId, status: 'submitted' },
+      where: { tenantId: user.tenantId, userId: user.userId, status: 'submitted', deletedAt: IsNull() },
       order: { submittedAt: 'DESC' },
       take: 50,
     });
+  }
+
+  async deleteAttempt(user: AuthUser, attemptId: string): Promise<{ deleted: boolean }> {
+    const attempt = await this.attempts.findOne({
+      where: {
+        tenantId: user.tenantId,
+        userId: user.userId,
+        id: attemptId,
+        status: 'submitted',
+        deletedAt: IsNull(),
+      },
+    });
+    if (!attempt) throw new NotFoundException('考试记录不存在');
+    await this.attempts.update(attempt.id, { deletedAt: new Date() });
+    await this.activity.record(user, 'exam_delete', 'exam_attempt', attempt.id, {
+      category: attempt.category,
+      total: attempt.total,
+      score: attempt.score,
+    });
+    return { deleted: true };
   }
 
   // 考试回顾:根据已交卷记录重建逐题对错 + 正确答案 + 解析(用于复盘)。
@@ -526,7 +547,7 @@ export class ExamService {
     attemptId: string,
   ): Promise<{ score: number; correct: number; total: number; submittedAt: Date | null; details: GradedItem[] }> {
     const attempt = await this.attempts.findOne({
-      where: { tenantId: user.tenantId, userId: user.userId, id: attemptId },
+      where: { tenantId: user.tenantId, userId: user.userId, id: attemptId, deletedAt: IsNull() },
     });
     if (!attempt) throw new NotFoundException('考试记录不存在');
     if (attempt.status !== 'submitted') throw new BadRequestException('该试卷尚未交卷');
@@ -620,6 +641,11 @@ export class ExamController {
   @Get(':id/review')
   review(@CurrentUser() user: AuthUser, @Param('id') id: string) {
     return this.svc.review(user, id);
+  }
+
+  @Delete(':id')
+  remove(@CurrentUser() user: AuthUser, @Param('id') id: string) {
+    return this.svc.deleteAttempt(user, id);
   }
 
   // 错题本(只看未掌握)。

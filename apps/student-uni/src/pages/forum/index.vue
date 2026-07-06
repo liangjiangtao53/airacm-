@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onShow } from '@dcloudio/uni-app';
 import { ref } from 'vue';
-import { api, requireLogin, type ForumTopic, type PostItem } from '@/utils/api';
+import { api, requireLogin, type ForumTopic, type PostItem, type PostReplyItem } from '@/utils/api';
 
 const topics = ref<ForumTopic[]>([]);
 const posts = ref<PostItem[]>([]);
@@ -10,6 +10,10 @@ const draftTopic = ref('');
 const draft = ref('');
 const loading = ref(false);
 const posting = ref(false);
+const openPostId = ref('');
+const replies = ref<Record<string, PostReplyItem[]>>({});
+const replyDrafts = ref<Record<string, string>>({});
+const repliesLoading = ref<Record<string, boolean>>({});
 
 function toast(message: string) {
   uni.showToast({ title: message, icon: 'none' });
@@ -68,6 +72,66 @@ async function submit() {
   }
 }
 
+async function toggleReplies(post: PostItem) {
+  openPostId.value = openPostId.value === post.id ? '' : post.id;
+  if (openPostId.value && !replies.value[post.id]) {
+    await loadReplies(post.id);
+  }
+}
+
+async function loadReplies(postId: string) {
+  repliesLoading.value = { ...repliesLoading.value, [postId]: true };
+  try {
+    replies.value = { ...replies.value, [postId]: await api.postReplies(postId) };
+  } catch (e) {
+    toast((e as Error).message);
+  } finally {
+    repliesLoading.value = { ...repliesLoading.value, [postId]: false };
+  }
+}
+
+async function submitReply(post: PostItem) {
+  const content = (replyDrafts.value[post.id] || '').trim();
+  if (!content) return;
+  try {
+    const created = await api.addPostReply(post.id, content);
+    const next = [...(replies.value[post.id] || []), created];
+    replies.value = { ...replies.value, [post.id]: next };
+    replyDrafts.value = { ...replyDrafts.value, [post.id]: '' };
+    post.replyCount = next.length;
+  } catch (e) {
+    toast((e as Error).message);
+  }
+}
+
+async function toggleReplyLike(reply: PostReplyItem) {
+  try {
+    const res = await api.togglePostReplyLike(reply.id);
+    reply.likedByMe = res.liked;
+    reply.likeCount = res.likeCount;
+  } catch (e) {
+    toast((e as Error).message);
+  }
+}
+
+async function removeReply(post: PostItem, reply: PostReplyItem) {
+  uni.showModal({
+    title: '删除回复',
+    content: '确认删除这条回复吗？',
+    success: async (res) => {
+      if (!res.confirm) return;
+      try {
+        await api.deletePostReply(reply.id);
+        const next = (replies.value[post.id] || []).filter((item) => item.id !== reply.id);
+        replies.value = { ...replies.value, [post.id]: next };
+        post.replyCount = next.length;
+      } catch (e) {
+        toast((e as Error).message);
+      }
+    },
+  });
+}
+
 function changeDraftTopic(e: { detail: { value: number } }) {
   draftTopic.value = topics.value[Number(e.detail.value)]?.id || '';
 }
@@ -124,7 +188,33 @@ onShow(() => load());
           <text>{{ timeLabel(post.createdAt) }}</text>
         </view>
         <text class="post-content">{{ post.content }}</text>
-        <text class="reply-count">回复 {{ post.replyCount }}</text>
+        <text class="reply-count action" @tap="toggleReplies(post)">回复 {{ post.replyCount }}</text>
+        <view v-if="openPostId === post.id" class="reply-panel">
+          <view class="reply-composer">
+            <input
+              v-model="replyDrafts[post.id]"
+              class="reply-input"
+              maxlength="500"
+              placeholder="写下你的回复..."
+            />
+            <button class="reply-btn" :disabled="!replyDrafts[post.id]?.trim()" @tap="submitReply(post)">回复</button>
+          </view>
+          <view v-if="repliesLoading[post.id]" class="reply-empty">加载中...</view>
+          <view v-else-if="(replies[post.id] || []).length === 0" class="reply-empty">暂无回复</view>
+          <view v-for="reply in replies[post.id] || []" :key="reply.id" class="reply-item">
+            <view class="reply-meta">
+              <text class="author">{{ reply.nickname }}</text>
+              <text>{{ timeLabel(reply.createdAt) }}</text>
+            </view>
+            <text class="reply-content">{{ reply.content }}</text>
+            <view class="reply-actions">
+              <text :class="['reply-action', reply.likedByMe && 'liked']" @tap="toggleReplyLike(reply)">
+                点赞 {{ reply.likeCount }}
+              </text>
+              <text v-if="reply.canDelete" class="reply-action danger" @tap="removeReply(post, reply)">删除</text>
+            </view>
+          </view>
+        </view>
       </view>
     </view>
   </view>
@@ -241,5 +331,89 @@ onShow(() => load());
 .reply-count {
   color: rgba(17, 24, 39, 0.48);
   font-size: 24rpx;
+}
+
+.reply-count.action {
+  color: #1f6feb;
+  font-weight: 700;
+}
+
+.reply-panel {
+  border-top: 2rpx solid rgba(17, 24, 39, 0.06);
+  display: flex;
+  flex-direction: column;
+  gap: 16rpx;
+  padding-top: 16rpx;
+}
+
+.reply-composer {
+  align-items: center;
+  display: flex;
+  gap: 12rpx;
+}
+
+.reply-input {
+  background: #fff;
+  border: 2rpx solid rgba(17, 24, 39, 0.1);
+  border-radius: 14rpx;
+  color: #111827;
+  flex: 1;
+  font-size: 26rpx;
+  min-height: 70rpx;
+  padding: 0 18rpx;
+}
+
+.reply-btn {
+  background: #38577a;
+  border-radius: 14rpx;
+  color: #fff;
+  font-size: 24rpx;
+  line-height: 1;
+  margin: 0;
+  min-height: 68rpx;
+  padding: 14rpx 24rpx;
+}
+
+.reply-empty {
+  color: rgba(17, 24, 39, 0.4);
+  font-size: 24rpx;
+  padding: 12rpx 0;
+}
+
+.reply-item {
+  background: rgba(255, 255, 255, 0.62);
+  border-radius: 14rpx;
+  display: flex;
+  flex-direction: column;
+  gap: 8rpx;
+  padding: 16rpx;
+}
+
+.reply-meta,
+.reply-actions {
+  align-items: center;
+  color: rgba(17, 24, 39, 0.42);
+  display: flex;
+  font-size: 22rpx;
+  gap: 14rpx;
+}
+
+.reply-content {
+  color: rgba(17, 24, 39, 0.78);
+  font-size: 26rpx;
+  line-height: 1.55;
+}
+
+.reply-action {
+  color: rgba(17, 24, 39, 0.52);
+}
+
+.reply-action.liked {
+  color: #1f6feb;
+  font-weight: 700;
+}
+
+.reply-action.danger {
+  color: #dc2626;
 }
 </style>

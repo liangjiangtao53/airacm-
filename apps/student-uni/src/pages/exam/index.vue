@@ -21,8 +21,10 @@ const result = ref<ExamResult | null>(null);
 const busy = ref(false);
 const currentIndex = ref(0);
 const touchStartX = ref(0);
+const unansweredJumpIndex = ref(-1);
 
 const answeredCount = computed(() => Object.values(answers.value).filter((v) => v.length > 0).length);
+const unfinishedCount = computed(() => Math.max(0, questions.value.length - answeredCount.value));
 const currentQuestion = computed(() => questions.value[currentIndex.value] || null);
 const canPrev = computed(() => currentIndex.value > 0);
 const canNext = computed(() => currentIndex.value < questions.value.length - 1);
@@ -56,6 +58,7 @@ async function start() {
     answers.value = {};
     result.value = null;
     currentIndex.value = 0;
+    unansweredJumpIndex.value = -1;
     phase.value = 'taking';
   } catch (e) {
     toast((e as Error).message);
@@ -83,6 +86,20 @@ function moveQuestion(delta: number) {
   const next = Math.min(questions.value.length - 1, Math.max(0, currentIndex.value + delta));
   if (next === currentIndex.value) return;
   currentIndex.value = next;
+}
+
+function jumpToNextUnanswered() {
+  if (questions.value.length === 0) return;
+  for (let step = 1; step <= questions.value.length; step++) {
+    const idx = (unansweredJumpIndex.value + step) % questions.value.length;
+    const q = questions.value[idx];
+    if ((answers.value[q.id] || []).length === 0) {
+      unansweredJumpIndex.value = idx;
+      currentIndex.value = idx;
+      return;
+    }
+  }
+  toast('已全部完成');
 }
 
 function onTouchStart(e: { changedTouches?: Array<{ clientX: number }>; touches?: Array<{ clientX: number }> }) {
@@ -140,6 +157,10 @@ onShow(() => {
 
     <view v-if="phase === 'taking'" class="taking" @touchstart="onTouchStart" @touchend="onTouchEnd">
       <text class="progress">共 {{ questions.length }} 题 · 已答 {{ answeredCount }}</text>
+      <view class="exam-status">
+        <text class="status-pill done">已完成 {{ answeredCount }}</text>
+        <text class="status-pill pending" @tap.stop="jumpToNextUnanswered">未完成 {{ unfinishedCount }}</text>
+      </view>
       <view v-if="currentQuestion" class="card question-card">
         <view class="question-head">
           <text class="badge">{{ currentIndex + 1 }} / {{ questions.length }} · {{ currentQuestion.type === 'single' ? '单选' : '多选' }}</text>
@@ -227,6 +248,28 @@ onShow(() => {
   color: rgba(17, 24, 39, 0.6);
   font-size: 26rpx;
   line-height: 1.6;
+}
+
+.exam-status {
+  display: flex;
+  gap: 16rpx;
+}
+
+.status-pill {
+  border-radius: 999rpx;
+  font-size: 26rpx;
+  font-weight: 700;
+  padding: 12rpx 22rpx;
+}
+
+.status-pill.done {
+  background: #dcfce7;
+  color: #15803d;
+}
+
+.status-pill.pending {
+  background: #fee2e2;
+  color: #dc2626;
 }
 
 .badge {
