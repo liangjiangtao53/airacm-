@@ -27,6 +27,7 @@ import {
 } from '../entities';
 import { AuthUser, CurrentUser, JwtAuthGuard, Roles, RolesGuard } from '../common';
 import { PublicQuestion, QuestionPoolCacheModule, QuestionPoolCacheService } from './question-pool-cache';
+import { UserActivityModule, UserActivityService } from './user-activity';
 
 const DEFAULT_COUNT = 100;
 const MAX_COUNT = 300;
@@ -145,6 +146,7 @@ export class ExamService {
     @InjectRepository(AdminOperationLog) private readonly operationLogs: Repository<AdminOperationLog>,
     @InjectRepository(StudyQuestionProgress) private readonly studyProgress: Repository<StudyQuestionProgress>,
     private readonly questionPool: QuestionPoolCacheService,
+    private readonly activity: UserActivityService,
   ) {}
 
   async getRule(tenantId: string): Promise<{ totalCount: number; categoryCounts: Record<string, number> }> {
@@ -197,6 +199,11 @@ export class ExamService {
         status: 'in_progress',
       }),
     );
+    await this.activity.record(user, 'exam_start', 'exam_attempt', attempt.id, {
+      category: dto.category ?? null,
+      courseId: dto.courseId ?? null,
+      total: picked.length,
+    });
     return {
       attemptId: attempt.id,
       total: picked.length,
@@ -289,6 +296,11 @@ export class ExamService {
 
     await this.syncQuestionPractice(user, details);
     await this.syncWrongBook(user, wrongIds, correctIds);
+    await this.activity.record(user, 'exam_submit', 'exam_attempt', attempt.id, {
+      total,
+      correct,
+      score,
+    });
 
     return { score, correct, total, details };
   }
@@ -459,6 +471,11 @@ export class ExamService {
       ['tenantId', 'userId', 'category', 'courseId'],
     );
     await this.recordQuestionPractice(user, questionId, isCorrect, now);
+    await this.activity.record(user, 'study_answer', 'question', questionId, {
+      category: q.category,
+      courseId: q.courseId ?? null,
+      isCorrect,
+    });
     if (isCorrect) return { ok: true, recorded: false };
     await this.recordWrong(user, questionId, 'study', now);
     return { ok: true, recorded: true };
@@ -656,6 +673,7 @@ export class ExamRuleAdminController {
   imports: [
     TypeOrmModule.forFeature([Question, ExamAttempt, WrongQuestion, QuestionPractice, ExamPaperRule, StudyQuestionProgress, AdminOperationLog]),
     QuestionPoolCacheModule,
+    UserActivityModule,
   ],
   controllers: [ExamController, ExamRuleAdminController],
   providers: [ExamService],

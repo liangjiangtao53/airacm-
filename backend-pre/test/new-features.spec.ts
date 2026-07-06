@@ -28,6 +28,7 @@ import {
   QuestionUsage,
   StudyQuestionProgress,
   User,
+  UserActivityLog,
   Wallet,
   WrongQuestion,
 } from '../src/entities';
@@ -337,10 +338,10 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
     }
 
     it('组卷返回不含答案的卷面,全对得 100', async () => {
-      const { token } = await makeUser('user');
+      const user = await makeUser('user');
       const start = await request(app.getHttpServer())
         .post('/exams/start')
-        .set('Authorization', `Bearer ${token}`)
+        .set('Authorization', `Bearer ${user.token}`)
         .send({ courseId: COURSE });
       expect(start.status).toBe(201);
       expect(start.body.data.questions).toHaveLength(3);
@@ -349,12 +350,16 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
       const answers = pickAnswers(start.body.data.questions, (s) => correctByStem[s]);
       const sub = await request(app.getHttpServer())
         .post(`/exams/${start.body.data.attemptId}/submit`)
-        .set('Authorization', `Bearer ${token}`)
+        .set('Authorization', `Bearer ${user.token}`)
         .send({ answers });
       expect(sub.status).toBe(201);
       expect(sub.body.data.score).toBe(100);
       expect(sub.body.data.correct).toBe(3);
       expect(sub.body.data.details.every((d: { isCorrect: boolean }) => d.isCorrect)).toBe(true);
+      const examLogs = await ds.getRepository(UserActivityLog).find({
+        where: { tenantId: TENANT, userId: user.user.userId, targetId: start.body.data.attemptId },
+      });
+      expect(examLogs.map((log) => log.action)).toEqual(expect.arrayContaining(['exam_start', 'exam_submit']));
     });
 
     it('admin can set exam rule, users cannot, and client count is ignored', async () => {
@@ -708,6 +713,10 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
         where: { tenantId: TENANT, userId: user.user.userId, category, courseId: '' },
       });
       expect(progress?.questionId).toBe(q.id);
+      const activityLogs = await ds.getRepository(UserActivityLog).find({
+        where: { tenantId: TENANT, userId: user.user.userId, action: 'study_answer', targetId: q.id },
+      });
+      expect(activityLogs).toHaveLength(2);
     });
   });
 
@@ -972,6 +981,13 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
       expect(login.status).toBe(201);
       expect(login.body.data.needProfile).toBe(true);
       const pendingToken = login.body.data.token;
+      const loginKey = await ds.getRepository(AccessKey).findOneOrFail({ where: { tenantId: TENANT, key } });
+      expect(loginKey.firstLoginAt).toBeTruthy();
+      expect(loginKey.lastLoginAt).toBeTruthy();
+      const pendingLog = await ds.getRepository(UserActivityLog).findOne({
+        where: { tenantId: TENANT, accessKeyId: loginKey.id, action: 'login_access_key' },
+      });
+      expect(pendingLog).toBeTruthy();
 
       const blocked = await request(app.getHttpServer())
         .get('/questions?usage=study')
@@ -985,6 +1001,10 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
         .send({ phone: uniquePhone(), nickname: '卡密学员' + Date.now() });
       expect(profile.status).toBe(201);
       const token = profile.body.data.token;
+      const completedKey = await ds.getRepository(AccessKey).findOneOrFail({ where: { tenantId: TENANT, key } });
+      const completedUser = await ds.getRepository(User).findOneOrFail({ where: { tenantId: TENANT, id: completedKey.userId! } });
+      expect(completedUser.firstLoginAt).toBeTruthy();
+      expect(completedUser.lastLoginAt).toBeTruthy();
 
       // 正式 token 可访问学习端点。
       const study = await request(app.getHttpServer())
@@ -1007,6 +1027,48 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
       expect(users.body.data.some((u: { source?: string }) => u.source === 'key')).toBe(true);
     });
 
+    it('用户行为日志仅超管可查看,并可按卡号搜索登录记录', async () => {
+      const sup = await makeUser('super');
+      const biz = await makeUser('admin');
+      const gen = await request(app.getHttpServer())
+        .post('/admin/access-keys')
+        .set('Authorization', `Bearer ${sup.token}`)
+        .send({ count: 1 });
+      const key = gen.body.data.keys[0] as string;
+      const first = await request(app.getHttpServer()).post('/auth/key-login').send({ key });
+      await request(app.getHttpServer())
+        .post('/auth/complete-profile')
+        .set('Authorization', `Bearer ${first.body.data.token}`)
+        .send({ phone: uniquePhone(), nickname: '日志学员' + Date.now() });
+
+      const denied = await request(app.getHttpServer())
+        .get('/admin/user-activity-logs')
+        .set('Authorization', `Bearer ${biz.token}`);
+      expect(denied.status).toBe(401);
+
+      const logs = await request(app.getHttpServer())
+        .get(`/admin/user-activity-logs?action=login_access_key&keyword=${encodeURIComponent(key.slice(0, 8))}`)
+        .set('Authorization', `Bearer ${sup.token}`);
+      expect(logs.status).toBe(200);
+      expect(logs.body.data.total).toBeGreaterThanOrEqual(1);
+      expect(logs.body.data.items.some((log: { accessKey?: { key?: string }; createdAt?: string }) => log.accessKey?.key === key && !!log.createdAt)).toBe(true);
+
+      const keyRow = await ds.getRepository(AccessKey).findOneOrFail({ where: { tenantId: TENANT, key } });
+      await request(app.getHttpServer())
+        .post(`/admin/access-keys/${keyRow.id}/revoke`)
+        .set('Authorization', `Bearer ${sup.token}`);
+      await request(app.getHttpServer())
+        .delete(`/admin/access-keys/${keyRow.id}`)
+        .set('Authorization', `Bearer ${sup.token}`);
+      const afterDelete = await request(app.getHttpServer())
+        .get(`/admin/user-activity-logs?action=login_access_key&keyword=${encodeURIComponent(key)}`)
+        .set('Authorization', `Bearer ${sup.token}`);
+      expect(afterDelete.status).toBe(200);
+      expect(
+        afterDelete.body.data.items.some((log: { accessKey?: { key?: string; status?: string } }) => log.accessKey?.key === `****${key.slice(-4)}` && log.accessKey.status === 'deleted'),
+      ).toBe(true);
+    });
+
     it('自定义数量与有效期', async () => {
       const admin = await makeUser('super');
       const gen = await request(app.getHttpServer())
@@ -1025,7 +1087,7 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
       const list = await request(app.getHttpServer())
         .get('/admin/access-keys')
         .set('Authorization', `Bearer ${admin.token}`);
-      const target = list.body.data.find((k: { key: string }) => k.key === gen.body.data.keys[0]);
+      const target = list.body.data.items.find((k: { key: string }) => k.key === gen.body.data.keys[0]);
       const updated = await request(app.getHttpServer())
         .post(`/admin/access-keys/${target.id}`)
         .set('Authorization', `Bearer ${admin.token}`)
@@ -1034,6 +1096,46 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
       const remainingDays = Math.round((new Date(updated.body.data.expiresAt).getTime() - Date.now()) / 86_400_000);
       expect(remainingDays).toBeGreaterThanOrEqual(89);
       expect(remainingDays).toBeLessThanOrEqual(90);
+    });
+
+    it('卡密列表支持分页搜索状态筛选,作废后可单条删除', async () => {
+      const admin = await makeUser('super');
+      const gen = await request(app.getHttpServer())
+        .post('/admin/access-keys')
+        .set('Authorization', `Bearer ${admin.token}`)
+        .send({ count: 3, ttlDays: 30 });
+      const key = gen.body.data.keys[0] as string;
+
+      const searched = await request(app.getHttpServer())
+        .get(`/admin/access-keys?page=1&pageSize=2&status=active&keyword=${encodeURIComponent(key.slice(0, 8))}`)
+        .set('Authorization', `Bearer ${admin.token}`);
+      expect(searched.status).toBe(200);
+      expect(searched.body.data.page).toBe(1);
+      expect(searched.body.data.pageSize).toBe(2);
+      expect(searched.body.data.total).toBeGreaterThanOrEqual(1);
+      const target = searched.body.data.items.find((k: { key: string }) => k.key === key);
+      expect(target).toBeTruthy();
+
+      const activeDelete = await request(app.getHttpServer())
+        .delete(`/admin/access-keys/${target.id}`)
+        .set('Authorization', `Bearer ${admin.token}`);
+      expect(activeDelete.status).toBe(400);
+
+      const rv = await request(app.getHttpServer())
+        .post(`/admin/access-keys/${target.id}/revoke`)
+        .set('Authorization', `Bearer ${admin.token}`);
+      expect(rv.status).toBe(201);
+
+      const deleted = await request(app.getHttpServer())
+        .delete(`/admin/access-keys/${target.id}`)
+        .set('Authorization', `Bearer ${admin.token}`);
+      expect(deleted.status).toBe(200);
+      expect(deleted.body.data.deleted).toBe(1);
+      await expect(ds.getRepository(AccessKey).findOneOrFail({ where: { tenantId: TENANT, id: target.id } })).rejects.toThrow();
+      const deleteLog = await ds.getRepository(AdminOperationLog).findOne({
+        where: { tenantId: TENANT, action: 'access_key_delete', targetId: target.id },
+      });
+      expect(deleteLog).toBeTruthy();
     });
 
     it('普通用户不能生成卡密', async () => {
@@ -1201,7 +1303,7 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
       const list = await request(app.getHttpServer())
         .get('/admin/access-keys')
         .set('Authorization', `Bearer ${admin.token}`);
-      const target = list.body.data.find((k: { key: string }) => k.key === gen.body.data.keys[0]);
+      const target = list.body.data.items.find((k: { key: string }) => k.key === gen.body.data.keys[0]);
 
       const rv = await request(app.getHttpServer())
         .post(`/admin/access-keys/${target.id}/revoke`)

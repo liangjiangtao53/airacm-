@@ -9,6 +9,7 @@ import {
   Module,
   Param,
   Post,
+  Query,
   UseGuards,
   BadRequestException,
   NotFoundException,
@@ -24,6 +25,7 @@ import { AccessKey, AdminOperationLog, User, Wallet } from '../entities';
 import { AuthUser, CurrentUser, JwtAuthGuard, Roles, RolesGuard, JwtPayload } from '../common';
 import { SessionService } from '../session';
 import { env } from '../config';
+import { UserActivityModule, UserActivityService } from './user-activity';
 
 // 中国大陆手机号(与 auth 模块一致)。
 const PHONE_RE = /^1[3-9]\d{9}$/;
@@ -49,6 +51,22 @@ class UpdateKeyDto {
   @Min(1)
   @Max(3650)
   ttlDays!: number;
+}
+
+class ListKeysQuery {
+  @IsOptional()
+  page?: number;
+
+  @IsOptional()
+  pageSize?: number;
+
+  @IsOptional()
+  @IsString()
+  keyword?: string;
+
+  @IsOptional()
+  @IsString()
+  status?: 'active' | 'revoked' | 'expired';
 }
 
 class KeyLoginDto {
@@ -79,6 +97,7 @@ export class AccessKeyService {
     private readonly jwt: JwtService,
     private readonly session: SessionService,
     private readonly dataSource: DataSource,
+    private readonly activity: UserActivityService,
   ) {}
 
   private async logAdminOperation(
@@ -141,11 +160,13 @@ export class AccessKeyService {
     const expiresInSec = this.remainingSec(k.expiresAt);
 
     if (k.userId) {
+      await this.activity.recordAccessKeyLogin(tenantId, k, k.userId, false);
       const sid = await this.session.issue(k.userId);
       const token = this.signUserToken(k.userId, tenantId, sid, expiresInSec);
       return { token, userId: k.userId, expiresAt: k.expiresAt, needProfile: false };
     }
 
+    await this.activity.recordAccessKeyLogin(tenantId, k, null, true);
     const pending: JwtPayload = { sub: k.id, tenantId, role: 'user', pending: true };
     const token = this.jwt.sign(pending, { secret: env.jwtSecret, expiresIn: expiresInSec });
     return { token, userId: k.id, expiresAt: k.expiresAt, needProfile: true };
@@ -187,6 +208,8 @@ export class AccessKeyService {
           passwordHash: '',
           openid: `key:${k.id}`, // 标记来源=卡密,用户列表据此区分
           sessionId: sid,
+          firstLoginAt: k.firstLoginAt ?? new Date(),
+          lastLoginAt: k.lastLoginAt ?? new Date(),
         }),
       );
       await m.save(m.create(Wallet, { tenantId, userId: u.id, balance: 0 }));
@@ -207,9 +230,27 @@ export class AccessKeyService {
     return this.jwt.sign(payload, { secret: env.jwtSecret, expiresIn: expiresInSec });
   }
 
-  // 数据维护:卡密列表(近 500 条,新到旧)。
-  async list(tenantId: string): Promise<AccessKey[]> {
-    return this.keys.find({ where: { tenantId }, order: { createdAt: 'DESC' }, take: 500 });
+  // 数据维护:卡密列表改为服务端分页,避免卡密量增长后后台一次拉取过多数据。
+  async list(
+    tenantId: string,
+    q: ListKeysQuery = {},
+  ): Promise<{ items: AccessKey[]; total: number; page: number; pageSize: number }> {
+    const page = Math.max(1, Number(q.page) || 1);
+    const pageSize = Math.min(100, Math.max(1, Number(q.pageSize) || 50));
+    const qb = this.keys.createQueryBuilder('k').where('k.tenantId = :tenantId', { tenantId });
+    if (q.keyword?.trim()) {
+      qb.andWhere('k.key LIKE :keyword', { keyword: `%${q.keyword.trim()}%` });
+    }
+    const now = new Date();
+    if (q.status === 'active') {
+      qb.andWhere('k.status = :status', { status: 'active' }).andWhere('k.expiresAt >= :now', { now });
+    } else if (q.status === 'revoked') {
+      qb.andWhere('k.status = :status', { status: 'revoked' });
+    } else if (q.status === 'expired') {
+      qb.andWhere('k.expiresAt < :now', { now });
+    }
+    const [items, total] = await qb.orderBy('k.createdAt', 'DESC').skip((page - 1) * pageSize).take(pageSize).getManyAndCount();
+    return { items, total, page, pageSize };
   }
 
   // 作废一张卡密(立即失效,不可再登录)。
@@ -224,6 +265,24 @@ export class AccessKeyService {
       });
     }
     return { ok: true };
+  }
+
+  async deleteOne(tenantId: string, id: string, admin?: AuthUser): Promise<{ deleted: number }> {
+    const k = await this.keys.findOne({ where: { tenantId, id } });
+    if (!k) throw new NotFoundException('卡密不存在');
+    if (k.status === 'active' && k.expiresAt.getTime() >= Date.now()) {
+      throw new BadRequestException('有效卡密需要先作废或过期后才能删除');
+    }
+    await this.keys.delete(k.id);
+    if (admin) {
+      await this.logAdminOperation(admin, 'access_key_delete', 'access_key', id, {
+        key: k.key.length <= 4 ? '****' : `****${k.key.slice(-4)}`,
+        userId: k.userId,
+        status: k.status,
+        expiresAt: k.expiresAt,
+      });
+    }
+    return { deleted: 1 };
   }
 
   async updateExpiresAt(tenantId: string, id: string, ttlDays: number, admin?: AuthUser): Promise<AccessKey> {
@@ -276,8 +335,8 @@ export class AccessKeyAdminController {
   }
 
   @Get()
-  list(@CurrentUser() admin: AuthUser) {
-    return this.svc.list(admin.tenantId);
+  list(@CurrentUser() admin: AuthUser, @Query() q: ListKeysQuery) {
+    return this.svc.list(admin.tenantId, q);
   }
 
   // 清理过期/作废卡密。静态路由置于 :id 之前。
@@ -289,6 +348,11 @@ export class AccessKeyAdminController {
   @Post(':id/revoke')
   revoke(@CurrentUser() admin: AuthUser, @Param('id') id: string) {
     return this.svc.revoke(admin.tenantId, id, admin);
+  }
+
+  @Delete(':id')
+  deleteOne(@CurrentUser() admin: AuthUser, @Param('id') id: string) {
+    return this.svc.deleteOne(admin.tenantId, id, admin);
   }
 
   @Post(':id')
@@ -341,7 +405,7 @@ export class KeyLoginController {
 }
 
 @Module({
-  imports: [TypeOrmModule.forFeature([AccessKey, Wallet, User, AdminOperationLog])],
+  imports: [TypeOrmModule.forFeature([AccessKey, Wallet, User, AdminOperationLog]), UserActivityModule],
   controllers: [AccessKeyAdminController, KeyLoginController],
   providers: [AccessKeyService, PendingAuthGuard],
   exports: [AccessKeyService],

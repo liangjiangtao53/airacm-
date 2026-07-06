@@ -50,6 +50,7 @@ import {
   RolesGuard,
 } from '../common';
 import { WalletModule, WalletService } from './wallet';
+import { UserActivityModule, UserActivityQuery, UserActivityService } from './user-activity';
 
 // 中国大陆手机号(与 auth 模块一致)。
 const PHONE_RE = /^1[3-9]\d{9}$/;
@@ -193,6 +194,7 @@ export class AdminService {
     @InjectRepository(AdminOperationLog) private readonly operationLogs: Repository<AdminOperationLog>,
     private readonly wallet: WalletService,
     private readonly dataSource: DataSource,
+    private readonly userActivity: UserActivityService,
   ) {}
 
   private async logAdminOperation(
@@ -478,6 +480,10 @@ export class AdminService {
       });
     return { items, total, page, pageSize };
   }
+
+  listUserActivityLogs(caller: AuthUser, q: UserActivityQuery) {
+    return this.userActivity.list(caller.tenantId, q);
+  }
 }
 
 // 管理接口:类默认仅 super(充值码/手动充值/建课程);
@@ -535,12 +541,18 @@ export class AdminController {
   operationLogs(@CurrentUser() admin: AuthUser, @Query() q: OperationLogQuery) {
     return this.svc.listOperationLogs(admin, q);
   }
+
+  @Get('user-activity-logs')
+  userActivityLogs(@CurrentUser() admin: AuthUser, @Query() q: UserActivityQuery) {
+    return this.svc.listUserActivityLogs(admin, q);
+  }
 }
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([RechargeCode, Course, Chapter, Lesson, User, AdminOperationLog]),
     WalletModule,
+    UserActivityModule,
   ],
   controllers: [AdminController],
   providers: [AdminService],

@@ -27,6 +27,7 @@ import {
 import { SessionService } from '../session';
 import { env } from '../config';
 import { SmsModule, SmsService } from './sms';
+import { UserActivityModule, UserActivityService } from './user-activity';
 
 // 中国大陆手机号。
 const PHONE_RE = /^1[3-9]\d{9}$/;
@@ -93,6 +94,7 @@ export class AuthService {
     private readonly jwt: JwtService,
     private readonly sms: SmsService,
     private readonly session: SessionService,
+    private readonly activity: UserActivityService,
   ) {}
 
   // 发送注册验证码:已注册手机号直接拒绝,避免无谓短信与撞库探测。
@@ -136,6 +138,7 @@ export class AuthService {
     // 注册即开钱包(每用户一个,唯一约束 (tenantId,userId))。
     await this.wallets.save(this.wallets.create({ tenantId, userId: user.id, balance: 0 }));
 
+    await this.activity.recordPasswordLogin(user);
     return { token: await this.issue({ userId: user.id, tenantId, role: user.role }), userId: user.id };
   }
 
@@ -145,6 +148,7 @@ export class AuthService {
     if (!user || !(await bcrypt.compare(dto.password, user.passwordHash))) {
       throw new UnauthorizedException('手机号或密码错误');
     }
+    await this.activity.recordPasswordLogin(user);
     return { token: await this.issue({ userId: user.id, tenantId, role: user.role }), userId: user.id };
   }
 
@@ -247,6 +251,7 @@ export class AuthController {
     TypeOrmModule.forFeature([User, Wallet, Tenant]),
     JwtModule.register({ secret: env.jwtSecret }),
     SmsModule,
+    UserActivityModule,
   ],
   controllers: [AuthController],
   providers: [AuthService],

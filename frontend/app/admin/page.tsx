@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import {
   api,
   getToken,
+  type AccessKeyItem,
   type AdminOperationLogItem,
   type AdminUser,
   type AppApkStatus,
@@ -14,6 +15,7 @@ import {
   type ImportResult,
   type ManagedQuestionCategory,
   type QuestionUsage,
+  type UserActivityLogItem,
   type UserRole,
 } from '@/lib/api';
 
@@ -38,7 +40,7 @@ const defaultExamCategoryCounts: Record<string, number> = {
   'M5 航空涡轮发动机': 70,
   'M9 航空英语': 60,
 };
-type AccessKeyRow = { id: string; key: string; status: string; expiresAt: string; createdAt: string };
+type AccessKeyRow = AccessKeyItem;
 type AdminSheet = 'operations' | 'questions' | 'users' | 'logs' | 'security';
 const sheets: Array<{ key: AdminSheet; label: string; superOnly?: boolean }> = [
   { key: 'questions', label: '学习资料' },
@@ -97,6 +99,10 @@ export default function AdminPage() {
   // 数据维护
   const [stats, setStats] = useState<Array<{ category: string; count: number }>>([]);
   const [keys, setKeys] = useState<AccessKeyRow[]>([]);
+  const [keyTotal, setKeyTotal] = useState(0);
+  const [keyPage, setKeyPage] = useState(1);
+  const [keyKeyword, setKeyKeyword] = useState('');
+  const [keyStatus, setKeyStatus] = useState('');
   const [genCount, setGenCount] = useState('20');
   const [genTtl, setGenTtl] = useState('30');
   const [maintMsg, setMaintMsg] = useState('');
@@ -115,6 +121,11 @@ export default function AdminPage() {
   const [operationLogAction, setOperationLogAction] = useState('');
   const [operationLogKeyword, setOperationLogKeyword] = useState('');
   const [operationLogPage, setOperationLogPage] = useState(1);
+  const [activityLogs, setActivityLogs] = useState<UserActivityLogItem[]>([]);
+  const [activityLogTotal, setActivityLogTotal] = useState(0);
+  const [activityLogAction, setActivityLogAction] = useState('');
+  const [activityLogKeyword, setActivityLogKeyword] = useState('');
+  const [activityLogPage, setActivityLogPage] = useState(1);
 
   // 新增业务管理员(仅超管)
   const [adminPhone, setAdminPhone] = useState('');
@@ -155,11 +166,20 @@ export default function AdminPage() {
         api.forumTopics().then(setTopics).catch(() => undefined);
         // 卡密与操作日志仅 super 可见。
         if (u.role === 'super') {
-          api.accessKeys().then(setKeys).catch(() => undefined);
+          api.accessKeys({ page: 1, pageSize: 20 }).then((r) => {
+            setKeys(r.items);
+            setKeyTotal(r.total);
+            setKeyPage(r.page);
+          }).catch(() => undefined);
           api.operationLogs({ page: 1, pageSize: 50 }).then((r) => {
             setOperationLogs(r.items);
             setOperationLogTotal(r.total);
             setOperationLogPage(r.page);
+          }).catch(() => undefined);
+          api.userActivityLogs({ page: 1, pageSize: 50 }).then((r) => {
+            setActivityLogs(r.items);
+            setActivityLogTotal(r.total);
+            setActivityLogPage(r.page);
           }).catch(() => undefined);
         }
       })
@@ -182,6 +202,28 @@ export default function AdminPage() {
     const [names, managed] = await Promise.all([api.categories(), api.managedCategories()]);
     setCategories(names);
     setManagedCategories(managed);
+  };
+  const refreshKeys = async (page = keyPage) => {
+    const r = await api.accessKeys({
+      page,
+      pageSize: 20,
+      keyword: keyKeyword.trim() || undefined,
+      status: keyStatus || undefined,
+    });
+    setKeys(r.items);
+    setKeyTotal(r.total);
+    setKeyPage(r.page);
+  };
+  const refreshUserActivityLogs = async (page = activityLogPage) => {
+    const r = await api.userActivityLogs({
+      action: activityLogAction.trim() || undefined,
+      keyword: activityLogKeyword.trim() || undefined,
+      page,
+      pageSize: 50,
+    });
+    setActivityLogs(r.items);
+    setActivityLogTotal(r.total);
+    setActivityLogPage(r.page);
   };
   const refreshOperationLogs = async (page = operationLogPage) => {
     const r = await api.operationLogs({
@@ -348,7 +390,7 @@ export default function AdminPage() {
   const doGenKeys = wrap(async () => {
     const r = await api.generateKeys(Number(genCount) || 20, Number(genTtl) || 30);
     setMaintMsg(`已生成 ${r.keys.length} 个卡密,有效期至 ${new Date(r.expiresAt).toLocaleDateString()}`);
-    setKeys(await api.accessKeys());
+    await refreshKeys(1);
   });
 
   const genKeysWithTtl = (ttlDays: number) =>
@@ -356,13 +398,21 @@ export default function AdminPage() {
       setGenTtl(String(ttlDays));
       const r = await api.generateKeys(Number(genCount) || 20, ttlDays);
       setMaintMsg(`已生成 ${r.keys.length} 个${ttlDays === 90 ? '三个月' : '一个月'}卡密,有效期至 ${new Date(r.expiresAt).toLocaleDateString()}`);
-      setKeys(await api.accessKeys());
+      await refreshKeys(1);
     })();
 
   const revokeKey = (id: string) =>
     wrap(async () => {
       await api.revokeKey(id);
-      setKeys(await api.accessKeys());
+      await refreshKeys();
+    })();
+
+  const deleteKey = (key: AccessKeyRow) =>
+    wrap(async () => {
+      if (!window.confirm(`确认删除卡密 ${key.key}? 删除后不可恢复。`)) return;
+      await api.deleteKey(key.id);
+      setMaintMsg(`已删除卡密 ${key.key}`);
+      await refreshKeys();
     })();
 
   const editKeyTtl = (key: AccessKeyRow) =>
@@ -375,7 +425,7 @@ export default function AdminPage() {
         throw new Error('有效期天数必须是 1-3650 的整数');
       }
       const updated = await api.updateKey(key.id, ttlDays);
-      setKeys(await api.accessKeys());
+      await refreshKeys();
       setMaintMsg(`已修改卡密 ${updated.key} 的有效期至 ${new Date(updated.expiresAt).toLocaleDateString()}`);
     })();
 
@@ -383,7 +433,7 @@ export default function AdminPage() {
     if (!window.confirm('确认删除全部已过期/已作废的卡密?')) return;
     const r = await api.cleanupKeys();
     setMaintMsg(`已清理 ${r.deleted} 个失效卡密`);
-    setKeys(await api.accessKeys());
+    await refreshKeys(1);
   });
 
   const removeUser = (u: AdminUser) =>
@@ -476,6 +526,15 @@ export default function AdminPage() {
       user_delete: '删除用户',
     })[action] ?? action;
 
+  const activityActionLabel = (action: string) =>
+    ({
+      login_password: '账号登录',
+      login_access_key: '卡密登录',
+      study_answer: '顺序学习',
+      exam_start: '开始模拟考试',
+      exam_submit: '提交模拟考试',
+    })[action] ?? action;
+
   const detailSummary = (detail: Record<string, unknown> | null) => {
     if (!detail) return '';
     const pairs = Object.entries(detail).slice(0, 4);
@@ -491,7 +550,7 @@ export default function AdminPage() {
   }
 
   return (
-    <main className="mx-auto max-w-3xl px-6 py-10">
+    <main className="mx-auto max-w-6xl px-6 py-10">
       <a href="/" className="text-sm font-bold text-ink hover:text-sky">
         ← 返回工作台
       </a>
@@ -909,8 +968,28 @@ export default function AdminPage() {
                   </button>
                 </div>
 
-                <p className="mb-1 text-xs text-ink/50">卡密列表 {keys.length} 个(最多显示 500)</p>
-                <div className="max-h-72 overflow-auto rounded-lg bg-mist">
+                <div className="grid gap-3 sm:grid-cols-[1fr_160px_auto]">
+                  <input
+                    className={input}
+                    placeholder="按卡号搜索"
+                    value={keyKeyword}
+                    onChange={(e) => setKeyKeyword(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') refreshKeys(1);
+                    }}
+                  />
+                  <select className={input} value={keyStatus} onChange={(e) => setKeyStatus(e.target.value)}>
+                    <option value="">全部状态</option>
+                    <option value="active">有效</option>
+                    <option value="revoked">已作废</option>
+                    <option value="expired">已过期</option>
+                  </select>
+                  <button className={btn} onClick={wrap(() => refreshKeys(1))}>
+                    查询
+                  </button>
+                </div>
+                <p className="mb-1 text-xs text-ink/50">卡密列表 共 {keyTotal} 个,每页 20 个</p>
+                <div className="max-h-96 overflow-auto rounded-lg bg-mist">
                   <table className="min-w-full text-left text-xs">
                     <thead className="sticky top-0 bg-mist text-ink/45">
                       <tr>
@@ -919,7 +998,9 @@ export default function AdminPage() {
                         <th className="px-3 py-2 font-medium">有效期</th>
                         <th className="px-3 py-2 font-medium">已使用天数</th>
                         <th className="px-3 py-2 font-medium">剩余天数</th>
-                        <th className="px-3 py-2 text-right font-medium">操作</th>
+                        <th className="px-3 py-2 font-medium">首次登录</th>
+                        <th className="px-3 py-2 font-medium">最近登录</th>
+                        <th className="sticky right-0 bg-mist px-3 py-2 text-right font-medium">操作</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-white/70">
@@ -942,23 +1023,49 @@ export default function AdminPage() {
                             <td className="px-3 py-2">{validDays} 天</td>
                             <td className="px-3 py-2">{usedDays} 天</td>
                             <td className="px-3 py-2">{remainingDays} 天</td>
-                            <td className="px-3 py-2 text-right">
-                              {!dead && (
-                                <span className="inline-flex items-center gap-2">
-                                  <button onClick={() => editKeyTtl(k)} className="text-sky hover:underline">
-                                    改有效期
+                            <td className="whitespace-nowrap px-3 py-2">{k.firstLoginAt ? new Date(k.firstLoginAt).toLocaleString() : '-'}</td>
+                            <td className="whitespace-nowrap px-3 py-2">{k.lastLoginAt ? new Date(k.lastLoginAt).toLocaleString() : '-'}</td>
+                            <td className="sticky right-0 bg-mist px-3 py-2 text-right">
+                              <span className="inline-flex items-center gap-2">
+                                {!dead && (
+                                  <>
+                                    <button onClick={() => editKeyTtl(k)} className="text-sky hover:underline">
+                                      改有效期
+                                    </button>
+                                    <button onClick={() => revokeKey(k.id)} className="text-red-500 hover:underline">
+                                      作废
+                                    </button>
+                                  </>
+                                )}
+                                {dead && (
+                                  <button onClick={() => deleteKey(k)} className="rounded bg-white/80 px-2 py-1 text-red-500 hover:underline">
+                                    删除
                                   </button>
-                                  <button onClick={() => revokeKey(k.id)} className="text-red-500 hover:underline">
-                                    作废
-                                  </button>
-                                </span>
-                              )}
+                                )}
+                              </span>
                             </td>
                           </tr>
                         );
                       })}
                     </tbody>
                   </table>
+                </div>
+                <div className="flex items-center justify-between text-sm">
+                  <button
+                    className="text-sky disabled:text-ink/30"
+                    disabled={keyPage <= 1}
+                    onClick={wrap(() => refreshKeys(keyPage - 1))}
+                  >
+                    上一页
+                  </button>
+                  <span className="text-ink/45">第 {keyPage} 页</span>
+                  <button
+                    className="text-sky disabled:text-ink/30"
+                    disabled={keyPage * 20 >= keyTotal}
+                    onClick={wrap(() => refreshKeys(keyPage + 1))}
+                  >
+                    下一页
+                  </button>
                 </div>
               </div>
             )}
@@ -1093,6 +1200,7 @@ export default function AdminPage() {
         )}
 
         {activeSheet === 'logs' && isSuper && (
+          <>
           <Card title="操作日志">
             <div className="space-y-4">
               <div className="grid gap-3 sm:grid-cols-[1fr_1fr_auto]">
@@ -1187,6 +1295,103 @@ export default function AdminPage() {
               </div>
             </div>
           </Card>
+
+          <Card title="用户行为日志">
+            <div className="space-y-4">
+              <div className="grid gap-3 sm:grid-cols-[180px_1fr_auto]">
+                <select className={input} value={activityLogAction} onChange={(e) => setActivityLogAction(e.target.value)}>
+                  <option value="">全部行为</option>
+                  <option value="login_access_key">卡密登录</option>
+                  <option value="login_password">账号登录</option>
+                  <option value="study_answer">顺序学习</option>
+                  <option value="exam_start">开始模拟考试</option>
+                  <option value="exam_submit">提交模拟考试</option>
+                </select>
+                <input
+                  className={input}
+                  placeholder="按卡号/手机号/昵称搜索"
+                  value={activityLogKeyword}
+                  onChange={(e) => setActivityLogKeyword(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') refreshUserActivityLogs(1);
+                  }}
+                />
+                <button className={btn} onClick={wrap(() => refreshUserActivityLogs(1))}>
+                  查询
+                </button>
+              </div>
+
+              <p className="text-xs text-ink/45">共 {activityLogTotal} 条,每页 50 条。可按完整或部分卡号搜索。</p>
+
+              <div className="overflow-auto rounded-lg bg-mist">
+                <table className="min-w-full text-left text-xs">
+                  <thead className="bg-mist text-ink/45">
+                    <tr>
+                      <th className="px-3 py-2 font-medium">时间</th>
+                      <th className="px-3 py-2 font-medium">卡号/账号</th>
+                      <th className="px-3 py-2 font-medium">行为</th>
+                      <th className="px-3 py-2 font-medium">对象</th>
+                      <th className="px-3 py-2 font-medium">详情</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-white/70">
+                    {activityLogs.length === 0 ? (
+                      <tr>
+                        <td className="px-3 py-6 text-center text-ink/40" colSpan={5}>
+                          暂无用户行为日志
+                        </td>
+                      </tr>
+                    ) : (
+                      activityLogs.map((log) => (
+                        <tr key={log.id} className="align-top text-ink/75">
+                          <td className="whitespace-nowrap px-3 py-2">{new Date(log.createdAt).toLocaleString()}</td>
+                          <td className="px-3 py-2">
+                            <div className="font-mono text-ink">{log.accessKey?.key || '-'}</div>
+                            <div className="text-ink/45">{log.user?.phone || log.user?.nickname || log.user?.id || '未补全账号'}</div>
+                          </td>
+                          <td className="whitespace-nowrap px-3 py-2">
+                            <div>{activityActionLabel(log.action)}</div>
+                            <div className="font-mono text-ink/40">{log.action}</div>
+                          </td>
+                          <td className="px-3 py-2">
+                            <div>{log.targetType}</div>
+                            {log.targetId && <div className="font-mono text-ink/40">{log.targetId.slice(0, 12)}</div>}
+                          </td>
+                          <td className="min-w-64 px-3 py-2">
+                            <details>
+                              <summary className="cursor-pointer text-ink/65">{detailSummary(log.detail) || '查看详情'}</summary>
+                              <pre className="mt-2 max-w-md overflow-auto rounded bg-white/70 p-2 text-[11px] text-ink/65">
+                                {JSON.stringify(log.detail ?? {}, null, 2)}
+                              </pre>
+                            </details>
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="flex items-center justify-between text-sm">
+                <button
+                  className="text-sky disabled:text-ink/30"
+                  disabled={activityLogPage <= 1}
+                  onClick={wrap(() => refreshUserActivityLogs(activityLogPage - 1))}
+                >
+                  上一页
+                </button>
+                <span className="text-ink/45">第 {activityLogPage} 页</span>
+                <button
+                  className="text-sky disabled:text-ink/30"
+                  disabled={activityLogPage * 50 >= activityLogTotal}
+                  onClick={wrap(() => refreshUserActivityLogs(activityLogPage + 1))}
+                >
+                  下一页
+                </button>
+              </div>
+            </div>
+          </Card>
+          </>
         )}
 
         {activeSheet === 'security' && (

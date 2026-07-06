@@ -31,6 +31,7 @@ export type QuestionType = 'single' | 'multiple';
 export type QuestionUsage = 'study' | 'exam' | 'both';
 export type WrongQuestionSource = 'study' | 'exam';
 export type QuestionImportStatus = 'completed' | 'failed';
+export type UserActivityAction = 'login_password' | 'login_access_key' | 'study_answer' | 'exam_start' | 'exam_submit';
 
 @Entity('exam_paper_rule')
 @Index(['tenantId'], { unique: true })
@@ -206,6 +207,12 @@ export class User {
   // 单点登录:当前有效会话 id。每次登录刷新,JWT 带 sid,守卫比对不一致即踢。仅 role=user 校验。
   @Column({ type: 'varchar', nullable: true })
   sessionId!: string | null;
+
+  @Column({ type: TS_TYPE, nullable: true })
+  firstLoginAt!: Date | null;
+
+  @Column({ type: TS_TYPE, nullable: true })
+  lastLoginAt!: Date | null;
 
   @CreateDateColumn()
   createdAt!: Date;
@@ -714,6 +721,7 @@ export class Comment {
 // 认证卡密:批量生成,凭 key 登录即可学习(无需手机号/密码),到期失效。
 @Entity('access_key')
 @Index(['tenantId', 'key'], { unique: true })
+@Index(['tenantId', 'userId'])
 export class AccessKey {
   @PrimaryGeneratedColumn('uuid')
   id!: string;
@@ -733,6 +741,56 @@ export class AccessKey {
   // 补全资料后关联的正式 user.id;空=未补全(首次卡密登录强制补全手机号/昵称)。
   @Column({ type: 'varchar', nullable: true })
   userId!: string | null;
+
+  @Column({ type: TS_TYPE, nullable: true })
+  firstLoginAt!: Date | null;
+
+  @Column({ type: TS_TYPE, nullable: true })
+  lastLoginAt!: Date | null;
+
+  @CreateDateColumn()
+  createdAt!: Date;
+}
+
+@Entity('user_activity_log')
+@Index(['tenantId', 'createdAt'])
+@Index(['tenantId', 'action', 'createdAt'])
+@Index(['tenantId', 'accessKeyId', 'createdAt'])
+@Index(['tenantId', 'accessKeyHash', 'createdAt'])
+@Index(['tenantId', 'userId', 'createdAt'])
+export class UserActivityLog {
+  @PrimaryGeneratedColumn('uuid')
+  id!: string;
+
+  @Column({ length: 64 })
+  tenantId!: string;
+
+  @Column({ type: 'varchar', length: 64, nullable: true })
+  userId!: string | null;
+
+  @Column({ type: 'varchar', nullable: true })
+  accessKeyId!: string | null;
+
+  @Column({ type: 'varchar', length: 32, nullable: true })
+  accessKeyLast4!: string | null;
+
+  @Column({ type: 'varchar', length: 32, nullable: true })
+  accessKeyMasked!: string | null;
+
+  @Column({ type: 'varchar', length: 64, nullable: true })
+  accessKeyHash!: string | null;
+
+  @Column({ type: 'varchar', length: 64 })
+  action!: UserActivityAction;
+
+  @Column({ type: 'varchar', length: 64 })
+  targetType!: string;
+
+  @Column({ type: 'varchar', nullable: true })
+  targetId!: string | null;
+
+  @Column({ type: 'simple-json', nullable: true })
+  detail!: Record<string, unknown> | null;
 
   @CreateDateColumn()
   createdAt!: Date;
@@ -830,6 +888,7 @@ export const ALL_ENTITIES = [
   StudyQuestionProgress,
   WrongQuestion,
   AccessKey,
+  UserActivityLog,
   Post,
   PostReply,
   ForumTopic,

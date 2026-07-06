@@ -133,6 +133,27 @@ export interface AdminOperationLogItem {
   admin: { id: string; phone: string; nickname: string; role: UserRole } | null;
 }
 
+export interface UserActivityLogItem {
+  id: string;
+  action: string;
+  targetType: string;
+  targetId: string | null;
+  detail: Record<string, unknown> | null;
+  createdAt: string;
+  user: { id: string; phone: string; nickname: string; role: UserRole } | null;
+  accessKey: { id: string; key: string; status: string } | null;
+}
+
+export interface AccessKeyItem {
+  id: string;
+  key: string;
+  status: string;
+  expiresAt: string;
+  createdAt: string;
+  firstLoginAt: string | null;
+  lastLoginAt: string | null;
+}
+
 export interface ManagedQuestionCategory {
   id: string;
   name: string;
@@ -414,6 +435,12 @@ export const api = {
     const suffix = qs.toString() ? `?${qs}` : '';
     return req<{ items: AdminOperationLogItem[]; total: number; page: number; pageSize: number }>(`/admin/operation-logs${suffix}`);
   },
+  userActivityLogs: (params: { action?: string; keyword?: string; page?: number; pageSize?: number } = {}) => {
+    const qs = new URLSearchParams();
+    Object.entries(params).forEach(([k, v]) => v !== undefined && v !== '' && qs.set(k, String(v)));
+    const suffix = qs.toString() ? `?${qs}` : '';
+    return req<{ items: UserActivityLogItem[]; total: number; page: number; pageSize: number }>(`/admin/user-activity-logs${suffix}`);
+  },
 
   appApkStatus: () => req<AppApkStatus>('/admin/app/apk'),
   uploadAppApk: (file: File) => upload<AppApkStatus>('/admin/app/apk', file),
@@ -474,15 +501,20 @@ export const api = {
       method: 'POST',
       body: { count, ttlDays },
     }),
-  accessKeys: () =>
-    req<Array<{ id: string; key: string; status: string; expiresAt: string; createdAt: string }>>('/admin/access-keys'),
+  accessKeys: (params: { keyword?: string; status?: string; page?: number; pageSize?: number } = {}) => {
+    const qs = new URLSearchParams();
+    Object.entries(params).forEach(([k, v]) => v !== undefined && v !== '' && qs.set(k, String(v)));
+    const suffix = qs.toString() ? `?${qs}` : '';
+    return req<{ items: AccessKeyItem[]; total: number; page: number; pageSize: number }>(`/admin/access-keys${suffix}`);
+  },
   revokeKey: (id: string) =>
     req<{ ok: boolean }>(`/admin/access-keys/${id}/revoke`, { method: 'POST' }),
   updateKey: (id: string, ttlDays: number) =>
-    req<{ id: string; key: string; status: string; expiresAt: string; createdAt: string }>(`/admin/access-keys/${id}`, {
+    req<AccessKeyItem>(`/admin/access-keys/${id}`, {
       method: 'POST',
       body: { ttlDays },
     }),
+  deleteKey: (id: string) => req<{ deleted: number }>(`/admin/access-keys/${id}`, { method: 'DELETE' }),
   cleanupKeys: () => req<{ deleted: number }>('/admin/access-keys/cleanup', { method: 'DELETE' }),
 
   // 用户管理(超管看全部,业务管理员只看普通用户)

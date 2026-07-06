@@ -13,7 +13,7 @@ public class MainActivity extends Activity {
   @Override
   protected void onCreate(Bundle savedInstanceState) {
     super.onCreate(savedInstanceState);
-    // QA 截图通过后重新开启: 防止学习/考试内容被系统截图、录屏或显示在最近任务缩略图中。
+    // 防止学习/考试内容被系统截图、录屏或显示在最近任务缩略图中。
     getWindow().setFlags(WindowManager.LayoutParams.FLAG_SECURE, WindowManager.LayoutParams.FLAG_SECURE);
 
     WebView webView = new WebView(this);

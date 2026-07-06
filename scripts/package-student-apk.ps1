@@ -2,7 +2,9 @@ param(
   [string]$AndroidHome = "D:\AndroidLab\android-sdk",
   [string]$OutDir = "D:\AndroidLab\apk",
   [string]$ApiBase = "https://weixiuzhiyi.com.cn/api",
-  [string]$DownloadBase = "https://weixiuzhiyi.com.cn"
+  [string]$DownloadBase = "https://weixiuzhiyi.com.cn",
+  [string]$ApkName = "airacm-android.apk",
+  [switch]$SkipPublicCopy
 )
 
 $ErrorActionPreference = "Stop"
@@ -73,7 +75,7 @@ Invoke-Checked { & (Join-Path $buildTools "d8.bat") --lib $androidJar --output $
 
 $unsigned = Join-Path $workDir "airacm-android-unsigned.apk"
 $aligned = Join-Path $workDir "airacm-android-aligned.apk"
-$final = Join-Path $OutDir "airacm-android.apk"
+$final = Join-Path $OutDir $ApkName
 $compiledRes = Join-Path $resDir "compiled.zip"
 
 Invoke-Checked { & (Join-Path $buildTools "aapt2.exe") compile --dir (Join-Path $shellDir "res") -o $compiledRes }
@@ -90,5 +92,7 @@ if (!(Test-Path $keystore)) {
 Invoke-Checked { & (Join-Path $buildTools "apksigner.bat") sign --ks $keystore --ks-key-alias airacm-debug --ks-pass pass:android --key-pass pass:android --out $final $aligned }
 Invoke-Checked { & (Join-Path $buildTools "apksigner.bat") verify $final }
 
-Copy-Item -Force $final (Join-Path $repo "frontend\public\downloads\app\airacm-android.apk")
+if (!$SkipPublicCopy) {
+  Copy-Item -Force $final (Join-Path $repo "frontend\public\downloads\app\airacm-android.apk")
+}
 Write-Output $final
