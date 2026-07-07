@@ -227,6 +227,8 @@ export const api = {
   deleteExamAttempt: (attemptId: string) =>
     request<{ deleted: boolean }>(`/exams/${attemptId}`, { method: 'DELETE' }),
   wrongBook: () => request<WrongBookItem[]>('/exams/wrong-book'),
+  startStudy: (category?: string, courseId?: string) =>
+    request<{ ok: true }>('/exams/study/start', { method: 'POST', data: { category, courseId } }),
   recordStudyWrong: (questionId: string, answer: string) =>
     request<{ ok: true; recorded: boolean }>('/exams/wrong-book/study', { method: 'POST', data: { questionId, answer } }),
   masterWrong: (questionId: string, source: WrongQuestionSource = 'study') =>

@@ -383,6 +383,8 @@ export const api = {
   deleteExamAttempt: (attemptId: string) =>
     req<{ deleted: boolean }>(`/exams/${attemptId}`, { method: 'DELETE' }),
   wrongBook: () => req<WrongBookItem[]>('/exams/wrong-book'),
+  startStudy: (category?: string, courseId?: string) =>
+    req<{ ok: true }>('/exams/study/start', { method: 'POST', body: { category, courseId } }),
   recordStudyWrong: (questionId: string, answer: string) =>
     req<{ ok: true; recorded: boolean }>('/exams/wrong-book/study', { method: 'POST', body: { questionId, answer } }),
   masterWrong: (questionId: string, source: WrongQuestionSource = 'study') =>

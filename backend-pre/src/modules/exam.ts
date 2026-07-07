@@ -85,6 +85,16 @@ class StudyWrongDto {
   answer!: string;
 }
 
+class StudyStartDto {
+  @IsOptional()
+  @IsString()
+  category?: string;
+
+  @IsOptional()
+  @IsString()
+  courseId?: string;
+}
+
 class MasterWrongDto {
   @IsOptional()
   @IsString()
@@ -456,14 +466,17 @@ export class ExamService {
       ['tenantId', 'userId', 'category', 'courseId'],
     );
     await this.recordQuestionPractice(user, questionId, isCorrect, now);
-    await this.activity.record(user, 'study_progress', 'study_category', null, {
-      category: q.category,
-      courseId: q.courseId ?? null,
-      isCorrect,
-    });
     if (isCorrect) return { ok: true, recorded: false };
     await this.recordWrong(user, questionId, 'study', now);
     return { ok: true, recorded: true };
+  }
+
+  async recordStudyStart(user: AuthUser, dto: StudyStartDto): Promise<{ ok: true }> {
+    await this.activity.record(user, 'study_progress', 'study_category', null, {
+      category: dto.category?.trim() || null,
+      courseId: dto.courseId?.trim() || null,
+    });
+    return { ok: true };
   }
 
   // 错题本列表:默认只看未掌握(open),带题目详情供复习。
@@ -655,6 +668,11 @@ export class ExamController {
   @Get('wrong-book')
   wrongBook(@CurrentUser() user: AuthUser) {
     return this.svc.wrongBook(user);
+  }
+
+  @Post('study/start')
+  studyStart(@CurrentUser() user: AuthUser, @Body() dto: StudyStartDto) {
+    return this.svc.recordStudyStart(user, dto);
   }
 
   // 顺序学习答错时录入错题本。

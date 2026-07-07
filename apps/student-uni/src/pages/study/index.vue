@@ -21,6 +21,7 @@ const showCorrectAnswer = ref(false);
 const commentOpen = ref<Record<string, boolean>>({});
 const commentInputs = ref<Record<string, string>>({});
 const commentLists = ref<Record<string, CommentItem[]>>({});
+const startedStudyCategories = ref(new Set<string>());
 const currentQuestion = computed(() => questions.value[currentIndex.value] || null);
 const currentNumber = computed(() => (page.value - 1) * pageSize.value + currentIndex.value + 1);
 const canPrev = computed(() => page.value > 1 || currentIndex.value > 0);
@@ -62,6 +63,17 @@ async function loadQuestions(reset = false, targetIndex = 0) {
     toast((e as Error).message);
   } finally {
     loading.value = false;
+  }
+}
+
+async function recordStudyStart() {
+  const current = category.value;
+  if (!current || startedStudyCategories.value.has(current)) return;
+  startedStudyCategories.value.add(current);
+  try {
+    await api.startStudy(current);
+  } catch {
+    // 行为日志失败不影响正常刷题。
   }
 }
 
@@ -146,6 +158,7 @@ function changeCategory(e: { detail: { value: number } }) {
   picked.value = {};
   answers.value = {};
   explanationOpen.value = {};
+  recordStudyStart();
   loadQuestions(true);
 }
 
@@ -220,6 +233,7 @@ onShow(async () => {
   if (!requireLogin()) return;
   try {
     await loadCategories();
+    await recordStudyStart();
     await loadQuestions();
   } catch (e) {
     toast((e as Error).message);

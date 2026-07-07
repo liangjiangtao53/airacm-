@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { api, assetUrl, getToken, type QuestionItem } from '@/lib/api';
 import Comments from '@/components/Comments';
@@ -21,6 +21,7 @@ export default function StudyPage() {
   const [err, setErr] = useState('');
   const [loading, setLoading] = useState(true);
   const [showCorrectAnswer, setShowCorrectAnswer] = useState(false);
+  const startedStudyCategories = useRef(new Set<string>());
 
   // 搜索防抖 350ms,避免每个字符都打接口。
   useEffect(() => {
@@ -50,6 +51,10 @@ export default function StudyPage() {
 
   useEffect(() => {
     if (!getToken() || !category) return;
+    if (!startedStudyCategories.current.has(category)) {
+      startedStudyCategories.current.add(category);
+      void api.startStudy(category).catch(() => undefined);
+    }
     setLoading(true);
     api
       .questions({ usage: 'study', category, keyword: searchKw || undefined, page, pageSize })

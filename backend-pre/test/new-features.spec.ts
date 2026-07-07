@@ -831,6 +831,12 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
       const category = `ADAPTIVE-TRACK-${phoneSeq++}`;
       const [q] = await seedQuestions('STUDY-TRACK', 1, 'study', category, null);
 
+      const started = await request(app.getHttpServer())
+        .post('/exams/study/start')
+        .set('Authorization', `Bearer ${user.token}`)
+        .send({ category });
+      expect(started.status).toBe(201);
+
       const [first, second] = await Promise.all([
         request(app.getHttpServer())
           .post('/exams/wrong-book/study')
@@ -861,8 +867,9 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
       const activityLogs = await ds.getRepository(UserActivityLog).find({
         where: { tenantId: TENANT, userId: user.user.userId, action: 'study_progress', targetType: 'study_category' },
       });
-      expect(activityLogs).toHaveLength(2);
+      expect(activityLogs).toHaveLength(1);
       expect(activityLogs.every((log) => log.targetId === null)).toBe(true);
+      expect(activityLogs[0].detail).toMatchObject({ category });
     });
   });
 
