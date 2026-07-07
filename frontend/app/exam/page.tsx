@@ -152,7 +152,7 @@ export default function ExamPage() {
           <div className="flex flex-wrap gap-2 text-sm font-medium">
             <span className="rounded-full bg-green-50 px-3 py-1 text-green-700">已完成 {answeredCount}</span>
             <button onClick={jumpToNextUnanswered} className="rounded-full bg-red-50 px-3 py-1 text-red-600">
-              未完成 {unfinishedCount}
+              未答题 {unfinishedCount}
             </button>
           </div>
           {questions.map((q, i) => (

@@ -159,7 +159,7 @@ onShow(() => {
       <text class="progress">共 {{ questions.length }} 题 · 已答 {{ answeredCount }}</text>
       <view class="exam-status">
         <text class="status-pill done">已完成 {{ answeredCount }}</text>
-        <text class="status-pill pending" @tap.stop="jumpToNextUnanswered">未完成 {{ unfinishedCount }}</text>
+        <button class="status-pill pending" @tap.stop="jumpToNextUnanswered">未答题 {{ unfinishedCount }}</button>
       </view>
       <view v-if="currentQuestion" class="card question-card">
         <view class="question-head">
@@ -256,9 +256,13 @@ onShow(() => {
 }
 
 .status-pill {
+  border: 0;
   border-radius: 999rpx;
   font-size: 26rpx;
   font-weight: 700;
+  line-height: 1;
+  margin: 0;
+  min-height: auto;
   padding: 12rpx 22rpx;
 }
 

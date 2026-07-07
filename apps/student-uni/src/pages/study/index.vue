@@ -104,6 +104,8 @@ function toggle(q: QuestionItem, key: string) {
   const cur = picked.value[q.id] || [];
   if (q.type === 'single') {
     picked.value[q.id] = [key];
+    // 原来单选只记录选中态,不会立刻显示对错;现在选择后直接揭晓答案,让红/绿反馈马上出现。
+    reveal(q.id, true, false);
     return;
   }
   picked.value[q.id] = cur.includes(key) ? cur.filter((item) => item !== key) : [...cur, key].sort();
