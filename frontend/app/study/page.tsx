@@ -5,8 +5,6 @@ import { useRouter } from 'next/navigation';
 import { api, assetUrl, getToken, type QuestionItem } from '@/lib/api';
 import Comments from '@/components/Comments';
 
-const PAGE_SIZES = [20];
-
 export default function StudyPage() {
   const router = useRouter();
   const [items, setItems] = useState<QuestionItem[]>([]);
@@ -74,10 +72,26 @@ export default function StudyPage() {
     setJumpTo(String(page));
   }, [page]);
 
-  function commitJump() {
+  async function recordBatchProgress() {
+    if (searchKw || items.length === 0) return;
+    await api.recordStudyProgress(items[items.length - 1].id).catch(() => undefined);
+  }
+
+  async function commitJump() {
     const next = Math.min(totalPages, Math.max(1, Number(jumpTo) || 1));
+    if (next > page) {
+      await recordBatchProgress();
+    }
     setPage(next);
     setJumpTo(String(next));
+  }
+
+  async function changePage(next: number) {
+    const target = Math.min(totalPages, Math.max(1, next));
+    if (target > page) {
+      await recordBatchProgress();
+    }
+    setPage(target);
   }
 
   return (
@@ -175,21 +189,10 @@ export default function StudyPage() {
           {/* 分页栏 */}
           {total > 0 && (
             <div className="mt-6 flex flex-wrap items-center justify-end gap-3 text-sm text-ink/60">
-              <select
-                value={pageSize}
-                onChange={(e) => setPageSize(Number(e.target.value))}
-                className="rounded-lg border border-ink/15 px-2 py-1 outline-none focus:border-sky"
-              >
-                {PAGE_SIZES.map((s) => (
-                  <option key={s} value={s}>
-                    {s}条/页
-                  </option>
-                ))}
-              </select>
               <span>共 {total} 条</span>
               <div className="flex items-center gap-1">
                 <button
-                  onClick={() => setPage((p) => Math.max(1, p - 1))}
+                  onClick={() => void changePage(page - 1)}
                   disabled={page <= 1}
                   className="rounded-md border border-ink/15 px-2 py-1 hover:bg-mist disabled:opacity-40"
                 >
@@ -199,7 +202,7 @@ export default function StudyPage() {
                   {page} / {totalPages}
                 </span>
                 <button
-                  onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                  onClick={() => void changePage(page + 1)}
                   disabled={page >= totalPages}
                   className="rounded-md border border-ink/15 px-2 py-1 hover:bg-mist disabled:opacity-40"
                 >
@@ -216,13 +219,13 @@ export default function StudyPage() {
                   onChange={(e) => setJumpTo(e.target.value)}
                   onKeyDown={(e) => {
                     if (e.key !== 'Enter') return;
-                    commitJump();
+                    void commitJump();
                   }}
                   className="w-14 rounded-md border border-ink/15 px-2 py-1 text-center outline-none focus:border-sky"
                 />
                 页
                 <button
-                  onClick={commitJump}
+                  onClick={() => void commitJump()}
                   className="rounded-md border border-sky/35 px-2 py-1 font-medium text-sky hover:bg-sky/5"
                 >
                   跳转

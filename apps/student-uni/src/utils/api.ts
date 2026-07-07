@@ -229,6 +229,8 @@ export const api = {
   wrongBook: () => request<WrongBookItem[]>('/exams/wrong-book'),
   startStudy: (category?: string, courseId?: string) =>
     request<{ ok: true }>('/exams/study/start', { method: 'POST', data: { category, courseId } }),
+  recordStudyProgress: (questionId: string) =>
+    request<{ ok: true }>('/exams/study/progress', { method: 'POST', data: { questionId } }),
   recordStudyWrong: (questionId: string, answer: string) =>
     request<{ ok: true; recorded: boolean }>('/exams/wrong-book/study', { method: 'POST', data: { questionId, answer } }),
   masterWrong: (questionId: string, source: WrongQuestionSource = 'study') =>

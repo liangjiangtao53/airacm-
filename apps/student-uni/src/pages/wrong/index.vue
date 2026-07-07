@@ -16,7 +16,7 @@ function toast(message: string) {
 }
 
 const categories = computed(() => Array.from(new Set(items.value.map((item) => item.category).filter(Boolean))).sort());
-const filteredItems = computed(() => items.value.filter((item) => !category.value || item.category === category.value));
+const filteredItems = computed(() => (category.value ? items.value.filter((item) => item.category === category.value) : []));
 
 function itemKey(q: WrongBookItem) {
   return `${q.source}:${q.questionId}`;
@@ -24,7 +24,7 @@ function itemKey(q: WrongBookItem) {
 
 function changeCategory(e: { detail: { value: number } }) {
   const idx = Number(e.detail.value);
-  category.value = idx === 0 ? '' : categories.value[idx - 1] || '';
+  category.value = categories.value[idx] || '';
 }
 
 async function load() {
@@ -32,6 +32,11 @@ async function load() {
   loading.value = true;
   try {
     items.value = await api.wrongBook();
+    if (categories.value.length === 0) {
+      category.value = '';
+    } else if (!category.value || !categories.value.includes(category.value)) {
+      category.value = categories.value[0];
+    }
   } catch (e) {
     toast((e as Error).message);
   } finally {
@@ -101,8 +106,8 @@ onShow(load);
     </view>
 
     <view class="filter">
-      <picker mode="selector" :range="['全部模块', ...categories]" @change="changeCategory">
-        <view class="select">{{ category || '全部模块' }}</view>
+      <picker mode="selector" :range="categories" :disabled="categories.length === 0" @change="changeCategory">
+        <view class="select">{{ category || '暂无模块' }}</view>
       </picker>
       <text class="count">{{ filteredItems.length }} 题</text>
     </view>

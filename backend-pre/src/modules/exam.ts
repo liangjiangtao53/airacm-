@@ -85,6 +85,11 @@ class StudyWrongDto {
   answer!: string;
 }
 
+class StudyProgressDto {
+  @IsString()
+  questionId!: string;
+}
+
 class StudyStartDto {
   @IsOptional()
   @IsString()
@@ -454,21 +459,18 @@ export class ExamService {
     if (!q) throw new NotFoundException('题目不存在');
     const now = new Date();
     const isCorrect = normalize(answer) === q.answer;
-    await this.studyProgress.upsert(
-      {
-        tenantId: user.tenantId,
-        userId: user.userId,
-        category: q.category,
-        courseId: q.courseId ?? '',
-        questionId,
-        lastStudiedAt: now,
-      },
-      ['tenantId', 'userId', 'category', 'courseId'],
-    );
+    await this.saveStudyProgress(user, q, now);
     await this.recordQuestionPractice(user, questionId, isCorrect, now);
     if (isCorrect) return { ok: true, recorded: false };
     await this.recordWrong(user, questionId, 'study', now);
     return { ok: true, recorded: true };
+  }
+
+  async recordStudyProgress(user: AuthUser, questionId: string): Promise<{ ok: true }> {
+    const q = await this.questions.findOne({ where: { tenantId: user.tenantId, id: questionId } });
+    if (!q) throw new NotFoundException('题目不存在');
+    await this.saveStudyProgress(user, q, new Date());
+    return { ok: true };
   }
 
   async recordStudyStart(user: AuthUser, dto: StudyStartDto): Promise<{ ok: true }> {
@@ -477,6 +479,21 @@ export class ExamService {
       courseId: dto.courseId?.trim() || null,
     });
     return { ok: true };
+  }
+
+  // 顺序学习进度只更新游标,不写错题和行为日志。
+  private async saveStudyProgress(user: AuthUser, q: Question, now: Date): Promise<void> {
+    await this.studyProgress.upsert(
+      {
+        tenantId: user.tenantId,
+        userId: user.userId,
+        category: q.category,
+        courseId: q.courseId ?? '',
+        questionId: q.id,
+        lastStudiedAt: now,
+      },
+      ['tenantId', 'userId', 'category', 'courseId'],
+    );
   }
 
   // 错题本列表:默认只看未掌握(open),带题目详情供复习。
@@ -673,6 +690,11 @@ export class ExamController {
   @Post('study/start')
   studyStart(@CurrentUser() user: AuthUser, @Body() dto: StudyStartDto) {
     return this.svc.recordStudyStart(user, dto);
+  }
+
+  @Post('study/progress')
+  studyProgress(@CurrentUser() user: AuthUser, @Body() dto: StudyProgressDto) {
+    return this.svc.recordStudyProgress(user, dto.questionId);
   }
 
   // 顺序学习答错时录入错题本。

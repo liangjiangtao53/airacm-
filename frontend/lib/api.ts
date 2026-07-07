@@ -385,6 +385,8 @@ export const api = {
   wrongBook: () => req<WrongBookItem[]>('/exams/wrong-book'),
   startStudy: (category?: string, courseId?: string) =>
     req<{ ok: true }>('/exams/study/start', { method: 'POST', body: { category, courseId } }),
+  recordStudyProgress: (questionId: string) =>
+    req<{ ok: true }>('/exams/study/progress', { method: 'POST', body: { questionId } }),
   recordStudyWrong: (questionId: string, answer: string) =>
     req<{ ok: true; recorded: boolean }>('/exams/wrong-book/study', { method: 'POST', body: { questionId, answer } }),
   masterWrong: (questionId: string, source: WrongQuestionSource = 'study') =>

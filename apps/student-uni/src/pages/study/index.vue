@@ -22,6 +22,7 @@ const commentOpen = ref<Record<string, boolean>>({});
 const commentInputs = ref<Record<string, string>>({});
 const commentLists = ref<Record<string, CommentItem[]>>({});
 const startedStudyCategories = ref(new Set<string>());
+const progressRecorded = ref<Record<string, boolean>>({});
 const currentQuestion = computed(() => questions.value[currentIndex.value] || null);
 const currentNumber = computed(() => (page.value - 1) * pageSize.value + currentIndex.value + 1);
 const canPrev = computed(() => page.value > 1 || currentIndex.value > 0);
@@ -77,6 +78,16 @@ async function recordStudyStart() {
   }
 }
 
+async function recordStudyProgress(id?: string) {
+  if (!id || progressRecorded.value[id]) return;
+  progressRecorded.value[id] = true;
+  try {
+    await api.recordStudyProgress(id);
+  } catch {
+    delete progressRecorded.value[id];
+  }
+}
+
 async function reveal(id: string, recordPractice = true, autoDisplay = false, openExplanation = false) {
   if (answers.value[id]) {
     if (!autoDisplay) {
@@ -87,6 +98,7 @@ async function reveal(id: string, recordPractice = true, autoDisplay = false, op
       if (recordPractice) {
         const pickedKey = [...(picked.value[id] || [])].sort().join('');
         await api.recordStudyWrong(id, pickedKey || answers.value[id].answer);
+        progressRecorded.value[id] = true;
       }
     }
     return;
@@ -101,6 +113,7 @@ async function reveal(id: string, recordPractice = true, autoDisplay = false, op
     if (!recordPractice) return;
     const pickedKey = [...(picked.value[id] || [])].sort().join('');
     await api.recordStudyWrong(id, pickedKey || result.answer);
+    progressRecorded.value[id] = true;
   } catch (e) {
     toast((e as Error).message);
   }
@@ -158,6 +171,7 @@ function changeCategory(e: { detail: { value: number } }) {
   picked.value = {};
   answers.value = {};
   explanationOpen.value = {};
+  progressRecorded.value = {};
   recordStudyStart();
   loadQuestions(true);
 }
@@ -165,6 +179,9 @@ function changeCategory(e: { detail: { value: number } }) {
 async function nextQuestion(delta: number) {
   const maxPage = Math.max(1, Math.ceil(total.value / pageSize.value));
   const nextIndex = currentIndex.value + delta;
+  if (delta > 0) {
+    await recordStudyProgress(currentQuestion.value?.id);
+  }
   if (nextIndex >= 0 && nextIndex < questions.value.length) {
     currentIndex.value = nextIndex;
     return;
@@ -286,7 +303,6 @@ watch(
 
     <view class="list-meta">
       <text>当前科目共 {{ total }} 题</text>
-      <text class="page-size">每批 {{ pageSize }} 题</text>
     </view>
 
     <view v-if="loading" class="empty">加载中...</view>
@@ -489,14 +505,6 @@ watch(
   flex-direction: row;
   font-size: 24rpx;
   justify-content: space-between;
-}
-
-.page-size {
-  background: rgba(255, 255, 255, 0.7);
-  border: 2rpx solid rgba(17, 24, 39, 0.1);
-  border-radius: 14rpx;
-  color: #111827;
-  padding: 12rpx 18rpx;
 }
 
 .empty {

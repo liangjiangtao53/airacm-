@@ -12,7 +12,7 @@ export default function WrongBookPage() {
   const [err, setErr] = useState('');
   const [loading, setLoading] = useState(true);
   const categories = Array.from(new Set(items.map((item) => item.category).filter(Boolean))).sort();
-  const filteredItems = items.filter((item) => !category || item.category === category);
+  const filteredItems = category ? items.filter((item) => item.category === category) : [];
 
   useEffect(() => {
     if (!getToken()) {
@@ -25,6 +25,16 @@ export default function WrongBookPage() {
       .catch((e) => setErr((e as Error).message))
       .finally(() => setLoading(false));
   }, [router]);
+
+  useEffect(() => {
+    if (categories.length === 0) {
+      if (category) setCategory('');
+      return;
+    }
+    if (!category || !categories.includes(category)) {
+      setCategory(categories[0]);
+    }
+  }, [categories, category]);
 
   function remove(questionId: string, source: WrongBookItem['source']) {
     setItems((l) => l.filter((i) => !(i.questionId === questionId && i.source === source)));
@@ -47,9 +57,9 @@ export default function WrongBookPage() {
         <select
           className="rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm outline-none focus:border-sky"
           value={category}
+          disabled={categories.length === 0}
           onChange={(e) => setCategory(e.target.value)}
         >
-          <option value="">全部模块</option>
           {categories.map((name) => (
             <option key={name} value={name}>
               {name}

@@ -706,16 +706,19 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
       expect(items.map((q) => q.stem)).toEqual(Array.from({ length: 20 }, (_, i) => `STUDY-SEQ-${i + 1}`));
       expect(countByPrefix(items, 'STUDY-OTHER')).toBe(0);
 
-      await ds.getRepository(StudyQuestionProgress).save(
-        ds.getRepository(StudyQuestionProgress).create({
-          tenantId: TENANT,
-          userId: user.user.userId,
-          category,
-          courseId: '',
-          questionId: rows[19].id,
-          lastStudiedAt: now,
-        }),
-      );
+      const progress = await request(app.getHttpServer())
+        .post('/exams/study/progress')
+        .set('Authorization', `Bearer ${user.token}`)
+        .send({ questionId: rows[19].id });
+      expect(progress.status).toBe(201);
+      const savedProgress = await ds.getRepository(StudyQuestionProgress).findOne({
+        where: { tenantId: TENANT, userId: user.user.userId, category, courseId: '' },
+      });
+      expect(savedProgress?.questionId).toBe(rows[19].id);
+      const studyWrongAfterProgressOnly = await ds.getRepository(WrongQuestion).count({
+        where: { tenantId: TENANT, userId: user.user.userId, source: 'study' },
+      });
+      expect(studyWrongAfterProgressOnly).toBe(0);
 
       const next = await request(app.getHttpServer())
         .get(`/questions?usage=study&category=${encodeURIComponent(category)}&page=99&pageSize=10`)
