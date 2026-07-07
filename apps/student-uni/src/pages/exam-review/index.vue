@@ -5,6 +5,7 @@ import { api, assetUrl, requireLogin, type ExamAttemptSummary, type GradedItem }
 
 const attempts = ref<ExamAttemptSummary[]>([]);
 const details = ref<Record<string, GradedItem[]>>({});
+const analysisOpen = ref<Record<string, boolean>>({});
 const openId = ref('');
 const loading = ref(false);
 const category = ref('');
@@ -74,6 +75,23 @@ function timeLabel(iso: string | null) {
   return `${d.getMonth() + 1}-${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
 
+function detailKey(attemptId: string, questionId: string) {
+  return `${attemptId}:${questionId}`;
+}
+
+function toggleAnalysis(attemptId: string, questionId: string) {
+  const key = detailKey(attemptId, questionId);
+  analysisOpen.value[key] = !analysisOpen.value[key];
+}
+
+function isCorrectOption(item: GradedItem, key: string) {
+  return item.correctAnswer.includes(key);
+}
+
+function isWrongSelection(item: GradedItem, key: string) {
+  return item.yourAnswer.includes(key) && !item.correctAnswer.includes(key);
+}
+
 onShow(load);
 </script>
 
@@ -113,9 +131,26 @@ onShow(load);
           <view v-for="(d, i) in details[a.id] || []" :key="d.questionId" class="detail">
             <text :class="['badge', d.isCorrect ? 'ok' : 'bad']">{{ i + 1 }} · {{ d.isCorrect ? '正确' : '错误' }}</text>
             <text class="stem">{{ d.stem }}</text>
+            <view class="options">
+              <view
+                v-for="option in d.options"
+                :key="option.key"
+                :class="['option', isCorrectOption(d, option.key) && 'correct', isWrongSelection(d, option.key) && 'wrong']"
+              >
+                <text class="option-key">{{ option.key }}</text>
+                <text class="option-text">{{ option.text }}</text>
+                <text v-if="isCorrectOption(d, option.key)" class="option-tag">正确答案</text>
+                <text v-else-if="isWrongSelection(d, option.key)" class="option-tag">你的选择</text>
+              </view>
+            </view>
             <text class="summary">你的答案: {{ d.yourAnswer || '(未答)' }} · 正确答案: {{ d.correctAnswer }}</text>
-            <text v-if="d.analysis" class="analysis">解析: {{ d.analysis }}</text>
-            <image v-for="url in d.imageUrls || []" :key="url" :src="assetUrl(url)" mode="widthFix" class="question-image" />
+            <button v-if="d.analysis || d.imageUrls?.length" class="analysis-btn" @tap="toggleAnalysis(a.id, d.questionId)">
+              {{ analysisOpen[detailKey(a.id, d.questionId)] ? '收起解析' : '查看解析' }}
+            </button>
+            <view v-if="analysisOpen[detailKey(a.id, d.questionId)]" class="analysis-box">
+              <text v-if="d.analysis" class="analysis">解析: {{ d.analysis }}</text>
+              <image v-for="url in d.imageUrls || []" :key="url" :src="assetUrl(url)" mode="widthFix" class="question-image" />
+            </view>
           </view>
           <text v-if="details[a.id]?.length === 0" class="empty-detail">暂无复盘明细</text>
         </view>
@@ -251,6 +286,63 @@ onShow(load);
   font-size: 28rpx;
   font-weight: 700;
   line-height: 1.55;
+}
+
+.options,
+.analysis-box {
+  display: flex;
+  flex-direction: column;
+  gap: 12rpx;
+}
+
+.option {
+  align-items: center;
+  background: rgba(255, 255, 255, 0.72);
+  border: 2rpx solid rgba(17, 24, 39, 0.08);
+  border-radius: 12rpx;
+  color: rgba(17, 24, 39, 0.68);
+  display: flex;
+  flex-direction: row;
+  gap: 12rpx;
+  min-height: 56rpx;
+  padding: 12rpx 16rpx;
+}
+
+.option.correct {
+  background: #ecfdf3;
+  border-color: #86efac;
+  color: #16a34a;
+}
+
+.option.wrong {
+  background: #fee2e2;
+  border-color: #fca5a5;
+  color: #dc2626;
+}
+
+.option-key,
+.option-tag {
+  flex-shrink: 0;
+  font-size: 24rpx;
+  font-weight: 700;
+}
+
+.option-text {
+  flex: 1;
+  font-size: 24rpx;
+  line-height: 1.45;
+}
+
+.analysis-btn {
+  align-self: flex-start;
+  background: rgba(31, 111, 235, 0.1);
+  border-radius: 999rpx;
+  color: #1f6feb;
+  font-size: 24rpx;
+  line-height: 1;
+  margin: 0;
+  min-height: 56rpx;
+  padding: 14rpx 24rpx;
 }
 
 .question-image {

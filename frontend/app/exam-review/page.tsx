@@ -87,6 +87,7 @@ function AttemptCard({
 }) {
   const [open, setOpen] = useState(false);
   const [details, setDetails] = useState<GradedItem[] | null>(null);
+  const [analysisOpen, setAnalysisOpen] = useState<Record<string, boolean>>({});
 
   async function toggle() {
     const next = !open;
@@ -184,10 +185,21 @@ function AttemptCard({
                   <span className="font-mono text-green-600">{d.correctAnswer}</span>
                 </p>
                 {(d.analysis || d.imageUrls?.length) && (
-                  <div className="mt-1 text-xs text-ink/55">
-                    {d.analysis && <p>解析:{d.analysis}</p>}
-                    <QuestionImages urls={d.imageUrls} />
-                  </div>
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => setAnalysisOpen((current) => ({ ...current, [d.questionId]: !current[d.questionId] }))}
+                      className="mt-2 rounded-full bg-sky/10 px-3 py-1 text-xs font-medium text-sky hover:bg-sky/15"
+                    >
+                      {analysisOpen[d.questionId] ? '收起解析' : '查看解析'}
+                    </button>
+                    {analysisOpen[d.questionId] && (
+                      <div className="mt-2 text-xs text-ink/55">
+                        {d.analysis && <p>解析:{d.analysis}</p>}
+                        <QuestionImages urls={d.imageUrls} />
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
             ))

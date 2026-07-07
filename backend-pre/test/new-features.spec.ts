@@ -22,6 +22,7 @@ import { AuthUser, signToken } from '../src/common';
 import {
   AccessKey,
   AdminOperationLog,
+  ExamPaperRule,
   Question,
   QuestionImportBatch,
   QuestionPractice,
@@ -370,6 +371,7 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
           order: 0,
         });
       await repo.save([mk('E1', 'A', 'exam'), mk('E2', 'B', 'exam'), mk('E3', 'AC', 'both')]);
+      await ds.getRepository(ExamPaperRule).upsert({ tenantId: TENANT, totalCount: 100, categoryCounts: { [CATEGORY]: 3 } }, ['tenantId']);
     });
 
     function pickAnswers(
@@ -417,6 +419,28 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
       expect(examLogs.map((log) => log.action)).toEqual(expect.arrayContaining(['exam_start', 'exam_submit']));
     });
 
+    it('交卷只答部分题时仍按整张卷子判分并返回全部题目', async () => {
+      const user = await makeUser('user');
+      const start = await request(app.getHttpServer())
+        .post('/exams/start')
+        .set('Authorization', `Bearer ${user.token}`)
+        .send({ courseId: COURSE, category: CATEGORY });
+      expect(start.status).toBe(201);
+      expect(start.body.data.questions).toHaveLength(3);
+
+      const first = start.body.data.questions[0] as { id: string; stem: string };
+      const sub = await request(app.getHttpServer())
+        .post(`/exams/${start.body.data.attemptId}/submit`)
+        .set('Authorization', `Bearer ${user.token}`)
+        .send({ answers: { [first.id]: correctByStem[first.stem] } });
+      expect(sub.status).toBe(201);
+      expect(sub.body.data.score).toBe(33);
+      expect(sub.body.data.correct).toBe(1);
+      expect(sub.body.data.total).toBe(3);
+      expect(sub.body.data.details).toHaveLength(3);
+      expect(sub.body.data.details.filter((d: { yourAnswer: string }) => d.yourAnswer === '')).toHaveLength(2);
+    });
+
     it('admin can set exam rule, users cannot, and client count is ignored', async () => {
       const admin = await makeUser('admin');
       const user = await makeUser('user');
@@ -452,6 +476,37 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
         .patch('/admin/exam/rule')
         .set('Authorization', `Bearer ${admin.token}`)
         .send({ totalCount: 100 });
+    });
+
+    it('题库不足配置题数时不能生成缩水考试', async () => {
+      const user = await makeUser('user');
+      const category = `INSUFFICIENT-EXAM-${phoneSeq++}`;
+      const courseId = `insufficient-course-${phoneSeq++}`;
+      await ds.getRepository(Question).save(
+        ds.getRepository(Question).create({
+          tenantId: TENANT,
+          courseId,
+          category,
+          type: 'single',
+          stem: `INSUFFICIENT-Q-${phoneSeq++}`,
+          options: [
+            { key: 'A', text: 'A' },
+            { key: 'B', text: 'B' },
+          ],
+          answer: 'A',
+          analysis: 'analysis',
+          usage: 'exam',
+          order: 0,
+        }),
+      );
+      await ds.getRepository(ExamPaperRule).upsert({ tenantId: TENANT, totalCount: 100, categoryCounts: { [CATEGORY]: 2, [category]: 2 } }, ['tenantId']);
+
+      const start = await request(app.getHttpServer())
+        .post('/exams/start')
+        .set('Authorization', `Bearer ${user.token}`)
+        .send({ courseId, category });
+      expect(start.status).toBe(400);
+      expect(start.body.error).toContain('题库不足');
     });
 
     it('全错得 0,且不可重复交卷', async () => {
@@ -704,6 +759,7 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
         .attach('file', buildXlsx([[stem, 'A', 'B', '', '', 'A', 'cache analysis']]), 'cache.xlsx');
       expect(imported.status).toBe(201);
       expect(imported.body.data.imported).toBe(1);
+      await ds.getRepository(ExamPaperRule).upsert({ tenantId: TENANT, totalCount: 100, categoryCounts: { [category]: 1 } }, ['tenantId']);
 
       const start = await request(app.getHttpServer())
         .post('/exams/start')
@@ -1519,6 +1575,45 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
       expect(post.status).toBe(201);
       return { postId: post.body.data.id };
     }
+
+    it('帖子只允许本人或管理员删除', async () => {
+      const admin = await makeUser('admin');
+      const owner = await makeUser('user');
+      const other = await makeUser('user');
+      const { postId } = await createTopicAndPost(owner.token, admin.token);
+
+      const ownerList = await request(app.getHttpServer())
+        .get('/posts')
+        .set('Authorization', `Bearer ${owner.token}`);
+      expect(ownerList.status).toBe(200);
+      expect(ownerList.body.data.items.find((p: { id: string }) => p.id === postId)?.canDelete).toBe(true);
+
+      const otherList = await request(app.getHttpServer())
+        .get('/posts')
+        .set('Authorization', `Bearer ${other.token}`);
+      expect(otherList.status).toBe(200);
+      expect(otherList.body.data.items.find((p: { id: string }) => p.id === postId)?.canDelete).toBe(false);
+
+      const denied = await request(app.getHttpServer())
+        .delete(`/posts/${postId}`)
+        .set('Authorization', `Bearer ${other.token}`);
+      expect(denied.status).toBe(403);
+
+      const removed = await request(app.getHttpServer())
+        .delete(`/posts/${postId}`)
+        .set('Authorization', `Bearer ${admin.token}`);
+      expect(removed.status).toBe(200);
+
+      const after = await request(app.getHttpServer())
+        .get('/posts')
+        .set('Authorization', `Bearer ${owner.token}`);
+      expect(after.body.data.items.some((p: { id: string }) => p.id === postId)).toBe(false);
+
+      const log = await ds.getRepository(AdminOperationLog).findOne({
+        where: { tenantId: TENANT, action: 'forum_post_delete', targetId: postId },
+      });
+      expect(log).toBeTruthy();
+    });
 
     it('回复支持点赞切换，且只允许本人或管理员删除', async () => {
       const admin = await makeUser('admin');

@@ -192,6 +192,9 @@ export class ExamService {
     const count = rule.categoryCounts[category];
     if (!count) throw new BadRequestException('该科目暂未配置考试题数');
     const picked = await this.pickExamQuestions(user, { courseId: dto.courseId, category }, count);
+    if (picked.length < count) {
+      throw new BadRequestException(`题库不足,当前仅 ${picked.length} 题,本模块考试需要 ${count} 题`);
+    }
     if (picked.length === 0) throw new BadRequestException('暂无考试题目');
     const attempt = await this.attempts.save(
       this.attempts.create({

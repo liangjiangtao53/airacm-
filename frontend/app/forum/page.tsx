@@ -164,6 +164,7 @@ export default function ForumPage() {
             topicName={topicName(post.topicId)}
             showTopic={!activeTopic}
             loggedIn={loggedIn}
+            onDeleted={(id) => setPosts((list) => list.filter((item) => item.id !== id))}
           />
         ))}
       </div>
@@ -176,14 +177,28 @@ function PostCard({
   topicName,
   showTopic,
   loggedIn,
+  onDeleted,
 }: {
   post: PostItem;
   topicName: string;
   showTopic: boolean;
   loggedIn: boolean;
+  onDeleted: (id: string) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [replyCount, setReplyCount] = useState(post.replyCount);
+  const [err, setErr] = useState('');
+
+  async function removePost() {
+    if (!window.confirm('确认删除这条帖子吗？')) return;
+    setErr('');
+    try {
+      await api.deletePost(post.id);
+      onDeleted(post.id);
+    } catch (e) {
+      setErr((e as Error).message);
+    }
+  }
 
   return (
     <section className="rounded-2xl bg-white/60 p-6 shadow-sm ring-1 ring-white/55 backdrop-blur-xl">
@@ -196,6 +211,12 @@ function PostCard({
       <button onClick={() => setOpen((value) => !value)} className="mt-3 text-sm text-ink/50 hover:text-ink">
         {open ? '收起回复' : `回复${replyCount ? ` (${replyCount})` : ''}`}
       </button>
+      {post.canDelete && (
+        <button onClick={removePost} className="ml-3 text-sm text-red-500 hover:text-red-600">
+          删除
+        </button>
+      )}
+      {err && <p className="mt-2 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-600">{err}</p>}
       {open && <PostReplies postId={post.id} canReply={loggedIn} onCountChange={setReplyCount} />}
     </section>
   );

@@ -125,6 +125,7 @@ export interface PostItem {
   content: string;
   createdAt: string;
   replyCount: number;
+  canDelete: boolean;
 }
 
 export interface PostReplyItem {
@@ -243,6 +244,7 @@ export const api = {
   },
   createPost: (content: string, topicId: string) =>
     request<PostItem>('/posts', { method: 'POST', data: { content, topicId } }),
+  deletePost: (id: string) => request<{ deleted: boolean }>(`/posts/${id}`, { method: 'DELETE' }),
   postReplies: (id: string) => request<PostReplyItem[]>(`/posts/${id}/replies`),
   addPostReply: (id: string, content: string) =>
     request<PostReplyItem>(`/posts/${id}/replies`, { method: 'POST', data: { content } }),

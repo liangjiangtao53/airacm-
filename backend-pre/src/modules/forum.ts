@@ -96,6 +96,7 @@ interface PostView {
   content: string;
   createdAt: Date;
   replyCount: number;
+  canDelete: boolean;
 }
 
 interface ReplyView {
@@ -186,7 +187,7 @@ export class ForumService {
   async deleteTopic(admin: AuthUser, id: string): Promise<{ deleted: boolean }> {
     const t = await this.topics.findOne({ where: { tenantId: admin.tenantId, id } });
     if (!t) throw new NotFoundException('主题不存在');
-    const used = await this.posts.count({ where: { tenantId: admin.tenantId, topicId: id } });
+    const used = await this.posts.count({ where: { tenantId: admin.tenantId, topicId: id, deletedAt: IsNull() } });
     if (used > 0) throw new BadRequestException(`该主题下还有 ${used} 个帖子,不能删除`);
     await this.topics.delete(t.id);
     await this.logAdminOperation(admin, 'forum_topic_delete', 'forum_topic', t.id, {
@@ -201,12 +202,13 @@ export class ForumService {
   async list(
     tenantId: string,
     q: ListQuery,
+    user: AuthUser | null = null,
   ): Promise<{ items: PostView[]; total: number; page: number; pageSize: number }> {
     const page = q.page ?? 1;
     const pageSize = q.pageSize ?? 20;
     const where = q.topicId
-      ? { tenantId, topicId: q.topicId }
-      : { tenantId };
+      ? { tenantId, topicId: q.topicId, deletedAt: IsNull() }
+      : { tenantId, deletedAt: IsNull() };
     const [rows, total] = await this.posts.findAndCount({
       where,
       order: { createdAt: 'DESC' },
@@ -235,6 +237,7 @@ export class ForumService {
       content: p.content,
       createdAt: p.createdAt,
       replyCount: countMap.get(p.id) ?? 0,
+      canDelete: user ? this.canDeletePost(user, p) : false,
     }));
     return { items, total, page, pageSize };
   }
@@ -256,11 +259,12 @@ export class ForumService {
       content: p.content,
       createdAt: p.createdAt,
       replyCount: 0,
+      canDelete: true,
     };
   }
 
   async listReplies(tenantId: string, postId: string, user: AuthUser | null = null): Promise<ReplyView[]> {
-    const post = await this.posts.findOne({ where: { tenantId, id: postId } });
+    const post = await this.posts.findOne({ where: { tenantId, id: postId, deletedAt: IsNull() } });
     if (!post) throw new NotFoundException('帖子不存在');
     const rows = await this.replies.find({
       where: { tenantId, postId, deletedAt: IsNull() },
@@ -305,7 +309,7 @@ export class ForumService {
   async addReply(user: AuthUser, postId: string, content: string): Promise<ReplyView> {
     const trimmed = content.trim();
     if (!trimmed) throw new BadRequestException('回复不能为空');
-    const post = await this.posts.findOne({ where: { tenantId: user.tenantId, id: postId } });
+    const post = await this.posts.findOne({ where: { tenantId: user.tenantId, id: postId, deletedAt: IsNull() } });
     if (!post) throw new NotFoundException('帖子不存在');
     const r = await this.replies.save(
       this.replies.create({ tenantId: user.tenantId, postId, userId: user.userId, content: trimmed }),
@@ -326,6 +330,32 @@ export class ForumService {
 
   private canDeleteReply(user: AuthUser, reply: Pick<PostReply, 'userId'>): boolean {
     return reply.userId === user.userId || user.role === 'admin' || user.role === 'super';
+  }
+
+  private canDeletePost(user: AuthUser, post: Pick<Post, 'userId'>): boolean {
+    return post.userId === user.userId || user.role === 'admin' || user.role === 'super';
+  }
+
+  // 帖子原来不能删除;这里按回复删除的方式做软删除,并隐藏/清理其下回复和点赞。
+  async deletePost(user: AuthUser, postId: string): Promise<{ deleted: boolean }> {
+    const post = await this.posts.findOne({
+      where: { tenantId: user.tenantId, id: postId, deletedAt: IsNull() },
+    });
+    if (!post) throw new NotFoundException('帖子不存在');
+    if (!this.canDeletePost(user, post)) throw new ForbiddenException('只能删除自己的帖子');
+    const replyIds = await this.replies.find({ where: { tenantId: user.tenantId, postId: post.id }, select: ['id'] });
+    await this.posts.update(post.id, { deletedAt: new Date() });
+    await this.replies.update({ tenantId: user.tenantId, postId: post.id, deletedAt: IsNull() }, { deletedAt: new Date() });
+    if (replyIds.length) {
+      await this.replyLikes.delete({ tenantId: user.tenantId, replyId: In(replyIds.map((r) => r.id)) });
+    }
+    if (user.role === 'admin' || user.role === 'super') {
+      await this.logAdminOperation(user, 'forum_post_delete', 'post', post.id, {
+        ownerUserId: post.userId,
+        topicId: post.topicId,
+      });
+    }
+    return { deleted: true };
   }
 
   async deleteReply(user: AuthUser, replyId: string): Promise<{ deleted: boolean }> {
@@ -421,14 +451,21 @@ export class ForumController {
   }
 
   @Get()
-  list(@Query() q: ListQuery) {
-    return this.svc.list(env.defaultTenantId, q);
+  async list(@Req() req: { headers?: { authorization?: string } }, @Query() q: ListQuery) {
+    const user = await this.optionalUser(req);
+    return this.svc.list(user?.tenantId ?? env.defaultTenantId, q, user);
   }
 
   @HttpPost()
   @UseGuards(JwtAuthGuard)
   create(@CurrentUser() user: AuthUser, @Body() dto: CreatePostDto) {
     return this.svc.create(user, dto.content, dto.topicId);
+  }
+
+  @Delete(':id')
+  @UseGuards(JwtAuthGuard)
+  deletePost(@CurrentUser() user: AuthUser, @Param('id') id: string) {
+    return this.svc.deletePost(user, id);
   }
 
   @Get(':id/replies')

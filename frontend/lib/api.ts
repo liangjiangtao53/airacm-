@@ -241,6 +241,7 @@ export interface PostItem {
   content: string;
   createdAt: string;
   replyCount: number;
+  canDelete: boolean;
 }
 
 export interface PostReplyItem {
@@ -400,12 +401,11 @@ export const api = {
     if (params.page) qs.set('page', String(params.page));
     if (params.pageSize) qs.set('pageSize', String(params.pageSize));
     const suffix = qs.toString() ? `?${qs}` : '';
-    return req<{ items: PostItem[]; total: number; page: number; pageSize: number }>(`/posts${suffix}`, {
-      auth: false,
-    });
+    return req<{ items: PostItem[]; total: number; page: number; pageSize: number }>(`/posts${suffix}`);
   },
   createPost: (content: string, topicId: string) =>
     req<PostItem>('/posts', { method: 'POST', body: { content, topicId } }),
+  deletePost: (id: string) => req<{ deleted: boolean }>(`/posts/${id}`, { method: 'DELETE' }),
   postReplies: (id: string) => req<PostReplyItem[]>(`/posts/${id}/replies`),
   addPostReply: (id: string, content: string) =>
     req<PostReplyItem>(`/posts/${id}/replies`, { method: 'POST', body: { content } }),

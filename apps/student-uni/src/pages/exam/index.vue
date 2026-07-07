@@ -117,8 +117,8 @@ async function submit() {
   busy.value = true;
   try {
     const payload: Record<string, string> = {};
-    Object.entries(answers.value).forEach(([id, vals]) => {
-      payload[id] = vals.join('');
+    questions.value.forEach((q) => {
+      payload[q.id] = (answers.value[q.id] || []).join('');
     });
     result.value = await api.submitExam(attemptId.value, payload);
     phase.value = 'result';

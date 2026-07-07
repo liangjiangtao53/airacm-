@@ -104,6 +104,23 @@ async function submitReply(post: PostItem) {
   }
 }
 
+async function removePost(post: PostItem) {
+  uni.showModal({
+    title: '删除帖子',
+    content: '确认删除这条帖子吗？',
+    success: async (res) => {
+      if (!res.confirm) return;
+      try {
+        await api.deletePost(post.id);
+        posts.value = posts.value.filter((item) => item.id !== post.id);
+        if (openPostId.value === post.id) openPostId.value = '';
+      } catch (e) {
+        toast((e as Error).message);
+      }
+    },
+  });
+}
+
 async function toggleReplyLike(reply: PostReplyItem) {
   try {
     const res = await api.togglePostReplyLike(reply.id);
@@ -189,6 +206,7 @@ onShow(() => load());
         </view>
         <text class="post-content">{{ post.content }}</text>
         <text class="reply-count action" @tap="toggleReplies(post)">回复 {{ post.replyCount }}</text>
+        <text v-if="post.canDelete" class="reply-count danger" @tap="removePost(post)">删除</text>
         <view v-if="openPostId === post.id" class="reply-panel">
           <view class="reply-composer">
             <input
@@ -336,6 +354,12 @@ onShow(() => load());
 .reply-count.action {
   color: #1f6feb;
   font-weight: 700;
+}
+
+.reply-count.danger {
+  color: #dc2626;
+  font-weight: 700;
+  margin-left: 24rpx;
 }
 
 .reply-panel {

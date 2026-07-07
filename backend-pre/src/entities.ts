@@ -835,6 +835,9 @@ export class Post {
 
   @CreateDateColumn()
   createdAt!: Date;
+
+  @Column({ type: TS_TYPE, nullable: true })
+  deletedAt!: Date | null;
 }
 
 // 论坛主题/版块。admin+super 维护,学员发帖时归属其一。
