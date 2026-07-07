@@ -81,6 +81,10 @@ $h5Dir = Join-Path $uniDir "dist\build\h5"
 Get-ChildItem -Recurse -File $h5Dir -Include "*.js","*.html","*.css" | ForEach-Object {
   $content = Get-Content -Raw -Encoding UTF8 $_.FullName
   $next = $content.Replace("http://127.0.0.1:8770", $ApiBase).Replace("http://127.0.0.1:3000", $DownloadBase)
+  # APK 内置 H5 通过 file:///android_asset/www/index.html 打开，绝对 /assets 或 /static 会解析到 file:///assets 导致白屏。
+  $next = $next.Replace('href="/assets/', 'href="./assets/').Replace('src="/assets/', 'src="./assets/')
+  $next = $next.Replace('"/static/', '"static/').Replace("'/static/", "'static/")
+  $next = $next.Replace('url(/static/', 'url(../static/')
   if ($next -ne $content) {
     Set-Content -Encoding UTF8 -NoNewline -Path $_.FullName -Value $next
   }
