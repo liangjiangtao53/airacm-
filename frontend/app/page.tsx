@@ -65,11 +65,11 @@ export default function HomePage() {
         <div className="flex items-center gap-4">
           <img
             src={logoUrl}
-            alt="维修翼站 logo"
+            alt="维修之翼 logo"
             className="h-16 w-16 shrink-0 rounded-2xl object-cover shadow-sm sm:h-20 sm:w-20"
           />
           <div>
-            <h1 className="text-4xl font-semibold tracking-tight text-ink sm:text-5xl">维修翼站</h1>
+            <h1 className="text-4xl font-semibold tracking-tight text-ink sm:text-5xl">维修之翼</h1>
             <p className="mt-3 text-ink/50">{subtitle}</p>
           </div>
         </div>

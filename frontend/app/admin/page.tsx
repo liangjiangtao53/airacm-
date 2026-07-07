@@ -624,7 +624,7 @@ export default function AdminPage() {
       <div className="mb-6 mt-2 flex items-center gap-3">
         <img
           src={logoUrl}
-          alt="维修翼站 logo"
+          alt="维修之翼 logo"
           className="h-12 w-12 rounded-xl object-cover shadow-sm"
         />
         <h1 className="text-3xl font-semibold tracking-tight text-ink">管理后台</h1>

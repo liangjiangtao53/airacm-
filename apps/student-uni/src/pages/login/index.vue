@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref } from 'vue';
+import logoAsset from '@/static/maintenance-wing-logo.jpg';
 import { api, setToken } from '@/utils/api';
 
 const mode = ref<'password' | 'key'>('key');
@@ -7,7 +8,7 @@ const phone = ref('');
 const password = ref('');
 const key = ref('');
 const loading = ref(false);
-const logoUrl = '/static/maintenance-wing-logo.jpg';
+const logoUrl = logoAsset;
 
 function goHome() {
   uni.switchTab({ url: '/pages/index/index' });
@@ -65,7 +66,7 @@ async function submit() {
   <view class="page login-page">
     <view class="brand">
       <image class="logo" :src="logoUrl" mode="aspectFill" />
-      <text class="eyebrow">维修翼站</text>
+      <text class="eyebrow">维修之翼</text>
       <text class="title">登录学员端</text>
       <text class="subtitle">使用卡密或手机号登录后进入学习和交流。</text>
     </view>

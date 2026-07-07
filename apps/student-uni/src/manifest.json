@@ -1,5 +1,5 @@
 {
-  "name": "维修翼站",
+  "name": "维修之翼",
   "appid": "__UNI__AIRACM",
   "description": "航空维修学习交流平台学员端",
   "versionName": "0.1.0",
@@ -25,7 +25,7 @@
     }
   },
   "h5": {
-    "title": "维修翼站",
+    "title": "维修之翼",
     "router": {
       "mode": "hash"
     },

@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { onShow } from '@dcloudio/uni-app';
 import { ref } from 'vue';
+import logoAsset from '@/static/maintenance-wing-logo.jpg';
 import { api, clearToken, getToken, type Me } from '@/utils/api';
 
 const me = ref<Me | null>(null);
-const logoUrl = '/static/maintenance-wing-logo.jpg';
+const logoUrl = logoAsset;
 
 type Tile = {
   title: string;
@@ -125,7 +126,7 @@ onShow(load);
       <view class="brand-row">
         <image class="logo" :src="logoUrl" mode="aspectFill" />
         <view>
-          <text class="title">维修翼站</text>
+          <text class="title">维修之翼</text>
           <text class="subtitle">{{ subtitle }}</text>
         </view>
       </view>

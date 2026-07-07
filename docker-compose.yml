@@ -1,4 +1,4 @@
-# 维修翼站整套部署:
+# 维修之翼整套部署:
 #   nginx exposes 80/443; db/api/frontend stay inside the compose network.
 #   Required .env values: DB_ROOT_PASSWORD, DB_PASSWORD, JWT_SECRET,
 #   ADMIN_PASSWORD, BIZ_ADMIN_PASSWORD.

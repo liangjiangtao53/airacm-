@@ -115,10 +115,10 @@ export default function LoginPage() {
       <div className="mb-6 flex flex-col items-center text-center">
         <img
           src={logoUrl}
-          alt="维修翼站 logo"
+          alt="维修之翼 logo"
           className="h-24 w-24 rounded-3xl object-cover shadow-sm"
         />
-        <h1 className="mt-4 text-3xl font-semibold tracking-tight text-ink">维修翼站</h1>
+        <h1 className="mt-4 text-3xl font-semibold tracking-tight text-ink">维修之翼</h1>
       </div>
       <div className="mt-3 rounded-2xl bg-white/60 backdrop-blur-xl p-7 shadow-sm ring-1 ring-white/55">
         {needProfile ? (

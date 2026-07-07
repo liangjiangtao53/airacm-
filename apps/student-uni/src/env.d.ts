@@ -5,3 +5,8 @@ declare module '*.vue' {
   const component: DefineComponent<Record<string, never>, Record<string, never>, unknown>;
   export default component;
 }
+
+declare module '*.jpg' {
+  const src: string;
+  export default src;
+}

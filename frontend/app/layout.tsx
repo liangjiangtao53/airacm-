@@ -2,7 +2,7 @@ import type { Metadata } from 'next';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: '维修翼站',
+  title: '维修之翼',
   description: '航空机务培训 · 交流 · App 下载 · 学历提升',
 };
 
