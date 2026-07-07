@@ -158,8 +158,12 @@ onShow(() => {
     <view v-if="phase === 'taking'" class="taking" @touchstart="onTouchStart" @touchend="onTouchEnd">
       <text class="progress">共 {{ questions.length }} 题 · 已答 {{ answeredCount }}</text>
       <view class="exam-status">
-        <text class="status-pill done">已完成 {{ answeredCount }}</text>
-        <button class="status-pill pending" @tap.stop="jumpToNextUnanswered">未答题 {{ unfinishedCount }}</button>
+        <text class="status-done">已完成 {{ answeredCount }} 题</text>
+        <button class="status-pending" :disabled="unfinishedCount === 0" @tap.stop="jumpToNextUnanswered">
+          <text>未答题 {{ unfinishedCount }}</text>
+          <text class="pending-action">去作答</text>
+          <text class="pending-arrow">&gt;</text>
+        </button>
       </view>
       <view v-if="currentQuestion" class="card question-card">
         <view class="question-head">
@@ -251,29 +255,55 @@ onShow(() => {
 }
 
 .exam-status {
+  align-items: center;
   display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
   gap: 16rpx;
 }
 
-.status-pill {
-  border: 0;
+.status-done {
+  color: rgba(17, 24, 39, 0.58);
+  font-size: 26rpx;
+  font-weight: 600;
+}
+
+.status-pending {
+  align-items: center;
+  background: #fff7ed;
+  border: 2rpx solid #fdba74;
   border-radius: 999rpx;
+  box-shadow: 0 8rpx 20rpx rgba(234, 88, 12, 0.12);
+  color: #c2410c;
+  display: flex;
+  flex-direction: row;
+  gap: 12rpx;
   font-size: 26rpx;
   font-weight: 700;
   line-height: 1;
   margin: 0;
-  min-height: auto;
-  padding: 12rpx 22rpx;
+  min-height: 64rpx;
+  padding: 0 12rpx 0 22rpx;
 }
 
-.status-pill.done {
-  background: #dcfce7;
-  color: #15803d;
+.status-pending[disabled] {
+  background: rgba(17, 24, 39, 0.05);
+  border: 0;
+  box-shadow: none;
+  color: rgba(17, 24, 39, 0.36);
 }
 
-.status-pill.pending {
-  background: #fee2e2;
-  color: #dc2626;
+.pending-action {
+  background: rgba(255, 255, 255, 0.76);
+  border-radius: 999rpx;
+  font-size: 22rpx;
+  padding: 8rpx 12rpx;
+}
+
+.pending-arrow {
+  font-size: 26rpx;
+  font-weight: 900;
+  margin-right: 4rpx;
 }
 
 .badge {

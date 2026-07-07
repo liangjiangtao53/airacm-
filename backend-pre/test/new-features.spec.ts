@@ -301,6 +301,44 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
         .set('Authorization', `Bearer ${user.token}`);
       expect(list.body.data).toHaveLength(1);
       expect(list.body.data[0].content).toBe('这题不错');
+      expect(list.body.data[0].canDelete).toBe(true);
+    });
+
+    it('题目评论只允许本人或管理员删除', async () => {
+      const admin = await makeUser('admin');
+      await request(app.getHttpServer())
+        .post('/admin/questions/import?usage=study')
+        .set('Authorization', `Bearer ${admin.token}`)
+        .attach('file', buildXlsx([['评论删除题', '甲', '乙', '', '', 'A', '']]), 'q.xlsx');
+      const q = await ds.getRepository(Question).findOneOrFail({ where: { tenantId: TENANT, stem: '评论删除题' } });
+
+      const owner = await makeUser('user');
+      const other = await makeUser('user');
+      const created = await request(app.getHttpServer())
+        .post(`/questions/${q.id}/comments`)
+        .set('Authorization', `Bearer ${owner.token}`)
+        .send({ content: '待删除评论' });
+      expect(created.status).toBe(201);
+
+      const otherList = await request(app.getHttpServer())
+        .get(`/questions/${q.id}/comments`)
+        .set('Authorization', `Bearer ${other.token}`);
+      expect(otherList.body.data[0].canDelete).toBe(false);
+
+      const denied = await request(app.getHttpServer())
+        .delete(`/questions/comments/${created.body.data.id}`)
+        .set('Authorization', `Bearer ${other.token}`);
+      expect(denied.status).toBe(403);
+
+      const adminRemoved = await request(app.getHttpServer())
+        .delete(`/questions/comments/${created.body.data.id}`)
+        .set('Authorization', `Bearer ${admin.token}`);
+      expect(adminRemoved.status).toBe(200);
+
+      const empty = await request(app.getHttpServer())
+        .get(`/questions/${q.id}/comments`)
+        .set('Authorization', `Bearer ${owner.token}`);
+      expect(empty.body.data).toHaveLength(0);
     });
   });
 

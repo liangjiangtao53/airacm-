@@ -27,6 +27,16 @@ export default function Comments({ questionId }: { questionId: string }) {
     }
   }
 
+  async function remove(comment: CommentItem) {
+    if (!window.confirm('确认删除这条评论吗？')) return;
+    try {
+      await api.deleteComment(comment.id);
+      setList((current) => current.filter((item) => item.id !== comment.id));
+    } catch {
+      /* 删除失败用户可重试 */
+    }
+  }
+
   return (
     <div className="mt-4 border-t border-ink/5 pt-4">
       <div className="flex gap-2">
@@ -49,6 +59,11 @@ export default function Comments({ questionId }: { questionId: string }) {
           <li key={c.id} className="rounded-lg bg-mist px-3 py-2 text-sm text-ink/75">
             <span className="mr-2 font-medium text-ink/55">{c.nickname}</span>
             {c.content}
+            {c.canDelete && (
+              <button onClick={() => remove(c)} className="ml-3 text-xs text-red-500 hover:text-red-600">
+                删除
+              </button>
+            )}
           </li>
         ))}
       </ul>

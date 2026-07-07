@@ -145,6 +145,7 @@ export interface CommentItem {
   nickname: string;
   content: string;
   createdAt: string;
+  canDelete: boolean;
 }
 
 export function getToken(): string {
@@ -232,6 +233,8 @@ export const api = {
   comments: (questionId: string) => request<CommentItem[]>(`/questions/${questionId}/comments`),
   addComment: (questionId: string, content: string) =>
     request<CommentItem>(`/questions/${questionId}/comments`, { method: 'POST', data: { content } }),
+  deleteComment: (commentId: string) =>
+    request<{ deleted: boolean }>(`/questions/comments/${commentId}`, { method: 'DELETE' }),
   forumTopics: () => request<ForumTopic[]>('/forum/topics'),
   posts: (params: { topicId?: string; page?: number; pageSize?: number } = {}) => {
     const pairs = Object.entries(params).filter(([, value]) => value !== undefined && value !== '');

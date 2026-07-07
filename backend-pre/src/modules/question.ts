@@ -1026,7 +1026,7 @@ export class QuestionService {
   async listComments(
     user: AuthUser,
     questionId: string,
-  ): Promise<Array<{ id: string; userId: string; nickname: string; content: string; createdAt: Date }>> {
+  ): Promise<Array<{ id: string; userId: string; nickname: string; content: string; createdAt: Date; canDelete: boolean }>> {
     const rows = await this.comments.find({
       where: { tenantId: user.tenantId, questionId },
       order: { createdAt: 'DESC' },
@@ -1039,6 +1039,7 @@ export class QuestionService {
       nickname: nickMap.get(c.userId) ?? `用户${c.userId.slice(0, 4)}`,
       content: c.content,
       createdAt: c.createdAt,
+      canDelete: this.canDeleteComment(user, c),
     }));
   }
 
@@ -1046,7 +1047,7 @@ export class QuestionService {
     user: AuthUser,
     questionId: string,
     content: string,
-  ): Promise<{ id: string; userId: string; nickname: string; content: string; createdAt: Date }> {
+  ): Promise<{ id: string; userId: string; nickname: string; content: string; createdAt: Date; canDelete: boolean }> {
     const trimmed = content.trim();
     if (!trimmed) throw new BadRequestException('评论不能为空');
     const q = await this.questions.findOne({ where: { tenantId: user.tenantId, id: questionId } });
@@ -1066,7 +1067,26 @@ export class QuestionService {
       nickname: nick.get(c.userId) ?? `用户${c.userId.slice(0, 4)}`,
       content: c.content,
       createdAt: c.createdAt,
+      canDelete: true,
     };
+  }
+
+  private canDeleteComment(user: AuthUser, comment: Pick<Comment, 'userId'>): boolean {
+    return comment.userId === user.userId || user.role === 'admin' || user.role === 'super';
+  }
+
+  async deleteComment(user: AuthUser, commentId: string): Promise<{ deleted: boolean }> {
+    const comment = await this.comments.findOne({ where: { tenantId: user.tenantId, id: commentId } });
+    if (!comment) throw new NotFoundException('评论不存在');
+    if (!this.canDeleteComment(user, comment)) throw new ForbiddenException('只能删除自己的评论');
+    await this.comments.delete({ tenantId: user.tenantId, id: comment.id });
+    if (user.role === 'admin' || user.role === 'super') {
+      await this.logAdminOperation(user, 'question_comment_delete', 'comment', comment.id, {
+        questionId: comment.questionId,
+        ownerUserId: comment.userId,
+      });
+    }
+    return { deleted: true };
   }
 
   // 数据维护:各科目题目数(含未分类)。
@@ -1389,6 +1409,11 @@ export class QuestionController {
     @Body() dto: CreateCommentDto,
   ) {
     return this.svc.addComment(user, id, dto.content);
+  }
+
+  @Delete('comments/:commentId')
+  deleteComment(@CurrentUser() user: AuthUser, @Param('commentId') commentId: string) {
+    return this.svc.deleteComment(user, commentId);
   }
 }
 

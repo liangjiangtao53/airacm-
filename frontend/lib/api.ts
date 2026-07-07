@@ -57,6 +57,7 @@ export interface CommentItem {
   nickname: string;
   content: string;
   createdAt: string;
+  canDelete: boolean;
 }
 
 export interface ImportResult {
@@ -388,6 +389,7 @@ export const api = {
   comments: (id: string) => req<CommentItem[]>(`/questions/${id}/comments`),
   addComment: (id: string, content: string) =>
     req<CommentItem>(`/questions/${id}/comments`, { method: 'POST', body: { content } }),
+  deleteComment: (id: string) => req<{ deleted: boolean }>(`/questions/comments/${id}`, { method: 'DELETE' }),
 
   // ---- 交流 ----
   // 论坛主题(任意登录用户可见)。

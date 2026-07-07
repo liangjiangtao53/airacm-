@@ -177,6 +177,22 @@ async function addComment(questionId: string) {
   }
 }
 
+async function removeComment(questionId: string, commentId: string) {
+  uni.showModal({
+    title: '删除评论',
+    content: '确认删除这条评论吗？',
+    success: async (res) => {
+      if (!res.confirm) return;
+      try {
+        await api.deleteComment(commentId);
+        commentLists.value[questionId] = (commentLists.value[questionId] || []).filter((item) => item.id !== commentId);
+      } catch (e) {
+        toast((e as Error).message);
+      }
+    },
+  });
+}
+
 onShow(async () => {
   if (!requireLogin()) return;
   try {
@@ -200,16 +216,21 @@ watch(
 <template>
   <view class="page study-page">
     <view class="header">
-      <view class="top-row">
-        <button :class="['answer-toggle', showCorrectAnswer && 'active']" @tap="toggleCorrectAnswer">正确答案</button>
-      </view>
       <text class="title">专题学习</text>
       <text class="subtitle">顺序学习与模拟考试。</text>
     </view>
 
     <view class="subprojects">
       <view class="subproject active">
-        <text class="subproject-title">顺序学习</text>
+        <view class="subproject-head">
+          <text class="subproject-title">顺序学习</text>
+          <view :class="['answer-switch', showCorrectAnswer && 'active']" @tap="toggleCorrectAnswer">
+            <text class="answer-switch-label">显示答案</text>
+            <view class="switch-track">
+              <view class="switch-thumb" />
+            </view>
+          </view>
+        </view>
         <text class="subproject-desc">按科目顺序刷题,答错后进入错题本。</text>
       </view>
       <view class="subproject" @tap="openExam">
@@ -280,7 +301,10 @@ watch(
           </view>
           <view v-if="(commentLists[currentQuestion.id] || []).length === 0" class="comment-empty">暂无评论</view>
           <view v-for="c in commentLists[currentQuestion.id] || []" :key="c.id" class="comment-item">
-            <text class="comment-name">{{ c.nickname }}</text>
+            <view class="comment-head">
+              <text class="comment-name">{{ c.nickname }}</text>
+              <text v-if="c.canDelete" class="comment-delete" @tap="removeComment(currentQuestion.id, c.id)">删除</text>
+            </view>
             <text class="comment-content">{{ c.content }}</text>
           </view>
         </view>
@@ -317,28 +341,65 @@ watch(
   gap: 18rpx;
 }
 
-.top-row {
+.subproject-head,
+.comment-head {
   align-items: center;
   display: flex;
   flex-direction: row;
-  justify-content: flex-start;
+  justify-content: space-between;
 }
 
-.answer-toggle {
-  background: rgba(255, 255, 255, 0.72);
-  border: 2rpx solid rgba(17, 24, 39, 0.12);
+.answer-switch {
+  align-items: center;
+  background: rgba(255, 255, 255, 0.86);
+  border: 2rpx solid rgba(17, 24, 39, 0.1);
   border-radius: 999rpx;
+  box-shadow: 0 8rpx 20rpx rgba(17, 24, 39, 0.06);
   color: rgba(17, 24, 39, 0.68);
+  display: flex;
+  flex-direction: row;
   font-size: 24rpx;
-  line-height: 1;
-  min-height: 56rpx;
-  padding: 0 22rpx;
+  gap: 14rpx;
+  min-height: 60rpx;
+  padding: 0 12rpx 0 22rpx;
 }
 
-.answer-toggle.active {
+.answer-switch.active {
+  background: rgba(31, 111, 235, 0.1);
+  border-color: rgba(31, 111, 235, 0.4);
+  color: #1f6feb;
+}
+
+.answer-switch-label {
+  font-weight: 700;
+}
+
+.switch-track {
+  align-items: center;
+  background: rgba(17, 24, 39, 0.16);
+  border-radius: 999rpx;
+  display: flex;
+  height: 34rpx;
+  padding: 3rpx;
+  width: 62rpx;
+}
+
+.switch-thumb {
+  background: #fff;
+  border-radius: 50%;
+  box-shadow: 0 2rpx 8rpx rgba(17, 24, 39, 0.18);
+  height: 28rpx;
+  transform: translateX(0);
+  transition: transform 0.18s ease;
+  width: 28rpx;
+}
+
+.answer-switch.active .switch-track {
   background: #1f6feb;
-  border-color: #1f6feb;
-  color: #fff;
+}
+
+.answer-switch.active .switch-thumb {
+  transform: translateX(28rpx);
 }
 
 .subproject {
@@ -539,13 +600,20 @@ watch(
 .comment-item {
   background: rgba(255, 255, 255, 0.58);
   border-radius: 14rpx;
+  display: flex;
+  flex-direction: column;
+  gap: 8rpx;
   padding: 14rpx 16rpx;
 }
 
 .comment-name {
   color: rgba(17, 24, 39, 0.6);
   font-weight: 700;
-  margin-right: 12rpx;
+}
+
+.comment-delete {
+  color: #dc2626;
+  font-weight: 700;
 }
 
 .comment-content {

@@ -74,6 +74,22 @@ async function addComment(questionId: string) {
   }
 }
 
+async function removeComment(questionId: string, commentId: string) {
+  uni.showModal({
+    title: '删除评论',
+    content: '确认删除这条评论吗？',
+    success: async (res) => {
+      if (!res.confirm) return;
+      try {
+        await api.deleteComment(commentId);
+        commentLists.value[questionId] = (commentLists.value[questionId] || []).filter((item) => item.id !== commentId);
+      } catch (e) {
+        toast((e as Error).message);
+      }
+    },
+  });
+}
+
 onShow(load);
 </script>
 
@@ -141,7 +157,10 @@ onShow(load);
           </view>
           <view v-if="(commentLists[q.questionId] || []).length === 0" class="comment-empty">暂无评论</view>
           <view v-for="c in commentLists[q.questionId] || []" :key="c.id" class="comment-item">
-            <text class="comment-name">{{ c.nickname }}</text>
+            <view class="comment-head">
+              <text class="comment-name">{{ c.nickname }}</text>
+              <text v-if="c.canDelete" class="comment-delete" @tap="removeComment(q.questionId, c.id)">删除</text>
+            </view>
             <text class="comment-content">{{ c.content }}</text>
           </view>
         </view>
@@ -318,13 +337,27 @@ onShow(load);
 .comment-item {
   background: rgba(255, 255, 255, 0.58);
   border-radius: 14rpx;
+  display: flex;
+  flex-direction: column;
+  gap: 8rpx;
   padding: 14rpx 16rpx;
+}
+
+.comment-head {
+  align-items: center;
+  display: flex;
+  flex-direction: row;
+  justify-content: space-between;
 }
 
 .comment-name {
   color: rgba(17, 24, 39, 0.6);
   font-weight: 700;
-  margin-right: 12rpx;
+}
+
+.comment-delete {
+  color: #dc2626;
+  font-weight: 700;
 }
 
 .comment-content {
