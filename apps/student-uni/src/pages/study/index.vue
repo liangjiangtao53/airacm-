@@ -10,6 +10,7 @@ const questions = ref<QuestionItem[]>([]);
 const picked = ref<Record<string, string[]>>({});
 const answers = ref<Record<string, { answer: string; analysis: string; imageUrls?: string[] }>>({});
 const autoRevealed = ref<Record<string, boolean>>({});
+const explanationOpen = ref<Record<string, boolean>>({});
 const page = ref(1);
 const pageSize = ref(20);
 const total = ref(0);
@@ -64,10 +65,13 @@ async function loadQuestions(reset = false, targetIndex = 0) {
   }
 }
 
-async function reveal(id: string, recordPractice = true, autoDisplay = false) {
+async function reveal(id: string, recordPractice = true, autoDisplay = false, openExplanation = false) {
   if (answers.value[id]) {
     if (!autoDisplay) {
       autoRevealed.value[id] = false;
+      if (openExplanation) {
+        explanationOpen.value[id] = true;
+      }
       if (recordPractice) {
         const pickedKey = [...(picked.value[id] || [])].sort().join('');
         await api.recordStudyWrong(id, pickedKey || answers.value[id].answer);
@@ -79,6 +83,9 @@ async function reveal(id: string, recordPractice = true, autoDisplay = false) {
     const result = await api.questionAnswer(id);
     answers.value[id] = result;
     autoRevealed.value[id] = autoDisplay;
+    if (openExplanation) {
+      explanationOpen.value[id] = true;
+    }
     if (!recordPractice) return;
     const pickedKey = [...(picked.value[id] || [])].sort().join('');
     await api.recordStudyWrong(id, pickedKey || result.answer);
@@ -91,12 +98,27 @@ function toggleCorrectAnswer() {
   showCorrectAnswer.value = !showCorrectAnswer.value;
   const q = currentQuestion.value;
   if (showCorrectAnswer.value && q) {
-    reveal(q.id, false, true);
+    reveal(q.id, false, true, false);
   }
 }
 
 function shouldShowAnswer(id: string) {
-  return Boolean(answers.value[id] && (!autoRevealed.value[id] || showCorrectAnswer.value));
+  return Boolean(
+    answers.value[id] &&
+      (showCorrectAnswer.value || explanationOpen.value[id] || !autoRevealed.value[id] || (picked.value[id] || []).length > 0),
+  );
+}
+
+function shouldShowExplanation(id: string) {
+  return Boolean(answers.value[id] && explanationOpen.value[id]);
+}
+
+function toggleExplanation(id: string) {
+  if (shouldShowExplanation(id)) {
+    explanationOpen.value[id] = false;
+    return;
+  }
+  reveal(id, true, false, true);
 }
 
 function toggle(q: QuestionItem, key: string) {
@@ -104,8 +126,8 @@ function toggle(q: QuestionItem, key: string) {
   const cur = picked.value[q.id] || [];
   if (q.type === 'single') {
     picked.value[q.id] = [key];
-    // 原来单选只记录选中态,不会立刻显示对错;现在选择后直接揭晓答案,让红/绿反馈马上出现。
-    reveal(q.id, true, false);
+    // 选择后只取答案做红绿反馈，解析由“查看解析”手动展开。
+    reveal(q.id, true, true, false);
     return;
   }
   picked.value[q.id] = cur.includes(key) ? cur.filter((item) => item !== key) : [...cur, key].sort();
@@ -123,6 +145,7 @@ function changeCategory(e: { detail: { value: number } }) {
   category.value = categories.value[Number(e.detail.value)] || '';
   picked.value = {};
   answers.value = {};
+  explanationOpen.value = {};
   loadQuestions(true);
 }
 
@@ -278,12 +301,14 @@ watch(
           </view>
         </view>
         <view class="question-actions">
-          <button v-if="!shouldShowAnswer(currentQuestion.id)" class="btn secondary action" @tap="reveal(currentQuestion.id)">查看答案</button>
+          <button class="btn secondary action" @tap="toggleExplanation(currentQuestion.id)">
+            {{ shouldShowExplanation(currentQuestion.id) ? '收起解析' : '查看解析' }}
+          </button>
           <button class="btn secondary action" @tap="toggleComments(currentQuestion.id)">
             {{ commentOpen[currentQuestion.id] ? '收起评论' : '评论' }}
           </button>
         </view>
-        <view v-if="shouldShowAnswer(currentQuestion.id)" class="answer-box">
+        <view v-if="shouldShowExplanation(currentQuestion.id)" class="answer-box">
           <text class="answer">答案: {{ answers[currentQuestion.id].answer }}</text>
           <text v-if="answers[currentQuestion.id].analysis" class="analysis">解析: {{ answers[currentQuestion.id].analysis }}</text>
           <image
