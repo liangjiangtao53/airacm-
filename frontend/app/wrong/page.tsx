@@ -115,6 +115,7 @@ function WrongCard({
           </span>
           <div className="min-w-0 flex-1">
             <p className="font-medium text-ink">{q.stem}</p>
+            <QuestionImages urls={q.stemImageUrls} alt="题干配图" />
           </div>
         </div>
         <span className="shrink-0 rounded-md bg-red-50 px-2 py-0.5 text-xs text-red-500">
@@ -166,7 +167,7 @@ function WrongCard({
       {revealed && (q.analysis || q.imageUrls?.length) && (
         <div className="mt-3 rounded-lg bg-mist px-4 py-2 text-sm text-ink/65">
           {q.analysis && <p>解析:{q.analysis}</p>}
-          <QuestionImages urls={q.imageUrls} />
+          <QuestionImages urls={q.imageUrls} alt="解析配图" />
         </div>
       )}
 
@@ -175,7 +176,7 @@ function WrongCard({
   );
 }
 
-function QuestionImages({ urls }: { urls?: string[] }) {
+function QuestionImages({ urls, alt }: { urls?: string[]; alt: string }) {
   if (!urls?.length) return null;
   return (
     <div className="mt-3 space-y-2">
@@ -183,7 +184,7 @@ function QuestionImages({ urls }: { urls?: string[] }) {
         <img
           key={url}
           src={assetUrl(url)}
-          alt="解析配图"
+          alt={alt}
           className="max-h-[520px] max-w-full rounded-lg border border-ink/10 object-contain"
         />
       ))}

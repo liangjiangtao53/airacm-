@@ -5,7 +5,18 @@ import { Question, QuestionUsage } from '../entities';
 
 export type PublicQuestion = Pick<
   Question,
-  'id' | 'tenantId' | 'category' | 'courseId' | 'type' | 'stem' | 'options' | 'imageUrls' | 'usage' | 'order' | 'createdAt'
+  | 'id'
+  | 'tenantId'
+  | 'category'
+  | 'courseId'
+  | 'type'
+  | 'stem'
+  | 'stemImageUrls'
+  | 'options'
+  | 'imageUrls'
+  | 'usage'
+  | 'order'
+  | 'createdAt'
 >;
 
 interface QuestionPoolFilter {
@@ -77,6 +88,7 @@ export class QuestionPoolCacheService implements OnModuleInit {
         'courseId',
         'type',
         'stem',
+        'stemImageUrls',
         'options',
         'imageUrls',
         'usage',

@@ -18,15 +18,23 @@ const loading = ref(false);
 const currentIndex = ref(0);
 const touchStartX = ref(0);
 const showCorrectAnswer = ref(false);
+const jumpNumber = ref('1');
 const commentOpen = ref<Record<string, boolean>>({});
 const commentInputs = ref<Record<string, string>>({});
 const commentLists = ref<Record<string, CommentItem[]>>({});
 const startedStudyCategories = ref(new Set<string>());
 const progressRecorded = ref<Record<string, boolean>>({});
+const answeredResults = ref<Record<string, boolean>>({});
 const currentQuestion = computed(() => questions.value[currentIndex.value] || null);
 const currentNumber = computed(() => (page.value - 1) * pageSize.value + currentIndex.value + 1);
 const canPrev = computed(() => page.value > 1 || currentIndex.value > 0);
 const canNext = computed(() => currentIndex.value < questions.value.length - 1 || page.value * pageSize.value < total.value);
+const correctCount = computed(() => Object.values(answeredResults.value).filter(Boolean).length);
+const wrongCount = computed(() => Object.values(answeredResults.value).filter((ok) => !ok).length);
+const accuracy = computed(() => {
+  const answered = correctCount.value + wrongCount.value;
+  return answered > 0 ? Math.round((correctCount.value / answered) * 100) : 0;
+});
 
 function toast(message: string) {
   uni.showToast({ title: message, icon: 'none' });
@@ -59,7 +67,8 @@ async function loadQuestions(reset = false, targetIndex = 0) {
     total.value = res.total;
     page.value = res.page;
     pageSize.value = res.pageSize;
-    currentIndex.value = Math.min(Math.max(0, targetIndex), Math.max(0, res.items.length - 1));
+    const nextIndex = reset ? (res.startIndex ?? targetIndex) : targetIndex;
+    currentIndex.value = Math.min(Math.max(0, nextIndex), Math.max(0, res.items.length - 1));
   } catch (e) {
     toast((e as Error).message);
   } finally {
@@ -97,6 +106,7 @@ async function reveal(id: string, recordPractice = true, autoDisplay = false, op
       }
       if (recordPractice) {
         const pickedKey = [...(picked.value[id] || [])].sort().join('');
+        recordAnsweredResult(id, pickedKey, answers.value[id].answer);
         await api.recordStudyWrong(id, pickedKey || answers.value[id].answer);
         progressRecorded.value[id] = true;
       }
@@ -112,11 +122,17 @@ async function reveal(id: string, recordPractice = true, autoDisplay = false, op
     }
     if (!recordPractice) return;
     const pickedKey = [...(picked.value[id] || [])].sort().join('');
+    recordAnsweredResult(id, pickedKey, result.answer);
     await api.recordStudyWrong(id, pickedKey || result.answer);
     progressRecorded.value[id] = true;
   } catch (e) {
     toast((e as Error).message);
   }
+}
+
+function recordAnsweredResult(id: string, pickedKey: string, answer: string) {
+  if (!pickedKey || answeredResults.value[id] !== undefined) return;
+  answeredResults.value[id] = pickedKey === answer;
 }
 
 function toggleCorrectAnswer() {
@@ -172,29 +188,30 @@ function changeCategory(e: { detail: { value: number } }) {
   answers.value = {};
   explanationOpen.value = {};
   progressRecorded.value = {};
+  answeredResults.value = {};
   recordStudyStart();
   loadQuestions(true);
 }
 
 async function nextQuestion(delta: number) {
-  const maxPage = Math.max(1, Math.ceil(total.value / pageSize.value));
   const nextIndex = currentIndex.value + delta;
   if (delta > 0) {
     await recordStudyProgress(currentQuestion.value?.id);
   }
   if (nextIndex >= 0 && nextIndex < questions.value.length) {
     currentIndex.value = nextIndex;
-    return;
   }
-  if (delta > 0 && page.value < maxPage) {
-    page.value += 1;
-    await loadQuestions(false, 0);
-    return;
+}
+
+async function jumpToQuestion() {
+  if (!total.value) return;
+  const target = Math.min(total.value, Math.max(1, Number(jumpNumber.value) || 1));
+  const targetIndex = target - 1;
+  if (target > currentNumber.value) {
+    await recordStudyProgress(currentQuestion.value?.id);
   }
-  if (delta < 0 && page.value > 1) {
-    page.value -= 1;
-    await loadQuestions(false, pageSize.value - 1);
-  }
+  jumpNumber.value = String(target);
+  currentIndex.value = Math.min(targetIndex, Math.max(0, questions.value.length - 1));
 }
 
 function onTouchStart(e: { changedTouches?: Array<{ clientX: number }>; touches?: Array<{ clientX: number }> }) {
@@ -265,6 +282,10 @@ watch(
     }
   },
 );
+
+watch(currentNumber, (n) => {
+  jumpNumber.value = String(n);
+});
 </script>
 
 <template>
@@ -293,16 +314,31 @@ watch(
       </view>
     </view>
 
-    <view class="card filters">
+    <view class="card filters category-filter">
       <picker mode="selector" :range="categories" @change="changeCategory">
         <view class="select">{{ category || '选择科目' }}</view>
       </picker>
-      <input v-model="keyword" class="input" placeholder="搜索题干关键词" confirm-type="search" @confirm="loadQuestions(true)" />
-      <button class="btn" @tap="loadQuestions(true)">搜索</button>
     </view>
 
-    <view class="list-meta">
-      <text>当前科目共 {{ total }} 题</text>
+    <view class="study-summary">
+      <view class="study-stat-row">
+        <text>答对: <text class="stat-correct">{{ correctCount }}</text> 题</text>
+        <text>答错: <text class="stat-wrong">{{ wrongCount }}</text> 题</text>
+        <text>正确率: {{ accuracy }}%</text>
+      </view>
+      <view class="jump-row">
+        <text>共 {{ total }} 题</text>
+        <input
+          v-model="jumpNumber"
+          class="jump-input"
+          type="number"
+          :max="total"
+          min="1"
+          confirm-type="go"
+          @confirm="jumpToQuestion"
+        />
+        <button class="btn secondary jump-btn" @tap="jumpToQuestion">转到</button>
+      </view>
     </view>
 
     <view v-if="loading" class="empty">加载中...</view>
@@ -314,6 +350,13 @@ watch(
           <text class="badge">{{ currentNumber }} / {{ total }} · {{ currentQuestion.type === 'single' ? '单选' : '多选' }}</text>
           <text class="stem">{{ currentQuestion.stem }}</text>
         </view>
+        <image
+          v-for="url in currentQuestion.stemImageUrls || []"
+          :key="url"
+          :src="assetUrl(url)"
+          mode="widthFix"
+          class="question-image"
+        />
         <view class="options">
           <view
             v-for="option in currentQuestion.options"
@@ -378,7 +421,7 @@ watch(
 .study-page,
 .question-list,
 .filters,
-.list-meta,
+.study-summary,
 .question-card,
 .options,
 .subprojects,
@@ -488,23 +531,65 @@ watch(
   gap: 18rpx;
 }
 
+.category-filter {
+  padding: 18rpx 24rpx;
+}
+
 .select {
   background: #fff;
   border: 2rpx solid rgba(17, 24, 39, 0.1);
   border-radius: 18rpx;
   color: #111827;
   font-size: 28rpx;
-  min-height: 88rpx;
-  padding: 24rpx;
+  min-height: 68rpx;
+  padding: 16rpx 20rpx;
 }
 
-.list-meta {
+.study-summary {
+  background: rgba(255, 255, 255, 0.68);
+  border: 2rpx solid rgba(17, 24, 39, 0.06);
+  border-radius: 18rpx;
+  color: rgba(17, 24, 39, 0.72);
+  gap: 14rpx;
+  padding: 18rpx 20rpx;
+}
+
+.study-stat-row,
+.jump-row {
   align-items: center;
-  color: rgba(17, 24, 39, 0.55);
   display: flex;
   flex-direction: row;
-  font-size: 24rpx;
-  justify-content: space-between;
+  flex-wrap: wrap;
+  font-size: 26rpx;
+  gap: 18rpx;
+}
+
+.stat-correct {
+  color: #1f6feb;
+  font-weight: 800;
+}
+
+.stat-wrong {
+  color: #dc2626;
+  font-weight: 800;
+}
+
+.jump-input {
+  background: #fff;
+  border: 2rpx solid rgba(17, 24, 39, 0.14);
+  border-radius: 10rpx;
+  color: #111827;
+  font-size: 26rpx;
+  height: 60rpx;
+  padding: 0 12rpx;
+  text-align: center;
+  width: 120rpx;
+}
+
+.jump-btn {
+  min-height: 60rpx;
+  min-width: 96rpx;
+  padding: 0 18rpx;
 }
 
 .empty {

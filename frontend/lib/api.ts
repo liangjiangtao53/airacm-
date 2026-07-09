@@ -45,6 +45,7 @@ export interface QuestionItem {
   courseId: string | null;
   type: 'single' | 'multiple';
   stem: string;
+  stemImageUrls?: string[];
   options: QuestionOption[];
   imageUrls?: string[];
   usage: QuestionUsage;
@@ -95,6 +96,7 @@ export interface AdminQuestionItem {
   category: string;
   type: 'single' | 'multiple';
   stem: string;
+  stemImageUrls?: string[];
   options: QuestionOption[];
   imageUrls?: string[];
   answer: string;
@@ -171,6 +173,7 @@ export interface PaperQuestion {
   id: string;
   type: 'single' | 'multiple';
   stem: string;
+  stemImageUrls?: string[];
   options: QuestionOption[];
   imageUrls?: string[];
 }
@@ -186,6 +189,7 @@ export interface GradedItem {
   category: string;
   stem: string;
   options: QuestionOption[];
+  stemImageUrls?: string[];
   imageUrls?: string[];
   yourAnswer: string;
   correctAnswer: string;
@@ -217,6 +221,7 @@ export interface WrongBookItem {
   type: 'single' | 'multiple';
   stem: string;
   options: QuestionOption[];
+  stemImageUrls?: string[];
   imageUrls?: string[];
   answer: string;
   analysis: string;
@@ -368,7 +373,7 @@ export const api = {
     const qs = new URLSearchParams();
     Object.entries(params).forEach(([k, v]) => v !== undefined && qs.set(k, String(v)));
     const suffix = qs.toString() ? `?${qs}` : '';
-    return req<{ items: QuestionItem[]; total: number; page: number; pageSize: number }>(`/questions${suffix}`);
+    return req<{ items: QuestionItem[]; total: number; page: number; pageSize: number; startIndex?: number }>(`/questions${suffix}`);
   },
   questionAnswer: (id: string) => req<{ answer: string; analysis: string; imageUrls?: string[] }>(`/questions/${id}/answer`),
 

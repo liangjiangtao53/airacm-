@@ -14,12 +14,17 @@ export default function StudyPage() {
   const [searchKw, setSearchKw] = useState(''); // 防抖后真正用于查询的关键词
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
+  const [manualPage, setManualPage] = useState<number | null>(null);
   const [jumpTo, setJumpTo] = useState('1');
   const [total, setTotal] = useState(0);
   const [err, setErr] = useState('');
   const [loading, setLoading] = useState(true);
   const [showCorrectAnswer, setShowCorrectAnswer] = useState(false);
+  const [answeredResults, setAnsweredResults] = useState<Record<string, boolean>>({});
   const startedStudyCategories = useRef(new Set<string>());
+  const correctCount = Object.values(answeredResults).filter(Boolean).length;
+  const wrongCount = Object.values(answeredResults).filter((ok) => !ok).length;
+  const accuracy = correctCount + wrongCount > 0 ? Math.round((correctCount / (correctCount + wrongCount)) * 100) : 0;
 
   // 搜索防抖 350ms,避免每个字符都打接口。
   useEffect(() => {
@@ -44,7 +49,9 @@ export default function StudyPage() {
 
   // 切换科目/每页条数/搜索词时回到第 1 页。
   useEffect(() => {
+    setManualPage(null);
     setPage(1);
+    setAnsweredResults({});
   }, [category, pageSize, searchKw]);
 
   useEffect(() => {
@@ -55,7 +62,13 @@ export default function StudyPage() {
     }
     setLoading(true);
     api
-      .questions({ usage: 'study', category, keyword: searchKw || undefined, page, pageSize })
+      .questions({
+        usage: 'study',
+        category,
+        keyword: searchKw || undefined,
+        page: manualPage ?? undefined,
+        pageSize,
+      })
       .then((r) => {
         setItems(r.items);
         setTotal(r.total);
@@ -64,7 +77,7 @@ export default function StudyPage() {
       })
       .catch((e) => setErr((e as Error).message))
       .finally(() => setLoading(false));
-  }, [category, searchKw, page, pageSize]);
+  }, [category, searchKw, manualPage, pageSize]);
 
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
 
@@ -79,19 +92,25 @@ export default function StudyPage() {
 
   async function commitJump() {
     const next = Math.min(totalPages, Math.max(1, Number(jumpTo) || 1));
+    if (next === page) return;
     if (next > page) {
       await recordBatchProgress();
     }
-    setPage(next);
+    setManualPage(next);
     setJumpTo(String(next));
   }
 
   async function changePage(next: number) {
     const target = Math.min(totalPages, Math.max(1, next));
+    if (target === page) return;
     if (target > page) {
       await recordBatchProgress();
     }
-    setPage(target);
+    setManualPage(target);
+  }
+
+  function recordAnswered(questionId: string, isCorrect: boolean) {
+    setAnsweredResults((prev) => (prev[questionId] !== undefined ? prev : { ...prev, [questionId]: isCorrect }));
   }
 
   return (
@@ -174,6 +193,18 @@ export default function StudyPage() {
           </div>
 
           {err && <p className="mb-4 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-600">{err}</p>}
+          {total > 0 && (
+            <div className="mb-4 flex flex-wrap items-center gap-4 rounded-xl border border-ink/10 bg-white/65 px-4 py-3 text-sm text-ink/70">
+              <span>
+                答对: <b className="text-sky">{correctCount}</b> 题
+              </span>
+              <span>
+                答错: <b className="text-red-500">{wrongCount}</b> 题
+              </span>
+              <span>正确率: {accuracy}%</span>
+              <span>共 {total} 题</span>
+            </div>
+          )}
           {loading && <p className="mb-4 text-sm text-ink/40">加载中...</p>}
           {!loading && items.length === 0 && !err && (
             <p className="rounded-2xl bg-white/60 backdrop-blur-xl p-8 text-center text-ink/50 shadow-sm ring-1 ring-white/55">
@@ -182,7 +213,13 @@ export default function StudyPage() {
           )}
           <div className="space-y-4">
             {items.map((q, i) => (
-              <QuestionCard key={q.id} q={q} index={(page - 1) * pageSize + i + 1} showCorrectAnswer={showCorrectAnswer} />
+              <QuestionCard
+                key={q.id}
+                q={q}
+                index={(page - 1) * pageSize + i + 1}
+                showCorrectAnswer={showCorrectAnswer}
+                onAnswered={recordAnswered}
+              />
             ))}
           </div>
 
@@ -239,7 +276,17 @@ export default function StudyPage() {
   );
 }
 
-function QuestionCard({ q, index, showCorrectAnswer }: { q: QuestionItem; index: number; showCorrectAnswer: boolean }) {
+function QuestionCard({
+  q,
+  index,
+  showCorrectAnswer,
+  onAnswered,
+}: {
+  q: QuestionItem;
+  index: number;
+  showCorrectAnswer: boolean;
+  onAnswered: (questionId: string, isCorrect: boolean) => void;
+}) {
   const [picked, setPicked] = useState<string[]>([]);
   const [answer, setAnswer] = useState<{ answer: string; analysis: string; imageUrls?: string[] } | null>(null);
   const [autoRevealed, setAutoRevealed] = useState(false);
@@ -252,6 +299,7 @@ function QuestionCard({ q, index, showCorrectAnswer }: { q: QuestionItem; index:
         setAutoRevealed(false);
         if (recordPractice) {
           const pickedKey = [...nextPicked].sort().join('');
+          if (pickedKey) onAnswered(q.id, pickedKey === answer.answer);
           await api.recordStudyWrong(q.id, pickedKey || answer.answer);
         }
       }
@@ -265,13 +313,14 @@ function QuestionCard({ q, index, showCorrectAnswer }: { q: QuestionItem; index:
       setAutoRevealed(autoDisplay);
       if (!recordPractice) return;
       const pickedKey = [...nextPicked].sort().join('');
+      if (pickedKey) onAnswered(q.id, pickedKey === result.answer);
       await api.recordStudyWrong(q.id, pickedKey || result.answer);
     } catch {
       /* 静默:答案获取失败不致命,用户可重试 */
     } finally {
       setRevealing(false);
     }
-  }, [answer, picked, q.id, revealing]);
+  }, [answer, onAnswered, picked, q.id, revealing]);
 
   useEffect(() => {
     if (!showCorrectAnswer || answer || revealing) return;
@@ -302,6 +351,7 @@ function QuestionCard({ q, index, showCorrectAnswer }: { q: QuestionItem; index:
         </span>
         <div className="min-w-0 flex-1">
           <p className="font-medium text-ink">{q.stem}</p>
+          <QuestionImages urls={q.stemImageUrls} alt="题干配图" />
         </div>
       </div>
 
@@ -358,7 +408,7 @@ function QuestionCard({ q, index, showCorrectAnswer }: { q: QuestionItem; index:
       {visibleAnswer && (visibleAnswer.analysis || visibleAnswer.imageUrls?.length) && (
         <div className="mt-3 rounded-lg bg-mist px-4 py-3 text-sm text-ink/70">
           {visibleAnswer.analysis && <p>解析:{visibleAnswer.analysis}</p>}
-          <QuestionImages urls={visibleAnswer.imageUrls} />
+          <QuestionImages urls={visibleAnswer.imageUrls} alt="解析配图" />
         </div>
       )}
 
@@ -367,7 +417,7 @@ function QuestionCard({ q, index, showCorrectAnswer }: { q: QuestionItem; index:
   );
 }
 
-function QuestionImages({ urls }: { urls?: string[] }) {
+function QuestionImages({ urls, alt }: { urls?: string[]; alt: string }) {
   if (!urls?.length) return null;
   return (
     <div className="mt-3 space-y-2">
@@ -375,7 +425,7 @@ function QuestionImages({ urls }: { urls?: string[] }) {
         <img
           key={url}
           src={assetUrl(url)}
-          alt="解析配图"
+          alt={alt}
           className="max-h-[520px] max-w-full rounded-lg border border-ink/10 object-contain"
         />
       ))}

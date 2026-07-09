@@ -170,6 +170,13 @@ onShow(() => {
           <text class="badge">{{ currentIndex + 1 }} / {{ questions.length }} · {{ currentQuestion.type === 'single' ? '单选' : '多选' }}</text>
           <text class="stem">{{ currentQuestion.stem }}</text>
         </view>
+        <image
+          v-for="url in currentQuestion.stemImageUrls || []"
+          :key="url"
+          :src="assetUrl(url)"
+          mode="widthFix"
+          class="question-image"
+        />
         <view class="options">
           <view
             v-for="option in currentQuestion.options"
@@ -199,6 +206,7 @@ onShow(() => {
       <view v-for="(d, index) in result.details" :key="d.questionId" class="card review-card">
         <text :class="['badge', d.isCorrect ? 'ok' : 'bad']">{{ index + 1 }} · {{ d.isCorrect ? '正确' : '错误' }}</text>
         <text class="stem">{{ d.stem }}</text>
+        <image v-for="url in d.stemImageUrls || []" :key="url" :src="assetUrl(url)" mode="widthFix" class="question-image" />
         <text class="summary">你的答案: {{ d.yourAnswer || '(未答)' }} · 正确答案: {{ d.correctAnswer }}</text>
         <text v-if="d.analysis" class="analysis">解析: {{ d.analysis }}</text>
         <image v-for="url in d.imageUrls || []" :key="url" :src="assetUrl(url)" mode="widthFix" class="question-image" />

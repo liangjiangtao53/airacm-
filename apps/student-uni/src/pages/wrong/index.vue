@@ -124,6 +124,7 @@ onShow(load);
           <text class="wrong-count">错 {{ q.wrongCount }} 次</text>
         </view>
         <text class="stem">{{ q.stem }}</text>
+        <image v-for="url in q.stemImageUrls || []" :key="url" :src="assetUrl(url)" mode="widthFix" class="question-image" />
         <view v-if="revealed[itemKey(q)]" class="options">
           <view
             v-for="option in q.options"

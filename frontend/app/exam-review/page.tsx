@@ -152,6 +152,7 @@ function AttemptCard({
                   </span>
                   <div className="min-w-0 flex-1">
                     <p className="text-sm font-medium text-ink">{d.stem}</p>
+                    <QuestionImages urls={d.stemImageUrls} alt="题干配图" />
                   </div>
                 </div>
 
@@ -196,7 +197,7 @@ function AttemptCard({
                     {analysisOpen[d.questionId] && (
                       <div className="mt-2 text-xs text-ink/55">
                         {d.analysis && <p>解析:{d.analysis}</p>}
-                        <QuestionImages urls={d.imageUrls} />
+                        <QuestionImages urls={d.imageUrls} alt="解析配图" />
                       </div>
                     )}
                   </>
@@ -210,7 +211,7 @@ function AttemptCard({
   );
 }
 
-function QuestionImages({ urls }: { urls?: string[] }) {
+function QuestionImages({ urls, alt }: { urls?: string[]; alt: string }) {
   if (!urls?.length) return null;
   return (
     <div className="mt-2 space-y-2">
@@ -218,7 +219,7 @@ function QuestionImages({ urls }: { urls?: string[] }) {
         <img
           key={url}
           src={assetUrl(url)}
-          alt="解析配图"
+          alt={alt}
           className="max-h-[420px] max-w-full rounded-md border border-ink/10 object-contain"
         />
       ))}

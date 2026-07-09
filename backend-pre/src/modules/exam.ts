@@ -111,6 +111,7 @@ interface PaperQuestion {
   id: string;
   type: 'single' | 'multiple';
   stem: string;
+  stemImageUrls: string[];
   options: QuestionOption[];
 }
 
@@ -119,6 +120,7 @@ interface GradedItem {
   category: string;
   stem: string;
   options: QuestionOption[];
+  stemImageUrls: string[];
   imageUrls: string[];
   yourAnswer: string;
   correctAnswer: string;
@@ -133,6 +135,7 @@ interface WrongBookItem {
   type: 'single' | 'multiple';
   stem: string;
   options: QuestionOption[];
+  stemImageUrls: string[];
   imageUrls: string[];
   answer: string;
   analysis: string;
@@ -231,7 +234,13 @@ export class ExamService {
     return {
       attemptId: attempt.id,
       total: picked.length,
-      questions: picked.map((q) => ({ id: q.id, type: q.type, stem: q.stem, options: q.options })),
+      questions: picked.map((q) => ({
+        id: q.id,
+        type: q.type,
+        stem: q.stem,
+        stemImageUrls: q.stemImageUrls ?? [],
+        options: q.options,
+      })),
     };
   }
 
@@ -296,6 +305,7 @@ export class ExamService {
         category: q.category,
         stem: q.stem,
         options: q.options,
+        stemImageUrls: q.stemImageUrls ?? [],
         imageUrls: q.imageUrls ?? [],
         yourAnswer: your,
         correctAnswer: q.answer,
@@ -518,6 +528,7 @@ export class ExamService {
         type: q.type,
         stem: q.stem,
         options: q.options,
+        stemImageUrls: q.stemImageUrls ?? [],
         imageUrls: q.imageUrls ?? [],
         answer: q.answer,
         analysis: q.analysis,
@@ -599,6 +610,7 @@ export class ExamService {
         category: q.category,
         stem: q.stem,
         options: q.options,
+        stemImageUrls: q.stemImageUrls ?? [],
         imageUrls: q.imageUrls ?? [],
         yourAnswer: your,
         correctAnswer: q.answer,

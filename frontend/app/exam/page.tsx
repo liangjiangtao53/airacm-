@@ -163,6 +163,7 @@ export default function ExamPage() {
                 </span>
                 <div className="min-w-0 flex-1">
                   <p className="font-medium text-ink">{q.stem}</p>
+                  <QuestionImages urls={q.stemImageUrls} alt="题干配图" />
                 </div>
               </div>
               <div className="space-y-2">
@@ -233,6 +234,7 @@ function ResultCard({ d, index }: { d: GradedItem; index: number }) {
         </span>
         <div className="min-w-0 flex-1">
           <p className="font-medium text-ink">{d.stem}</p>
+          <QuestionImages urls={d.stemImageUrls} alt="题干配图" />
         </div>
       </div>
       <p className="text-sm text-ink/70">
@@ -242,7 +244,7 @@ function ResultCard({ d, index }: { d: GradedItem; index: number }) {
       {(d.analysis || d.imageUrls?.length) && (
         <div className="mt-2 rounded-lg bg-mist px-4 py-2 text-sm text-ink/65">
           {d.analysis && <p>解析:{d.analysis}</p>}
-          <QuestionImages urls={d.imageUrls} />
+          <QuestionImages urls={d.imageUrls} alt="解析配图" />
         </div>
       )}
       <button
@@ -256,7 +258,7 @@ function ResultCard({ d, index }: { d: GradedItem; index: number }) {
   );
 }
 
-function QuestionImages({ urls }: { urls?: string[] }) {
+function QuestionImages({ urls, alt }: { urls?: string[]; alt: string }) {
   if (!urls?.length) return null;
   return (
     <div className="mt-3 space-y-2">
@@ -264,7 +266,7 @@ function QuestionImages({ urls }: { urls?: string[] }) {
         <img
           key={url}
           src={assetUrl(url)}
-          alt="解析配图"
+          alt={alt}
           className="max-h-[520px] max-w-full rounded-lg border border-ink/10 object-contain"
         />
       ))}

@@ -33,6 +33,7 @@ import {
   Wallet,
   WrongQuestion,
 } from '../src/entities';
+import { QuestionService } from '../src/modules/question';
 import { SmsService } from '../src/modules/sms';
 
 const TENANT = 't1';
@@ -51,6 +52,7 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
   let ds: DataSource;
   let jwt: JwtService;
   let sms: SmsService;
+  let questionSvc: QuestionService;
 
   beforeAll(async () => {
     const moduleRef: TestingModule = await Test.createTestingModule({
@@ -64,6 +66,7 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
     ds = moduleRef.get(DataSource);
     jwt = moduleRef.get(JwtService);
     sms = moduleRef.get(SmsService);
+    questionSvc = moduleRef.get(QuestionService);
   });
 
   afterAll(async () => {
@@ -254,13 +257,68 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
       expect(multi?.type).toBe('multiple'); // 多字母答案识别为多选
     });
 
+    it('WPS stem cell images stay in the stem and DISPIMG formulas are stripped', () => {
+      const svc = questionSvc as unknown as {
+        extractWpsCellImages: (wb: XLSX.WorkBook, sheet: XLSX.WorkSheet) => Map<number, Array<{ colIndex?: number }>>;
+        parseRow: (
+          row: unknown[],
+          colMap: { stem: number; answer: number; analysis: number; options: Array<{ key: string; idx: number }> },
+          images: Array<{ colIndex?: number }>,
+        ) => { stem: string; analysis: string } | { error: string };
+        splitRowImagesByUsage: (
+          images: Array<{ colIndex?: number }>,
+          colMap: { stem: number; answer: number; analysis: number; options: Array<{ key: string; idx: number }> },
+        ) => { stem: unknown[]; analysis: unknown[] };
+      };
+      const wb = {
+        files: {
+          'xl/cellimages.xml': {
+            content: Buffer.from(
+              '<etc:cellImage><xdr:cNvPr name="ID_STEM"/><a:blip r:embed="rId1"/></etc:cellImage>' +
+                '<etc:cellImage><xdr:cNvPr name="ID_ANALYSIS"/><a:blip r:embed="rId2"/></etc:cellImage>',
+            ),
+          },
+          'xl/_rels/cellimages.xml.rels': {
+            content: Buffer.from(
+              '<Relationship Id="rId1" Target="../media/stem.png"/><Relationship Id="rId2" Target="../media/analysis.png"/>',
+            ),
+          },
+          'xl/media/stem.png': { content: Buffer.from('stem') },
+          'xl/media/analysis.png': { content: Buffer.from('analysis') },
+        },
+      } as unknown as XLSX.WorkBook;
+      const sheet = {
+        A2: { f: '=DISPIMG("ID_STEM",1)' },
+        G2: { f: '=DISPIMG("ID_ANALYSIS",1)' },
+      } as unknown as XLSX.WorkSheet;
+      const images = svc.extractWpsCellImages(wb, sheet).get(1) ?? [];
+      const colMap = {
+        stem: 0,
+        answer: 5,
+        analysis: 6,
+        options: [
+          { key: 'A', idx: 1 },
+          { key: 'B', idx: 2 },
+        ],
+      };
+      const parsed = svc.parseRow(['=DISPIMG("ID_STEM",1)', '选项A', '选项B', '', '', 'A', '=DISPIMG("ID_ANALYSIS",1)'], colMap, images);
+      const buckets = svc.splitRowImagesByUsage(images, colMap);
+
+      expect(images.map((image) => image.colIndex).sort()).toEqual([0, 6]);
+      expect(parsed).toMatchObject({ stem: '', analysis: '' });
+      expect(buckets.stem).toHaveLength(1);
+      expect(buckets.analysis).toHaveLength(1);
+    });
+
     it('学习列表默认不下发答案,查看答案单独取', async () => {
       const admin = await makeUser('admin');
       await request(app.getHttpServer())
         .post('/admin/questions/import?usage=study')
         .set('Authorization', `Bearer ${admin.token}`)
         .attach('file', buildXlsx([['学习题', '对', '错', '', '', 'A', '因为对']]), 'q.xlsx');
-      await ds.getRepository(Question).update({ tenantId: TENANT, stem: '学习题' }, { imageUrls: ['/uploads/analysis.png'] });
+      await ds
+        .getRepository(Question)
+        .update({ tenantId: TENANT, stem: '学习题' }, { stemImageUrls: ['/question-images/stem.png'], imageUrls: ['/uploads/analysis.png'] });
 
       const user = await makeUser('user');
       const list = await request(app.getHttpServer())
@@ -271,6 +329,7 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
       expect(item).toBeTruthy();
       expect(item.answer).toBeUndefined(); // 列表不含答案
       expect(item.analysis).toBeUndefined();
+      expect(item.stemImageUrls).toEqual(['/question-images/stem.png']);
       expect(item.imageUrls).toBeUndefined();
 
       const ans = await request(app.getHttpServer())
@@ -672,7 +731,7 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
       expect(fresh).toHaveLength(12);
     });
 
-    it('study list advances sequentially in fixed batches of 20 inside the selected category', async () => {
+    it('study list returns the full selected category and resumes from the saved index', async () => {
       const user = await makeUser('user');
       const category = `SEQUENTIAL-STUDY-${phoneSeq++}`;
       const otherCategory = `SEQUENTIAL-STUDY-OTHER-${phoneSeq++}`;
@@ -699,11 +758,13 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
 
       const items = res.body.data.items as Array<{ stem: string; category: string }>;
       expect(res.status).toBe(200);
-      expect(items).toHaveLength(20);
-      expect(res.body.data.pageSize).toBe(20);
+      expect(items).toHaveLength(25);
+      expect(res.body.data.total).toBe(25);
+      expect(res.body.data.pageSize).toBe(25);
       expect(res.body.data.page).toBe(1);
+      expect(res.body.data.startIndex).toBe(0);
       expect(items.every((q) => q.category === category)).toBe(true);
-      expect(items.map((q) => q.stem)).toEqual(Array.from({ length: 20 }, (_, i) => `STUDY-SEQ-${i + 1}`));
+      expect(items.map((q) => q.stem)).toEqual(Array.from({ length: 25 }, (_, i) => `STUDY-SEQ-${i + 1}`));
       expect(countByPrefix(items, 'STUDY-OTHER')).toBe(0);
 
       const progress = await request(app.getHttpServer())
@@ -720,14 +781,15 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
       });
       expect(studyWrongAfterProgressOnly).toBe(0);
 
-      const next = await request(app.getHttpServer())
+      const resumed = await request(app.getHttpServer())
         .get(`/questions?usage=study&category=${encodeURIComponent(category)}&page=99&pageSize=10`)
         .set('Authorization', `Bearer ${user.token}`);
-      const nextItems = next.body.data.items as Array<{ stem: string; category: string }>;
-      expect(next.status).toBe(200);
-      expect(next.body.data.page).toBe(2);
-      expect(next.body.data.pageSize).toBe(20);
-      expect(nextItems.map((q) => q.stem)).toEqual(['STUDY-SEQ-21', 'STUDY-SEQ-22', 'STUDY-SEQ-23', 'STUDY-SEQ-24', 'STUDY-SEQ-25']);
+      const resumedItems = resumed.body.data.items as Array<{ stem: string; category: string }>;
+      expect(resumed.status).toBe(200);
+      expect(resumed.body.data.page).toBe(1);
+      expect(resumed.body.data.pageSize).toBe(25);
+      expect(resumed.body.data.startIndex).toBe(20);
+      expect(resumedItems.map((q) => q.stem)).toEqual(Array.from({ length: 25 }, (_, i) => `STUDY-SEQ-${i + 1}`));
 
       await ds.getRepository(StudyQuestionProgress).upsert(
         {
@@ -745,8 +807,9 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
         .get(`/questions?usage=study&category=${encodeURIComponent(category)}`)
         .set('Authorization', `Bearer ${user.token}`);
       expect(done.status).toBe(200);
-      expect(done.body.data.items).toHaveLength(0);
-      expect(done.body.data.page).toBe(2);
+      expect(done.body.data.items).toHaveLength(25);
+      expect(done.body.data.page).toBe(1);
+      expect(done.body.data.startIndex).toBe(24);
     });
 
     it('question pool cache refreshes after import and delete', async () => {

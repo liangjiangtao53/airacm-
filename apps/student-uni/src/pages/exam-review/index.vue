@@ -131,6 +131,7 @@ onShow(load);
           <view v-for="(d, i) in details[a.id] || []" :key="d.questionId" class="detail">
             <text :class="['badge', d.isCorrect ? 'ok' : 'bad']">{{ i + 1 }} · {{ d.isCorrect ? '正确' : '错误' }}</text>
             <text class="stem">{{ d.stem }}</text>
+            <image v-for="url in d.stemImageUrls || []" :key="url" :src="assetUrl(url)" mode="widthFix" class="question-image" />
             <view class="options">
               <view
                 v-for="option in d.options"

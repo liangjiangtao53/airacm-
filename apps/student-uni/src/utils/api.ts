@@ -55,6 +55,7 @@ export interface QuestionItem {
   courseId: string | null;
   type: 'single' | 'multiple';
   stem: string;
+  stemImageUrls?: string[];
   options: QuestionOption[];
   imageUrls?: string[];
   usage: QuestionUsage;
@@ -65,6 +66,7 @@ export interface PaperQuestion {
   id: string;
   type: 'single' | 'multiple';
   stem: string;
+  stemImageUrls?: string[];
   options: QuestionOption[];
 }
 
@@ -79,6 +81,7 @@ export interface GradedItem {
   category: string;
   stem: string;
   options: QuestionOption[];
+  stemImageUrls?: string[];
   imageUrls?: string[];
   yourAnswer: string;
   correctAnswer: string;
@@ -109,6 +112,7 @@ export interface WrongBookItem {
   type: 'single' | 'multiple';
   stem: string;
   options: QuestionOption[];
+  stemImageUrls?: string[];
   imageUrls?: string[];
   answer: string;
   analysis: string;
@@ -215,7 +219,7 @@ export const api = {
   } = {}) => {
     const pairs = Object.entries(params).filter(([, value]) => value !== undefined && value !== '');
     const qs = pairs.length ? `?${new URLSearchParams(pairs.map(([k, v]) => [k, String(v)])).toString()}` : '';
-    return request<{ items: QuestionItem[]; total: number; page: number; pageSize: number }>(`/questions${qs}`);
+    return request<{ items: QuestionItem[]; total: number; page: number; pageSize: number; startIndex?: number }>(`/questions${qs}`);
   },
   questionAnswer: (id: string) => request<{ answer: string; analysis: string; imageUrls?: string[] }>(`/questions/${id}/answer`),
   startExam: (category?: string) =>

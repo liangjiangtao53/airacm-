@@ -533,6 +533,9 @@ export class Question {
   @Column({ type: 'text' })
   stem!: string; // 题干
 
+  @Column({ type: 'simple-json', nullable: true })
+  stemImageUrls!: string[] | null;
+
   // 选项数组 [{key,text}]。simple-json 在 postgres/sqlite 双驱动均可用。
   @Column({ type: 'simple-json' })
   options!: QuestionOption[];

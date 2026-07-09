@@ -54,7 +54,6 @@ interface UploadedQuestionFile {
 }
 
 const USAGES: QuestionUsage[] = ['study', 'exam', 'both'];
-const SEQUENTIAL_STUDY_BATCH_SIZE = 20;
 // 模板表头(下载用)。解析按表头名匹配,不依赖列序,兼容真实文件(序号/参考答案/3选项等)。
 const TEMPLATE_HEADER = ['题干', '选项A', '选项B', '选项C', '选项D', '答案', '解析'] as const;
 const PDF_IMPORT_HEADER = ['题干', '选项A', '选项B', '选项C', '选项D', '选项E', '选项F', '选项G', '选项H', '答案', '解析'] as const;
@@ -227,6 +226,7 @@ interface ImportFailure {
 interface ExtractedImage {
   ext: string;
   buffer: Buffer;
+  colIndex?: number;
 }
 
 interface ParsedImportFile {
@@ -244,6 +244,13 @@ interface ImportPlanRow {
     answer: string;
     analysis: string;
   };
+}
+
+interface ImportColumnMap {
+  stem: number;
+  answer: number;
+  analysis: number;
+  options: Array<{ key: string; idx: number }>;
 }
 
 @Injectable()
@@ -465,7 +472,7 @@ export class QuestionService {
   }> {
     await this.assertCategoryExists(admin.tenantId, category);
     const parsedFile = await this.parseImportFile(file);
-    const plan = this.buildImportPlan(parsedFile.rows);
+    const plan = this.buildImportPlan(parsedFile.rows, parsedFile.rowImages);
     const stems = plan.toSave.map((row) => row.parsed.stem);
     return {
       totalRows: Math.max(parsedFile.rows.length - 1, 0),
@@ -500,7 +507,10 @@ export class QuestionService {
     return { rows, rowImages, fileName, fileHash };
   }
 
-  private buildImportPlan(rows: unknown[][]): { toSave: ImportPlanRow[]; failed: ImportFailure[] } {
+  private buildImportPlan(
+    rows: unknown[][],
+    rowImages = new Map<number, ExtractedImage[]>(),
+  ): { toSave: ImportPlanRow[]; failed: ImportFailure[]; colMap: ImportColumnMap } {
     const colMap = this.buildColMap(rows[0]);
     if (colMap.stem < 0) throw new BadRequestException('missing stem column');
     if (colMap.answer < 0) throw new BadRequestException('missing answer column');
@@ -509,14 +519,14 @@ export class QuestionService {
     const failed: ImportFailure[] = [];
     const toSave: ImportPlanRow[] = [];
     for (let i = 1; i < rows.length; i++) {
-      const parsed = this.parseRow(rows[i], colMap);
+      const parsed = this.parseRow(rows[i], colMap, rowImages.get(i) ?? []);
       if ('error' in parsed) {
         failed.push({ row: i + 1, reason: parsed.error });
         continue;
       }
       toSave.push({ rowIndex: i, parsed });
     }
-    return { toSave, failed };
+    return { toSave, failed, colMap };
   }
 
   private async importParsedRows(
@@ -526,7 +536,7 @@ export class QuestionService {
     category: string | undefined,
     courseId: string | undefined,
   ): Promise<{ imported: number; failed: ImportFailure[]; batchId: string }> {
-    const plan = this.buildImportPlan(parsedFile.rows);
+    const plan = this.buildImportPlan(parsedFile.rows, parsedFile.rowImages);
     const batchId = randomUUID();
     const batch = this.importBatches.create({
       id: batchId,
@@ -546,6 +556,7 @@ export class QuestionService {
 
     const toSave: Question[] = [];
     for (const row of plan.toSave) {
+      const rowImageBuckets = this.splitRowImagesByUsage(parsedFile.rowImages.get(row.rowIndex) ?? [], plan.colMap);
       toSave.push(
         this.questions.create({
           tenantId: admin.tenantId,
@@ -553,10 +564,11 @@ export class QuestionService {
           courseId: courseId ?? null,
           type: row.parsed.answer.length > 1 ? 'multiple' : 'single',
           stem: row.parsed.stem,
+          stemImageUrls: await this.saveQuestionImages(rowImageBuckets.stem),
           options: row.parsed.options,
           answer: row.parsed.answer,
           analysis: row.parsed.analysis,
-          imageUrls: await this.saveQuestionImages(parsedFile.rowImages.get(row.rowIndex) ?? []),
+          imageUrls: await this.saveQuestionImages(rowImageBuckets.analysis),
           usage,
           order: row.rowIndex,
           importBatchId: batchId,
@@ -649,11 +661,12 @@ export class QuestionService {
     const toSave: Question[] = [];
     for (let i = 1; i < rows.length; i++) {
       const rowNo = i + 1;
-      const parsed = this.parseRow(rows[i], colMap);
+      const parsed = this.parseRow(rows[i], colMap, rowImages.get(i) ?? []);
       if ('error' in parsed) {
         failed.push({ row: rowNo, reason: parsed.error });
         continue;
       }
+      const rowImageBuckets = this.splitRowImagesByUsage(rowImages.get(i) ?? [], colMap);
       toSave.push(
         this.questions.create({
           tenantId: admin.tenantId,
@@ -661,10 +674,11 @@ export class QuestionService {
           courseId: courseId ?? null,
           type: parsed.answer.length > 1 ? 'multiple' : 'single',
           stem: parsed.stem,
+          stemImageUrls: await this.saveQuestionImages(rowImageBuckets.stem),
           options: parsed.options,
           answer: parsed.answer,
           analysis: parsed.analysis,
-          imageUrls: await this.saveQuestionImages(rowImages.get(i) ?? []),
+          imageUrls: await this.saveQuestionImages(rowImageBuckets.analysis),
           usage,
           order: i,
         }),
@@ -789,7 +803,7 @@ export class QuestionService {
     for (const [addr, cell] of Object.entries(sheet)) {
       if (addr.startsWith('!')) continue;
       const formula = String((cell as { f?: unknown; v?: unknown }).f ?? (cell as { v?: unknown }).v ?? '');
-      const id = formula.match(/DISPIMG\("([^"]+)"/)?.[1];
+      const id = formula.match(/DISP(?:IMG|MIG)\("([^"]+)"/i)?.[1];
       if (!id) continue;
       const rid = byName.get(id);
       const target = rid ? byRid.get(rid) : undefined;
@@ -797,11 +811,26 @@ export class QuestionService {
       const filePath = target.startsWith('xl/') ? target : `xl/${target}`;
       const image = files?.[filePath]?.content;
       if (!image?.length) continue;
-      const rowIndex = XLSX.utils.decode_cell(addr).r;
+      const { r: rowIndex, c: colIndex } = XLSX.utils.decode_cell(addr);
       const ext = extname(filePath).toLowerCase() || '.png';
-      result.set(rowIndex, [...(result.get(rowIndex) ?? []), { ext, buffer: Buffer.from(image) }]);
+      result.set(rowIndex, [...(result.get(rowIndex) ?? []), { ext, buffer: Buffer.from(image), colIndex }]);
     }
     return result;
+  }
+
+  private splitRowImagesByUsage(
+    images: ExtractedImage[],
+    colMap: ImportColumnMap,
+  ): { stem: ExtractedImage[]; analysis: ExtractedImage[] } {
+    const stem = images.filter((image) => image.colIndex === colMap.stem);
+    return {
+      stem,
+      analysis: images.filter((image) => image.colIndex !== colMap.stem),
+    };
+  }
+
+  private stripWpsImageFormula(value: string): string {
+    return value.replace(/=?\s*DISP(?:IMG|MIG)\("([^"]+)"(?:\s*,\s*\d+)?\)/gi, '').trim();
   }
 
   private async saveQuestionImages(images: ExtractedImage[]): Promise<string[]> {
@@ -819,12 +848,7 @@ export class QuestionService {
   }
 
   // 表头 → 列索引。stem/answer/analysis 单列,options 为 {key,idx} 列表。未找到记 -1。
-  private buildColMap(header: unknown[]): {
-    stem: number;
-    answer: number;
-    analysis: number;
-    options: Array<{ key: string; idx: number }>;
-  } {
+  private buildColMap(header: unknown[]): ImportColumnMap {
     const norm = (v: unknown): string => String(v ?? '').replace(/\s/g, '').trim();
     const map = { stem: -1, answer: -1, analysis: -1, options: [] as Array<{ key: string; idx: number }> };
     header.forEach((cell, idx) => {
@@ -846,11 +870,13 @@ export class QuestionService {
 
   private parseRow(
     row: unknown[],
-    colMap: ReturnType<QuestionService['buildColMap']>,
+    colMap: ImportColumnMap,
+    rowImages: ExtractedImage[] = [],
   ): { stem: string; options: QuestionOption[]; answer: string; analysis: string } | { error: string } {
-    const cell = (idx: number): string => (idx < 0 ? '' : String(row[idx] ?? '').trim());
+    const cell = (idx: number): string => (idx < 0 ? '' : this.stripWpsImageFormula(String(row[idx] ?? '').trim()));
     const stem = cell(colMap.stem);
-    if (!stem) return { error: '题干为空' };
+    const hasStemImage = rowImages.some((image) => image.colIndex === colMap.stem);
+    if (!stem && !hasStemImage) return { error: '题干为空' };
 
     const options: QuestionOption[] = [];
     for (const o of colMap.options) {
@@ -884,6 +910,7 @@ export class QuestionService {
     total: number;
     page: number;
     pageSize: number;
+    startIndex?: number;
   }> {
     const page = q.page ?? 1;
     const pageSize = q.pageSize ?? 20;
@@ -907,30 +934,32 @@ export class QuestionService {
         'q.courseId',
         'q.type',
         'q.stem',
+        'q.stemImageUrls',
         'q.options',
         'q.usage',
         'q.order',
         'q.createdAt',
       ];
       if (q.usage === 'study' && q.category && !q.keyword?.trim()) {
-        // 顺序学习原来混用自适应排序；现在按用户最后一次学习位置继续固定取 20 题。
+        // 顺序学习不再按 20 题分页；一次返回当前科目的完整顺序列表,由客户端一题一题切到底。
         const allRows = await this.questionPool.getQuestions(user.tenantId, {
           usage: 'study',
           category: q.category,
           ...(q.courseId ? { courseId: q.courseId } : {}),
           reloadIfEmpty: true,
         });
-        const { rows, page: currentPage } = await this.listSequentialStudyBatch(
+        const { rows, startIndex } = await this.listSequentialStudyBatch(
           user,
           allRows,
           q.category,
           q.courseId ?? '',
         );
         return {
-          items: rows.map((row) => ({ ...row, imageUrls: [] })),
+          items: rows.map(({ imageUrls: _img, ...row }) => row),
           total: allRows.length,
-          page: currentPage,
-          pageSize: SEQUENTIAL_STUDY_BATCH_SIZE,
+          page: 1,
+          pageSize: allRows.length || 1,
+          startIndex,
         };
       }
 
@@ -1006,19 +1035,19 @@ export class QuestionService {
     allRows: T[],
     category: string,
     courseId: string,
-  ): Promise<{ rows: T[]; page: number }> {
-    if (allRows.length === 0) return { rows: [], page: 1 };
+  ): Promise<{ rows: T[]; startIndex: number }> {
+    if (allRows.length === 0) return { rows: [], startIndex: 0 };
     const questionIndex = new Map(allRows.map((q, i) => [q.id, i]));
     const progress = await this.studyProgress.findOne({
       where: { tenantId: user.tenantId, userId: user.userId, category, courseId },
       select: ['questionId'],
     });
     const lastIndex = progress ? questionIndex.get(progress.questionId) : undefined;
-    const startIndex = lastIndex === undefined ? 0 : lastIndex + 1;
+    const startIndex = Math.min(allRows.length - 1, lastIndex === undefined ? 0 : lastIndex + 1);
 
     return {
-      rows: allRows.slice(startIndex, startIndex + SEQUENTIAL_STUDY_BATCH_SIZE),
-      page: Math.floor(startIndex / SEQUENTIAL_STUDY_BATCH_SIZE) + 1,
+      rows: allRows,
+      startIndex,
     };
   }
 
