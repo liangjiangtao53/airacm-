@@ -731,7 +731,7 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
       expect(fresh).toHaveLength(12);
     });
 
-    it('study list returns the full selected category and resumes from the saved index', async () => {
+    it('study list returns a sequential page, keeps total count, and resumes from the saved index', async () => {
       const user = await makeUser('user');
       const category = `SEQUENTIAL-STUDY-${phoneSeq++}`;
       const otherCategory = `SEQUENTIAL-STUDY-OTHER-${phoneSeq++}`;
@@ -758,13 +758,13 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
 
       const items = res.body.data.items as Array<{ stem: string; category: string }>;
       expect(res.status).toBe(200);
-      expect(items).toHaveLength(25);
+      expect(items).toHaveLength(10);
       expect(res.body.data.total).toBe(25);
-      expect(res.body.data.pageSize).toBe(25);
+      expect(res.body.data.pageSize).toBe(10);
       expect(res.body.data.page).toBe(1);
       expect(res.body.data.startIndex).toBe(0);
       expect(items.every((q) => q.category === category)).toBe(true);
-      expect(items.map((q) => q.stem)).toEqual(Array.from({ length: 25 }, (_, i) => `STUDY-SEQ-${i + 1}`));
+      expect(items.map((q) => q.stem)).toEqual(Array.from({ length: 10 }, (_, i) => `STUDY-SEQ-${i + 1}`));
       expect(countByPrefix(items, 'STUDY-OTHER')).toBe(0);
 
       const progress = await request(app.getHttpServer())
@@ -782,14 +782,25 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
       expect(studyWrongAfterProgressOnly).toBe(0);
 
       const resumed = await request(app.getHttpServer())
-        .get(`/questions?usage=study&category=${encodeURIComponent(category)}&page=99&pageSize=10`)
+        .get(`/questions?usage=study&category=${encodeURIComponent(category)}&pageSize=10`)
         .set('Authorization', `Bearer ${user.token}`);
       const resumedItems = resumed.body.data.items as Array<{ stem: string; category: string }>;
       expect(resumed.status).toBe(200);
-      expect(resumed.body.data.page).toBe(1);
-      expect(resumed.body.data.pageSize).toBe(25);
-      expect(resumed.body.data.startIndex).toBe(20);
-      expect(resumedItems.map((q) => q.stem)).toEqual(Array.from({ length: 25 }, (_, i) => `STUDY-SEQ-${i + 1}`));
+      expect(resumed.body.data.page).toBe(3);
+      expect(resumed.body.data.pageSize).toBe(10);
+      expect(resumed.body.data.startIndex).toBe(0);
+      expect(resumedItems.map((q) => q.stem)).toEqual(Array.from({ length: 5 }, (_, i) => `STUDY-SEQ-${i + 21}`));
+
+      const explicitPage = await request(app.getHttpServer())
+        .get(`/questions?usage=study&category=${encodeURIComponent(category)}&page=2&pageSize=10`)
+        .set('Authorization', `Bearer ${user.token}`);
+      expect(explicitPage.status).toBe(200);
+      expect(explicitPage.body.data.page).toBe(2);
+      expect(explicitPage.body.data.pageSize).toBe(10);
+      expect(explicitPage.body.data.startIndex).toBe(0);
+      expect((explicitPage.body.data.items as Array<{ stem: string }>).map((q) => q.stem)).toEqual(
+        Array.from({ length: 10 }, (_, i) => `STUDY-SEQ-${i + 11}`),
+      );
 
       await ds.getRepository(StudyQuestionProgress).upsert(
         {
@@ -807,9 +818,13 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
         .get(`/questions?usage=study&category=${encodeURIComponent(category)}`)
         .set('Authorization', `Bearer ${user.token}`);
       expect(done.status).toBe(200);
-      expect(done.body.data.items).toHaveLength(25);
-      expect(done.body.data.page).toBe(1);
-      expect(done.body.data.startIndex).toBe(24);
+      expect(done.body.data.items).toHaveLength(5);
+      expect(done.body.data.page).toBe(2);
+      expect(done.body.data.pageSize).toBe(20);
+      expect(done.body.data.startIndex).toBe(4);
+      expect((done.body.data.items as Array<{ stem: string }>).map((q) => q.stem)).toEqual(
+        Array.from({ length: 5 }, (_, i) => `STUDY-SEQ-${i + 21}`),
+      );
     });
 
     it('question pool cache refreshes after import and delete', async () => {

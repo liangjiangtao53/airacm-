@@ -948,17 +948,19 @@ export class QuestionService {
           ...(q.courseId ? { courseId: q.courseId } : {}),
           reloadIfEmpty: true,
         });
-        const { rows, startIndex } = await this.listSequentialStudyBatch(
+        const { rows, page: currentPage, startIndex } = await this.listSequentialStudyBatch(
           user,
           allRows,
           q.category,
           q.courseId ?? '',
+          pageSize,
+          q.page,
         );
         return {
           items: rows.map(({ imageUrls: _img, ...row }) => row),
           total: allRows.length,
-          page: 1,
-          pageSize: allRows.length || 1,
+          page: currentPage,
+          pageSize,
           startIndex,
         };
       }
@@ -1035,19 +1037,28 @@ export class QuestionService {
     allRows: T[],
     category: string,
     courseId: string,
-  ): Promise<{ rows: T[]; startIndex: number }> {
-    if (allRows.length === 0) return { rows: [], startIndex: 0 };
+    pageSize: number,
+    requestedPage?: number,
+  ): Promise<{ rows: T[]; page: number; startIndex: number }> {
+    if (allRows.length === 0) return { rows: [], page: 1, startIndex: 0 };
     const questionIndex = new Map(allRows.map((q, i) => [q.id, i]));
     const progress = await this.studyProgress.findOne({
       where: { tenantId: user.tenantId, userId: user.userId, category, courseId },
       select: ['questionId'],
     });
     const lastIndex = progress ? questionIndex.get(progress.questionId) : undefined;
-    const startIndex = Math.min(allRows.length - 1, lastIndex === undefined ? 0 : lastIndex + 1);
+    const resumeIndex = Math.min(allRows.length - 1, lastIndex === undefined ? 0 : lastIndex + 1);
+    const maxPage = Math.max(1, Math.ceil(allRows.length / pageSize));
+    const page =
+      requestedPage === undefined
+        ? Math.floor(resumeIndex / pageSize) + 1
+        : Math.min(maxPage, Math.max(1, requestedPage));
+    const pageStart = (page - 1) * pageSize;
 
     return {
-      rows: allRows,
-      startIndex,
+      rows: allRows.slice(pageStart, pageStart + pageSize),
+      page,
+      startIndex: requestedPage === undefined ? resumeIndex - pageStart : 0,
     };
   }
 

@@ -56,11 +56,12 @@ async function loadQuestions(reset = false, targetIndex = 0) {
   if (!category.value) return;
   loading.value = true;
   try {
+    const keywordText = keyword.value.trim();
     const res = await api.questions({
       usage: 'study',
       category: category.value,
-      keyword: keyword.value.trim() || undefined,
-      page: page.value,
+      keyword: keywordText || undefined,
+      page: reset && !keywordText ? undefined : page.value,
       pageSize: pageSize.value,
     });
     questions.value = res.items;
@@ -194,24 +195,37 @@ function changeCategory(e: { detail: { value: number } }) {
 }
 
 async function nextQuestion(delta: number) {
+  const maxPage = Math.max(1, Math.ceil(total.value / pageSize.value));
   const nextIndex = currentIndex.value + delta;
   if (delta > 0) {
     await recordStudyProgress(currentQuestion.value?.id);
   }
   if (nextIndex >= 0 && nextIndex < questions.value.length) {
     currentIndex.value = nextIndex;
+    return;
+  }
+  if (delta > 0 && page.value < maxPage) {
+    page.value += 1;
+    await loadQuestions(false, 0);
+    return;
+  }
+  if (delta < 0 && page.value > 1) {
+    page.value -= 1;
+    await loadQuestions(false, pageSize.value - 1);
   }
 }
 
 async function jumpToQuestion() {
   if (!total.value) return;
   const target = Math.min(total.value, Math.max(1, Number(jumpNumber.value) || 1));
-  const targetIndex = target - 1;
   if (target > currentNumber.value) {
     await recordStudyProgress(currentQuestion.value?.id);
   }
+  const targetPage = Math.max(1, Math.ceil(target / pageSize.value));
+  const targetIndex = (target - 1) % pageSize.value;
+  page.value = targetPage;
   jumpNumber.value = String(target);
-  currentIndex.value = Math.min(targetIndex, Math.max(0, questions.value.length - 1));
+  await loadQuestions(false, targetIndex);
 }
 
 function onTouchStart(e: { changedTouches?: Array<{ clientX: number }>; touches?: Array<{ clientX: number }> }) {

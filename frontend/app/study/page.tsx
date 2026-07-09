@@ -66,7 +66,7 @@ export default function StudyPage() {
         usage: 'study',
         category,
         keyword: searchKw || undefined,
-        page: manualPage ?? undefined,
+        page: manualPage ?? page,
         pageSize,
       })
       .then((r) => {
@@ -77,7 +77,7 @@ export default function StudyPage() {
       })
       .catch((e) => setErr((e as Error).message))
       .finally(() => setLoading(false));
-  }, [category, searchKw, manualPage, pageSize]);
+  }, [category, searchKw, manualPage, page, pageSize]);
 
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
 
