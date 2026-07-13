@@ -21,7 +21,7 @@ import { DataSource, LessThan, Repository } from 'typeorm';
 import { IsInt, IsOptional, IsString, Length, Matches, Max, Min } from 'class-validator';
 import { Throttle } from '@nestjs/throttler';
 import * as crypto from 'crypto';
-import { AccessKey, AdminOperationLog, User, Wallet } from '../entities';
+import { AccessKey, AdminOperationLog, User, Wallet, WechatBindSession } from '../entities';
 import { AuthUser, CurrentUser, JwtAuthGuard, Roles, RolesGuard, JwtPayload } from '../common';
 import { SessionService } from '../session';
 import { env } from '../config';
@@ -172,6 +172,121 @@ export class AccessKeyService {
     return { token, userId: k.id, expiresAt: k.expiresAt, needProfile: true };
   }
 
+  async activeKeyExpiry(tenantId: string, userId: string): Promise<Date> {
+    const key = await this.keys
+      .createQueryBuilder('k')
+      .where('k.tenantId = :tenantId', { tenantId })
+      .andWhere('k.userId = :userId', { userId })
+      .andWhere('k.status = :status', { status: 'active' })
+      .andWhere('k.expiresAt > :now', { now: new Date() })
+      .orderBy('k.expiresAt', 'DESC')
+      .getOne();
+    if (!key) throw new UnauthorizedException('卡密已过期或作废');
+    return key.expiresAt;
+  }
+
+  async keyNeedsProfile(tenantId: string, key: string): Promise<boolean> {
+    const row = await this.keys.findOne({ where: { tenantId, key: key.trim() } });
+    if (!row || row.status !== 'active') throw new UnauthorizedException('卡密无效');
+    this.remainingSec(row.expiresAt);
+    return !row.userId;
+  }
+
+  // 微信首次绑定复用卡密归属。原来卡密补全与微信身份无关；现在两者在同一事务中落库。
+  async bindWechatByKey(
+    tenantId: string,
+    bindingTokenHash: string,
+    key: string,
+    profile?: { phone: string; nickname: string },
+  ): Promise<{ user: User; expiresAt: Date; token: string }> {
+    return this.dataSource.transaction(async (manager) => {
+      let sessionQuery = manager
+        .createQueryBuilder(WechatBindSession, 's')
+        .where('s.tenantId = :tenantId', { tenantId })
+        .andWhere('s.tokenHash = :bindingTokenHash', { bindingTokenHash });
+      if (this.dataSource.options.type !== 'better-sqlite3') {
+        sessionQuery = sessionQuery.setLock('pessimistic_write');
+      }
+      const bindSession = await sessionQuery.getOne();
+      this.assertBindingSession(bindSession);
+
+      let keyQuery = manager
+        .createQueryBuilder(AccessKey, 'k')
+        .where('k.tenantId = :tenantId', { tenantId })
+        .andWhere('k.key = :key', { key: key.trim() });
+      if (this.dataSource.options.type !== 'better-sqlite3') {
+        keyQuery = keyQuery.setLock('pessimistic_write');
+      }
+      const accessKey = await keyQuery.getOne();
+      if (!accessKey || accessKey.status !== 'active') {
+        throw new UnauthorizedException('卡密无效');
+      }
+      const expiresInSec = this.remainingSec(accessKey.expiresAt);
+      const sid = crypto.randomUUID();
+
+      let user: User;
+      if (accessKey.userId) {
+        let userQuery = manager
+          .createQueryBuilder(User, 'u')
+          .where('u.tenantId = :tenantId', { tenantId })
+          .andWhere('u.id = :userId', { userId: accessKey.userId });
+        if (this.dataSource.options.type !== 'better-sqlite3') {
+          userQuery = userQuery.setLock('pessimistic_write');
+        }
+        const existing = await userQuery.getOne();
+        if (!existing) throw new UnauthorizedException('卡密关联账号不存在');
+        if (existing.wechatOpenid && existing.wechatOpenid !== bindSession!.wechatOpenid) {
+          throw new BadRequestException('该账号已绑定其他微信，请联系管理员');
+        }
+        await manager.update(User, existing.id, {
+          wechatOpenid: bindSession!.wechatOpenid,
+          sessionId: sid,
+        });
+        user = { ...existing, wechatOpenid: bindSession!.wechatOpenid, sessionId: sid };
+      } else {
+        if (!profile) throw new BadRequestException('请先补全手机号和昵称');
+        const nickname = profile.nickname.trim();
+        if (await manager.findOne(User, { where: { tenantId, nickname } })) {
+          throw new BadRequestException('昵称已被使用，请换一个');
+        }
+        if (await manager.findOne(User, { where: { tenantId, phone: profile.phone } })) {
+          throw new BadRequestException('该手机号已被占用');
+        }
+        user = await manager.save(
+          manager.create(User, {
+            tenantId,
+            phone: profile.phone,
+            nickname,
+            role: 'user',
+            passwordHash: '',
+            openid: `key:${accessKey.id}`,
+            wechatOpenid: bindSession!.wechatOpenid,
+            registrationSource: 'key',
+            sessionId: sid,
+            firstLoginAt: new Date(),
+            lastLoginAt: new Date(),
+          }),
+        );
+        await manager.save(manager.create(Wallet, { tenantId, userId: user.id, balance: 0 }));
+        await manager.update(AccessKey, accessKey.id, { userId: user.id });
+      }
+      const token = this.signUserToken(user.id, tenantId, sid, expiresInSec);
+      await manager.update(WechatBindSession, bindSession!.id, { consumedAt: new Date() });
+      return { user, expiresAt: accessKey.expiresAt, token };
+    });
+  }
+
+  private assertBindingSession(session: WechatBindSession | null): void {
+    if (
+      !session ||
+      session.consumedAt ||
+      session.expiresAt.getTime() <= Date.now() ||
+      session.failedAttempts > 5
+    ) {
+      throw new UnauthorizedException('微信绑定已失效，请重新登录');
+    }
+  }
+
   // 卡密用户补全资料:建正式 User 行(无密码,role=user)+ 钱包,卡密回写 userId。
   // 昵称全局唯一;手机号不可与既有用户冲突。幂等:重复提交已补全卡密直接放行登录。
   async completeProfile(
@@ -207,6 +322,7 @@ export class AccessKeyService {
           role: 'user',
           passwordHash: '',
           openid: `key:${k.id}`, // 标记来源=卡密,用户列表据此区分
+          registrationSource: 'key',
           sessionId: sid,
           firstLoginAt: k.firstLoginAt ?? new Date(),
           lastLoginAt: k.lastLoginAt ?? new Date(),
@@ -257,7 +373,12 @@ export class AccessKeyService {
   async revoke(tenantId: string, id: string, admin?: AuthUser): Promise<{ ok: boolean }> {
     const k = await this.keys.findOne({ where: { tenantId, id } });
     if (!k) throw new NotFoundException('卡密不存在');
-    await this.keys.update(k.id, { status: 'revoked' });
+    await this.dataSource.transaction(async (manager) => {
+      await manager.update(AccessKey, k.id, { status: 'revoked' });
+      if (k.userId) {
+        await manager.update(User, { tenantId, id: k.userId }, { sessionId: crypto.randomUUID() });
+      }
+    });
     if (admin) {
       await this.logAdminOperation(admin, 'access_key_revoke', 'access_key', id, {
         key: k.key.length <= 4 ? '****' : `****${k.key.slice(-4)}`,
@@ -290,7 +411,12 @@ export class AccessKeyService {
     if (!k) throw new NotFoundException('卡密不存在');
     if (k.status === 'revoked') throw new BadRequestException('已作废卡密不能修改有效期');
     const expiresAt = new Date(Date.now() + ttlDays * DAY_MS);
-    await this.keys.update(k.id, { expiresAt });
+    await this.dataSource.transaction(async (manager) => {
+      await manager.update(AccessKey, k.id, { expiresAt });
+      if (k.userId) {
+        await manager.update(User, { tenantId, id: k.userId }, { sessionId: crypto.randomUUID() });
+      }
+    });
     if (admin) {
       await this.logAdminOperation(admin, 'access_key_update_ttl', 'access_key', id, {
         key: k.key.length <= 4 ? '****' : `****${k.key.slice(-4)}`,
@@ -405,7 +531,10 @@ export class KeyLoginController {
 }
 
 @Module({
-  imports: [TypeOrmModule.forFeature([AccessKey, Wallet, User, AdminOperationLog]), UserActivityModule],
+  imports: [
+    TypeOrmModule.forFeature([AccessKey, Wallet, User, AdminOperationLog, WechatBindSession]),
+    UserActivityModule,
+  ],
   controllers: [AccessKeyAdminController, KeyLoginController],
   providers: [AccessKeyService, PendingAuthGuard],
   exports: [AccessKeyService],

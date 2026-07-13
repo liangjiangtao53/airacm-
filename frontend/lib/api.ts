@@ -123,6 +123,7 @@ export interface AdminUser {
   nickname: string;
   role: UserRole;
   source?: 'key' | 'wechat' | 'register'; // 来源:卡密/微信/手机号注册
+  wechatBound?: boolean;
   createdAt: string;
 }
 
@@ -548,6 +549,8 @@ export const api = {
   // 用户管理(超管看全部,业务管理员只看普通用户)
   users: () => req<AdminUser[]>('/admin/users'),
   deleteUser: (id: string) => req<{ deleted: number }>(`/admin/users/${id}`, { method: 'DELETE' }),
+  unbindUserWechat: (id: string) =>
+    req<{ unbound: boolean }>(`/admin/users/${id}/wechat-binding`, { method: 'DELETE' }),
   // 新增业务管理员(仅超管)
   adminCreateAdmin: (phone: string, password: string, nickname: string) =>
     req<{ id: string; phone: string; nickname: string; role: UserRole }>('/admin/admins', {

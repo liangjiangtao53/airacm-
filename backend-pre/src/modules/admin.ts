@@ -360,6 +360,7 @@ export class AdminService {
           passwordHash,
           role: 'admin',
           openid: null,
+          registrationSource: 'register',
         }),
       );
       await m.save(m.create(Wallet, { tenantId: caller.tenantId, userId: u.id, balance: 0 }));
@@ -384,6 +385,7 @@ export class AdminService {
       nickname: string;
       role: string;
       source: 'key' | 'wechat' | 'register';
+      wechatBound: boolean;
       createdAt: Date;
     }>
   > {
@@ -395,7 +397,8 @@ export class AdminService {
       phone: u.phone,
       nickname: u.nickname,
       role: u.role,
-      source: u.openid?.startsWith('key:') ? 'key' : u.openid ? 'wechat' : 'register',
+      source: u.registrationSource,
+      wechatBound: Boolean(u.wechatOpenid),
       createdAt: u.createdAt,
     }));
   }
@@ -422,6 +425,23 @@ export class AdminService {
       role: target.role,
     });
     return { deleted: 1 };
+  }
+
+  async unbindWechat(caller: AuthUser, targetId: string): Promise<{ unbound: boolean }> {
+    const target = await this.users.findOne({
+      where: { tenantId: caller.tenantId, id: targetId },
+    });
+    if (!target) throw new NotFoundException('用户不存在');
+    if (!target.wechatOpenid) return { unbound: false };
+    await this.users.update(target.id, {
+      wechatOpenid: null,
+      sessionId: crypto.randomUUID(),
+    });
+    await this.logAdminOperation(caller, 'wechat_unbind', 'user', target.id, {
+      phone: target.phone,
+      nickname: target.nickname,
+    });
+    return { unbound: true };
   }
 
   async listOperationLogs(
@@ -517,6 +537,12 @@ export class AdminController {
   @Delete('users/:id')
   deleteUser(@CurrentUser() admin: AuthUser, @Param('id') id: string) {
     return this.svc.deleteUser(admin, id);
+  }
+
+  // 微信解绑涉及账号身份，仅超级管理员可操作。
+  @Delete('users/:id/wechat-binding')
+  unbindWechat(@CurrentUser() admin: AuthUser, @Param('id') id: string) {
+    return this.svc.unbindWechat(admin, id);
   }
 
   // 新增业务管理员:仅超管(类级 @Roles('super'),方法不放宽)。

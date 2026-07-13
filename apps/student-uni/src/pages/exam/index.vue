@@ -1,7 +1,14 @@
 <script setup lang="ts">
-import { onShow } from '@dcloudio/uni-app';
+import { onHide, onShow, onUnload } from '@dcloudio/uni-app';
 import { computed, ref } from 'vue';
-import { api, assetUrl, requireLogin, type ExamResult, type PaperQuestion } from '@/utils/api';
+import { api, assetUrl, requireLogin, type ExamResult, type ExamStart, type PaperQuestion } from '@/utils/api';
+import { disableCaptureProtection, enableCaptureProtection } from '@/utils/capture';
+import {
+  answersToSelections,
+  selectionsToAnswers,
+  shouldUseLocalDraft,
+  type LocalExamDraft,
+} from '@/utils/exam-draft';
 
 const EXAM_CATEGORY_COUNTS: Record<string, number> = {
   'M1 航空概论': 32,
@@ -22,6 +29,13 @@ const busy = ref(false);
 const currentIndex = ref(0);
 const touchStartX = ref(0);
 const unansweredJumpIndex = ref(-1);
+const draftVersion = ref(0);
+const draftDirty = ref(false);
+const restoreChecked = ref(false);
+let draftTimer: ReturnType<typeof setTimeout> | null = null;
+let draftRevision = 0;
+let draftFlushPromise: Promise<void> | null = null;
+let restorePromise: Promise<void> | null = null;
 
 const answeredCount = computed(() => Object.values(answers.value).filter((v) => v.length > 0).length);
 const unfinishedCount = computed(() => Math.max(0, questions.value.length - answeredCount.value));
@@ -46,6 +60,8 @@ async function loadCategories() {
 
 async function start() {
   if (!requireLogin()) return;
+  if (restorePromise) await restorePromise;
+  if (phase.value !== 'idle') return;
   if (!category.value) {
     toast('请选择考试科目');
     return;
@@ -53,13 +69,8 @@ async function start() {
   busy.value = true;
   try {
     const paper = await api.startExam(category.value);
-    attemptId.value = paper.attemptId;
-    questions.value = paper.questions;
-    answers.value = {};
-    result.value = null;
-    currentIndex.value = 0;
-    unansweredJumpIndex.value = -1;
-    phase.value = 'taking';
+    applyPaper(paper);
+    if (paper.resumed) toast('已恢复上次未完成的考试');
   } catch (e) {
     toast((e as Error).message);
   } finally {
@@ -71,6 +82,7 @@ function pick(q: PaperQuestion, key: string) {
   const cur = answers.value[q.id] || [];
   if (q.type === 'single') {
     answers.value[q.id] = [key];
+    markDraftDirty();
     if (currentQuestion.value?.id === q.id && canNext.value) {
       setTimeout(() => {
         if (currentQuestion.value?.id === q.id) moveQuestion(1);
@@ -79,6 +91,7 @@ function pick(q: PaperQuestion, key: string) {
     return;
   }
   answers.value[q.id] = cur.includes(key) ? cur.filter((k) => k !== key) : [...cur, key].sort();
+  markDraftDirty();
 }
 
 function moveQuestion(delta: number) {
@@ -86,6 +99,7 @@ function moveQuestion(delta: number) {
   const next = Math.min(questions.value.length - 1, Math.max(0, currentIndex.value + delta));
   if (next === currentIndex.value) return;
   currentIndex.value = next;
+  markDraftDirty();
 }
 
 function jumpToNextUnanswered() {
@@ -96,17 +110,18 @@ function jumpToNextUnanswered() {
     if ((answers.value[q.id] || []).length === 0) {
       unansweredJumpIndex.value = idx;
       currentIndex.value = idx;
+      markDraftDirty();
       return;
     }
   }
   toast('已全部完成');
 }
 
-function onTouchStart(e: { changedTouches?: Array<{ clientX: number }>; touches?: Array<{ clientX: number }> }) {
+function onTouchStart(e: TouchEvent) {
   touchStartX.value = e.changedTouches?.[0]?.clientX ?? e.touches?.[0]?.clientX ?? 0;
 }
 
-function onTouchEnd(e: { changedTouches?: Array<{ clientX: number }> }) {
+function onTouchEnd(e: TouchEvent) {
   const endX = e.changedTouches?.[0]?.clientX ?? 0;
   const delta = endX - touchStartX.value;
   if (Math.abs(delta) < 60) return;
@@ -116,16 +131,153 @@ function onTouchEnd(e: { changedTouches?: Array<{ clientX: number }> }) {
 async function submit() {
   busy.value = true;
   try {
+    await flushDraft();
     const payload: Record<string, string> = {};
     questions.value.forEach((q) => {
       payload[q.id] = (answers.value[q.id] || []).join('');
     });
     result.value = await api.submitExam(attemptId.value, payload);
     phase.value = 'result';
+    uni.removeStorageSync(localDraftKey(attemptId.value));
   } catch (e) {
     toast((e as Error).message);
   } finally {
     busy.value = false;
+  }
+}
+
+function applyPaper(paper: ExamStart) {
+  if (draftTimer) {
+    clearTimeout(draftTimer);
+    draftTimer = null;
+  }
+  draftRevision++;
+  const storedLocal = uni.getStorageSync(localDraftKey(paper.attemptId)) as Partial<LocalExamDraft> | '';
+  const local = storedLocal || null;
+  const useLocal = shouldUseLocalDraft(
+    local,
+    Number(paper.draftVersion || 0),
+    paper.answers || {},
+    paper.currentQuestionIndex || 0,
+  );
+  const restoredAnswers = useLocal ? local.answers : paper.answers || {};
+  attemptId.value = paper.attemptId;
+  questions.value = paper.questions;
+  answers.value = answersToSelections(restoredAnswers);
+  result.value = null;
+  currentIndex.value = Math.min(
+    useLocal && local ? Number(local.currentQuestionIndex) || 0 : paper.currentQuestionIndex || 0,
+    Math.max(0, paper.questions.length - 1),
+  );
+  draftVersion.value = paper.draftVersion || 0;
+  draftDirty.value = useLocal;
+  unansweredJumpIndex.value = -1;
+  category.value = paper.category || category.value;
+  phase.value = 'taking';
+  if (useLocal) markDraftDirty();
+}
+
+function localDraftKey(id: string) {
+  return `airacm_exam_draft_${id}`;
+}
+
+function draftAnswers(): Record<string, string> {
+  return selectionsToAnswers(questions.value.map((question) => question.id), answers.value);
+}
+
+function markDraftDirty() {
+  if (!attemptId.value || phase.value !== 'taking') return;
+  draftRevision++;
+  draftDirty.value = true;
+  const key = localDraftKey(attemptId.value);
+  const stored = uni.getStorageSync(key) as Partial<LocalExamDraft> | '';
+  uni.setStorageSync(key, {
+    answers: draftAnswers(),
+    currentQuestionIndex: currentIndex.value,
+    version: Math.max(draftVersion.value, Number(stored && stored.version) || 0) + 1,
+  });
+  if (draftTimer) clearTimeout(draftTimer);
+  draftTimer = setTimeout(() => void flushDraft(), 3000);
+}
+
+async function flushDraft(): Promise<void> {
+  if (draftFlushPromise) return draftFlushPromise;
+  draftFlushPromise = flushDraftLoop().finally(() => {
+    draftFlushPromise = null;
+  });
+  return draftFlushPromise;
+}
+
+async function flushDraftLoop(): Promise<void> {
+  while (draftDirty.value && attemptId.value && phase.value === 'taking') {
+    if (!(await flushDraftOnce())) break;
+  }
+}
+
+async function flushDraftOnce(): Promise<boolean> {
+  if (draftTimer) {
+    clearTimeout(draftTimer);
+    draftTimer = null;
+  }
+  const savingAttemptId = attemptId.value;
+  const savingRevision = draftRevision;
+  const nextVersion = draftVersion.value + 1;
+  try {
+    const saved = await api.saveExamDraft(
+      savingAttemptId,
+      nextVersion,
+      currentIndex.value,
+      draftAnswers(),
+    );
+    if (savingAttemptId !== attemptId.value || phase.value !== 'taking') return true;
+    draftVersion.value = saved.draftVersion;
+    draftDirty.value = savingRevision !== draftRevision;
+    if (!draftDirty.value) {
+      uni.setStorageSync(localDraftKey(savingAttemptId), {
+        answers: draftAnswers(),
+        currentQuestionIndex: currentIndex.value,
+        version: saved.draftVersion,
+      });
+    }
+    return true;
+  } catch (error) {
+    if ((error as Error).message.includes('版本')) {
+      try {
+        const active = await api.activeExam();
+        if (active) applyPaper(active);
+      } catch {
+        // 仍保留本地草稿，网络恢复后再尝试。
+      }
+    }
+    // 网络失败时保留本地 dirty 状态，后续切页、切后台或交卷会再次尝试。
+    return false;
+  }
+}
+
+async function restoreActiveExam() {
+  if (restoreChecked.value) return;
+  restoreChecked.value = true;
+  try {
+    const active = await api.activeExam();
+    if (!active || phase.value !== 'idle') return;
+    const result = await new Promise<UniApp.ShowModalRes>((resolve) => {
+      uni.showModal({
+        title: '继续上次考试',
+        content: `${active.category}还有未交卷内容，是否继续？`,
+        confirmText: '继续考试',
+        cancelText: '重新开始',
+        success: resolve,
+      });
+    });
+    if (result.confirm) {
+      applyPaper(active);
+      return;
+    }
+    await api.abandonExam(active.attemptId);
+    uni.removeStorageSync(localDraftKey(active.attemptId));
+  } catch (error) {
+    restoreChecked.value = false;
+    toast((error as Error).message);
   }
 }
 
@@ -136,7 +288,20 @@ function changeCategory(e: { detail: { value: number } }) {
 
 onShow(() => {
   if (!requireLogin()) return;
+  enableCaptureProtection();
   loadCategories();
+  restorePromise = restoreActiveExam().finally(() => {
+    restorePromise = null;
+  });
+});
+
+onHide(() => {
+  void flushDraft();
+});
+
+onUnload(() => {
+  void flushDraft();
+  disableCaptureProtection();
 });
 </script>
 

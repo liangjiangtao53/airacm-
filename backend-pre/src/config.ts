@@ -2,7 +2,11 @@ import * as dotenv from 'dotenv';
 import { resolve } from 'path';
 import { DataSourceOptions } from 'typeorm';
 
-dotenv.config();
+const backendRoot = resolve(__dirname, '..');
+// 本地后端配置优先，根目录配置作为共享兜底；系统环境变量始终保持最高优先级。
+dotenv.config({
+  path: [resolve(backendRoot, '.env'), resolve(backendRoot, '..', '.env')],
+});
 
 const nodeEnv = process.env.NODE_ENV || 'development';
 const isProd = nodeEnv === 'production';
@@ -64,6 +68,14 @@ export const env = {
     mchId: process.env.WECHAT_MCH_ID || '',
   },
 
+  wechatMini: {
+    enabled: process.env.WECHAT_MINI_ENABLED === 'true',
+    appId: process.env.WECHAT_MINI_APP_ID || '',
+    appSecret: process.env.WECHAT_MINI_APP_SECRET || '',
+    contentSecurityEnabled: process.env.WECHAT_MINI_CONTENT_SECURITY_ENABLED === 'true',
+    timeoutMs: Number(process.env.WECHAT_MINI_TIMEOUT_MS) || 5000,
+  },
+
   // 认证卡密:每次生成数量与有效期(天),均可配置。
   accessKey: {
     batch: Number(process.env.ACCESS_KEY_BATCH) || 20,
@@ -82,6 +94,13 @@ export const env = {
     password: process.env.BIZ_ADMIN_PASSWORD || 'BizAdmin@12345',
   },
 };
+
+if (env.wechatMini.enabled && (!env.wechatMini.appId || !env.wechatMini.appSecret)) {
+  throw new Error('微信小程序已启用但缺少 WECHAT_MINI_APP_ID 或 WECHAT_MINI_APP_SECRET');
+}
+if (env.wechatMini.contentSecurityEnabled && !env.wechatMini.enabled) {
+  throw new Error('启用微信内容安全前必须先启用 WECHAT_MINI_ENABLED');
+}
 
 // 生产关键密钥强校验:缺失则启动即失败,避免线上裸奔。
 if (isProd) {

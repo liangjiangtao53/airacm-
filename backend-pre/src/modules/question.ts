@@ -46,6 +46,7 @@ import { AuthUser, CurrentUser, JwtAuthGuard, Roles, RolesGuard } from '../commo
 import { env } from '../config';
 import { AdaptiveQuestionState, orderAdaptiveQuestions } from './question-picking';
 import { QuestionPoolCacheModule, QuestionPoolCacheService } from './question-pool-cache';
+import { WechatMiniProgramModule, WechatMiniProgramService } from './wechat-mini-program';
 
 // 上传文件最小形状(避免引入 @types/multer)。FileInterceptor 默认内存存储提供 buffer。
 interface UploadedQuestionFile {
@@ -283,6 +284,7 @@ export class QuestionService {
     @InjectRepository(QuestionImportBatch) private readonly importBatches: Repository<QuestionImportBatch>,
     @InjectRepository(AdminOperationLog) private readonly operationLogs: Repository<AdminOperationLog>,
     private readonly questionPool: QuestionPoolCacheService,
+    private readonly wechat: WechatMiniProgramService,
   ) {}
 
   private async logAdminOperation(
@@ -1133,6 +1135,14 @@ export class QuestionService {
     if (!trimmed) throw new BadRequestException('评论不能为空');
     const q = await this.questions.findOne({ where: { tenantId: user.tenantId, id: questionId } });
     if (!q) throw new NotFoundException('题目不存在');
+    const author = await this.users.findOne({
+      where: { tenantId: user.tenantId, id: user.userId },
+      select: ['wechatOpenid'],
+    });
+    await this.wechat.checkContent(trimmed, 2, author?.wechatOpenid ?? null, {
+      userId: user.userId,
+      contentType: 'question_comment',
+    });
     const c = await this.comments.save(
       this.comments.create({
         tenantId: user.tenantId,
@@ -1528,6 +1538,7 @@ export class QuestionImageController {
       AdminOperationLog,
     ]),
     QuestionPoolCacheModule,
+    WechatMiniProgramModule,
   ],
   controllers: [QuestionAdminController, QuestionController, QuestionImageController],
   providers: [QuestionService],

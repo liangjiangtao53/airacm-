@@ -3,6 +3,7 @@ import { onShow } from '@dcloudio/uni-app';
 import { ref } from 'vue';
 import logoAsset from '@/static/maintenance-wing-logo.jpg';
 import { api, clearToken, getToken, type Me } from '@/utils/api';
+import { capabilities } from '@/utils/runtime';
 
 const me = ref<Me | null>(null);
 const logoUrl = logoAsset;
@@ -72,17 +73,10 @@ const appTiles: Tile[] = [
   },
 ];
 
-// Android WebView 壳使用 H5 产物打包,启动时带 platform=app,让 App 首页走学习入口而不是下载页。
-let isAppShell = false;
-// #ifdef APP-PLUS
-isAppShell = true;
-// #endif
-// #ifdef H5
-isAppShell = typeof location !== 'undefined' && new URLSearchParams(location.search).get('platform') === 'app';
-// #endif
-const isH5 = !isAppShell;
-const tiles = isH5 ? h5Tiles : appTiles;
-const subtitle = isH5 ? '交流 · App 下载 · 学历提升' : '专题学习 · 考试回顾 · 错题本 · 交流 · 学历提升';
+const tiles = capabilities.appDownload ? h5Tiles : appTiles;
+const subtitle = capabilities.appDownload
+  ? '交流 · App 下载 · 学历提升'
+  : '专题学习 · 考试回顾 · 错题本 · 交流 · 学历提升';
 
 function roleLabel(role?: Me['role']) {
   if (role === 'super') return '超级管理员';

@@ -72,6 +72,7 @@ const operationActionOptions = [
 const activityActionOptions = [
   { value: 'login_access_key', label: '卡密登录' },
   { value: 'login_password', label: '账号登录' },
+  { value: 'login_wechat', label: '微信登录' },
   { value: 'study_progress', label: '顺序学习' },
   { value: 'lesson_complete', label: '课时完成' },
   { value: 'wrong_question_master', label: '错题掌握' },
@@ -495,6 +496,13 @@ export default function AdminPage() {
       setUsers((l) => l.filter((x) => x.id !== u.id));
     })();
 
+  const unbindUserWechat = (u: AdminUser) =>
+    wrap(async () => {
+      if (!window.confirm(`确认解除 ${u.phone || u.nickname} 的微信绑定？学习记录和卡密不会删除。`)) return;
+      await api.unbindUserWechat(u.id);
+      setUsers((list) => list.map((item) => (item.id === u.id ? { ...item, wechatBound: false } : item)));
+    })();
+
   const addTopic = wrap(async () => {
     const name = newTopic.trim();
     if (!name) return;
@@ -592,6 +600,7 @@ export default function AdminPage() {
     ({
       login_password: '账号登录',
       login_access_key: '卡密登录',
+      login_wechat: '微信登录',
       study_answer: '顺序学习',
       study_progress: '顺序学习',
       lesson_start: '开始课时',
@@ -1252,12 +1261,24 @@ export default function AdminPage() {
                         {sourceLabel(u.source)}
                       </span>
                     )}
+                    {u.wechatBound && (
+                      <span className="rounded bg-emerald-50 px-1.5 py-0.5 text-xs text-emerald-600">
+                        已绑微信
+                      </span>
+                    )}
                   </span>
-                  {u.role !== 'super' && (
-                    <button onClick={() => removeUser(u)} className="text-xs text-red-500 hover:underline">
-                      删除
-                    </button>
-                  )}
+                  <span className="flex items-center gap-3">
+                    {isSuper && u.wechatBound && (
+                      <button onClick={() => unbindUserWechat(u)} className="text-xs text-sky hover:underline">
+                        解绑微信
+                      </button>
+                    )}
+                    {u.role !== 'super' && (
+                      <button onClick={() => removeUser(u)} className="text-xs text-red-500 hover:underline">
+                        删除
+                      </button>
+                    )}
+                  </span>
                 </li>
               ))}
             </ul>

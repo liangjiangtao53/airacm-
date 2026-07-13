@@ -30,10 +30,12 @@ export type QuestionType = 'single' | 'multiple';
 // 题目用途:仅学习刷题 / 仅考试 / 两者都进。Excel 导入时整批指定。
 export type QuestionUsage = 'study' | 'exam' | 'both';
 export type WrongQuestionSource = 'study' | 'exam';
+export type RegistrationSource = 'key' | 'register' | 'wechat';
 export type QuestionImportStatus = 'completed' | 'failed';
 export type UserActivityAction =
   | 'login_password'
   | 'login_access_key'
+  | 'login_wechat'
   | 'study_answer'
   | 'study_progress'
   | 'lesson_start'
@@ -192,6 +194,7 @@ export class Tenant {
 
 @Entity('user')
 @Index(['tenantId', 'phone'], { unique: true })
+@Index('UQ_user_tenant_wechat_openid', ['tenantId', 'wechatOpenid'], { unique: true })
 export class User {
   @PrimaryGeneratedColumn('uuid')
   id!: string;
@@ -207,6 +210,13 @@ export class User {
 
   @Column({ type: 'varchar', nullable: true })
   openid!: string | null;
+
+  // 旧 openid 同时存过 key:* 来源标记，先保留；新微信身份只读写本字段。
+  @Column({ type: 'varchar', length: 128, nullable: true })
+  wechatOpenid!: string | null;
+
+  @Column({ type: 'varchar', length: 16, default: 'register' })
+  registrationSource!: RegistrationSource;
 
   @Column({ default: '' })
   passwordHash!: string;
@@ -224,6 +234,35 @@ export class User {
 
   @Column({ type: TS_TYPE, nullable: true })
   lastLoginAt!: Date | null;
+
+  @CreateDateColumn()
+  createdAt!: Date;
+}
+
+@Entity('wechat_bind_session')
+@Index('UQ_wechat_bind_session_token_hash', ['tokenHash'], { unique: true })
+@Index('IDX_wechat_bind_session_expiry', ['expiresAt'])
+export class WechatBindSession {
+  @PrimaryGeneratedColumn('uuid')
+  id!: string;
+
+  @Column({ length: 64 })
+  tenantId!: string;
+
+  @Column({ length: 64 })
+  tokenHash!: string;
+
+  @Column({ length: 128 })
+  wechatOpenid!: string;
+
+  @Column({ type: TS_TYPE })
+  expiresAt!: Date;
+
+  @Column({ type: TS_TYPE, nullable: true })
+  consumedAt!: Date | null;
+
+  @Column({ type: 'integer', default: 0 })
+  failedAttempts!: number;
 
   @CreateDateColumn()
   createdAt!: Date;
@@ -567,6 +606,7 @@ export class Question {
 // 考试作答记录:一次组卷 + 作答 + 判分。questionIds 锁定本次卷子,answers 存提交答案。
 @Entity('exam_attempt')
 @Index(['tenantId', 'userId'])
+@Index('UQ_exam_attempt_active_user', ['tenantId', 'userId', 'activeKey'], { unique: true })
 export class ExamAttempt {
   @PrimaryGeneratedColumn('uuid')
   id!: string;
@@ -604,6 +644,21 @@ export class ExamAttempt {
   @Column({ type: 'varchar', default: 'in_progress' })
   status!: 'in_progress' | 'submitted';
 
+  @Column({ type: 'integer', default: 0 })
+  draftVersion!: number;
+
+  @Column({ type: 'varchar', length: 64, default: '' })
+  draftHash!: string;
+
+  @Column({ type: 'integer', default: 0 })
+  currentQuestionIndex!: number;
+
+  @Column({ type: 'varchar', length: 16, nullable: true })
+  activeKey!: 'active' | null;
+
+  @Column({ type: TS_TYPE, nullable: true })
+  abandonedAt!: Date | null;
+
   @CreateDateColumn()
   createdAt!: Date;
 
@@ -612,6 +667,9 @@ export class ExamAttempt {
 
   @Column({ type: TS_TYPE, nullable: true })
   deletedAt!: Date | null;
+
+  @UpdateDateColumn()
+  updatedAt!: Date;
 }
 
 // 用户题目练习记录:专题学习和模拟考试都会写入,用于新题/原题/错题混合出题。
@@ -913,6 +971,7 @@ export class PostReplyLike {
 export const ALL_ENTITIES = [
   Tenant,
   User,
+  WechatBindSession,
   Wallet,
   WalletTxn,
   RechargeCode,

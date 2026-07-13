@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { onShow } from '@dcloudio/uni-app';
+import { onShow, onUnload } from '@dcloudio/uni-app';
 import { computed, ref, watch } from 'vue';
 import { api, assetUrl, requireLogin, type CommentItem, type QuestionItem } from '@/utils/api';
+import { disableCaptureProtection, enableCaptureProtection } from '@/utils/capture';
 
 const categories = ref<string[]>([]);
 const category = ref('');
@@ -236,11 +237,11 @@ async function jumpToQuestion() {
   await loadQuestions(false, targetIndex);
 }
 
-function onTouchStart(e: { changedTouches?: Array<{ clientX: number }>; touches?: Array<{ clientX: number }> }) {
+function onTouchStart(e: TouchEvent) {
   touchStartX.value = e.changedTouches?.[0]?.clientX ?? e.touches?.[0]?.clientX ?? 0;
 }
 
-function onTouchEnd(e: { changedTouches?: Array<{ clientX: number }> }) {
+function onTouchEnd(e: TouchEvent) {
   const endX = e.changedTouches?.[0]?.clientX ?? 0;
   const delta = endX - touchStartX.value;
   if (Math.abs(delta) < 60) return;
@@ -287,6 +288,7 @@ async function removeComment(questionId: string, commentId: string) {
 
 onShow(async () => {
   if (!requireLogin()) return;
+  enableCaptureProtection();
   try {
     await loadCategories();
     await recordStudyStart();
@@ -295,6 +297,8 @@ onShow(async () => {
     toast((e as Error).message);
   }
 });
+
+onUnload(disableCaptureProtection);
 
 watch(
   () => [showCorrectAnswer.value, currentQuestion.value?.id] as const,

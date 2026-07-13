@@ -89,6 +89,40 @@ export class UserActivityService {
     });
   }
 
+  async recordWechatLogin(user: User): Promise<void> {
+    await this.runBestEffort('login_wechat', async () => {
+      const now = new Date();
+      const key = await this.keys.findOne({
+        where: { tenantId: user.tenantId, userId: user.id },
+        order: { expiresAt: 'DESC' },
+      });
+      await this.users.update(user.id, {
+        firstLoginAt: user.firstLoginAt ?? now,
+        lastLoginAt: now,
+      });
+      if (key) {
+        await this.keys.update(key.id, {
+          firstLoginAt: key.firstLoginAt ?? now,
+          lastLoginAt: now,
+        });
+      }
+      await this.logs.save(
+        this.logs.create({
+          tenantId: user.tenantId,
+          userId: user.id,
+          accessKeyId: key?.id ?? null,
+          accessKeyLast4: key ? this.last4(key.key) : null,
+          accessKeyMasked: key ? this.maskKey(key.key) : null,
+          accessKeyHash: key ? this.hashKey(key.key) : null,
+          action: 'login_wechat',
+          targetType: 'user',
+          targetId: user.id,
+          detail: { nickname: user.nickname },
+        }),
+      );
+    });
+  }
+
   async record(user: AuthUser, action: UserActivityAction, targetType: string, targetId: string | null, detail: Record<string, unknown>): Promise<void> {
     await this.runBestEffort(action, async () => {
       const key = await this.keys.findOne({ where: { tenantId: user.tenantId, userId: user.userId } });
@@ -167,7 +201,7 @@ export class UserActivityService {
           createdAt: row.createdAt,
           user: user ? { id: user.id, phone: user.phone, nickname: user.nickname, role: user.role } : null,
           accessKey: key
-            ? { id: key.id, key: key.key, status: key.status }
+            ? { id: key.id, key: row.accessKeyMasked || this.maskKey(key.key), status: key.status }
             : row.accessKeyMasked
               ? { id: row.accessKeyId ?? '', key: row.accessKeyMasked, status: 'deleted' }
               : null,

@@ -8,13 +8,16 @@ import {
   Param,
   Patch,
   Post,
+  Put,
   UseGuards,
   BadRequestException,
+  ConflictException,
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository, TypeOrmModule } from '@nestjs/typeorm';
-import { In, IsNull, QueryFailedError, Repository } from 'typeorm';
+import { DataSource, In, IsNull, QueryFailedError, Repository } from 'typeorm';
 import { IsInt, IsObject, IsOptional, IsString, Max, Min } from 'class-validator';
+import * as crypto from 'crypto';
 import {
   ExamAttempt,
   AdminOperationLog,
@@ -115,6 +118,32 @@ interface PaperQuestion {
   options: QuestionOption[];
 }
 
+interface ExamPaperState {
+  attemptId: string;
+  total: number;
+  category: string;
+  questions: PaperQuestion[];
+  answers: Record<string, string>;
+  currentQuestionIndex: number;
+  draftVersion: number;
+  resumed: boolean;
+}
+
+class SaveExamDraftDto {
+  @IsInt()
+  @Min(1)
+  @Max(2_147_483_647)
+  version!: number;
+
+  @IsInt()
+  @Min(0)
+  @Max(MAX_COUNT - 1)
+  currentQuestionIndex!: number;
+
+  @IsObject()
+  answers!: Record<string, string>;
+}
+
 interface GradedItem {
   questionId: string;
   category: string;
@@ -173,6 +202,7 @@ export class ExamService {
     @InjectRepository(StudyQuestionProgress) private readonly studyProgress: Repository<StudyQuestionProgress>,
     private readonly questionPool: QuestionPoolCacheService,
     private readonly activity: UserActivityService,
+    private readonly dataSource: DataSource,
   ) {}
 
   async getRule(tenantId: string): Promise<{ totalCount: number; categoryCounts: Record<string, number> }> {
@@ -209,7 +239,10 @@ export class ExamService {
   async start(
     user: AuthUser,
     dto: StartExamDto,
-  ): Promise<{ attemptId: string; total: number; questions: PaperQuestion[] }> {
+  ): Promise<ExamPaperState> {
+    const active = await this.findActiveAttempt(user);
+    if (active) return this.paperState(active, true);
+
     const rule = await this.getRule(user.tenantId);
     const category = dto.category?.trim();
     if (!category) throw new BadRequestException('请选择考试科目');
@@ -220,34 +253,181 @@ export class ExamService {
       throw new BadRequestException(`题库不足,当前仅 ${picked.length} 题,本模块考试需要 ${count} 题`);
     }
     if (picked.length === 0) throw new BadRequestException('暂无考试题目');
-    const attempt = await this.attempts.save(
-      this.attempts.create({
-        tenantId: user.tenantId,
-        userId: user.userId,
-        courseId: dto.courseId ?? null,
-        category,
-        questionIds: picked.map((q) => q.id),
-        answers: {},
-        total: picked.length,
-        status: 'in_progress',
-      }),
-    );
+    let attempt: ExamAttempt;
+    try {
+      attempt = await this.attempts.save(
+        this.attempts.create({
+          tenantId: user.tenantId,
+          userId: user.userId,
+          courseId: dto.courseId ?? null,
+          category,
+          questionIds: picked.map((q) => q.id),
+          answers: {},
+          total: picked.length,
+          status: 'in_progress',
+          activeKey: 'active',
+          draftVersion: 0,
+          draftHash: '',
+          currentQuestionIndex: 0,
+          abandonedAt: null,
+        }),
+      );
+    } catch (error) {
+      if (!(error instanceof QueryFailedError)) throw error;
+      const raced = await this.findActiveAttempt(user);
+      if (!raced) throw error;
+      return this.paperState(raced, true);
+    }
     await this.activity.record(user, 'exam_start', 'exam_attempt', attempt.id, {
       category,
       courseId: dto.courseId ?? null,
       total: picked.length,
     });
+    return this.paperState(attempt, false, picked);
+  }
+
+  async active(user: AuthUser): Promise<ExamPaperState | null> {
+    const attempt = await this.findActiveAttempt(user);
+    return attempt ? this.paperState(attempt, true) : null;
+  }
+
+  async saveDraft(
+    user: AuthUser,
+    attemptId: string,
+    dto: SaveExamDraftDto,
+  ): Promise<{ draftVersion: number; currentQuestionIndex: number; unchanged: boolean }> {
+    const attempt = await this.attempts.findOne({
+      where: {
+        tenantId: user.tenantId,
+        userId: user.userId,
+        id: attemptId,
+        status: 'in_progress',
+        abandonedAt: IsNull(),
+      },
+    });
+    if (!attempt || attempt.activeKey !== 'active') {
+      throw new NotFoundException('进行中的考试不存在');
+    }
+    const answers = this.normalizeDraftAnswers(attempt, dto.answers);
+    const currentQuestionIndex = Math.min(dto.currentQuestionIndex, Math.max(0, attempt.total - 1));
+    const draftHash = this.draftHash(answers, currentQuestionIndex);
+    if (dto.version <= attempt.draftVersion) {
+      if (dto.version === attempt.draftVersion && draftHash === attempt.draftHash) {
+        return { draftVersion: attempt.draftVersion, currentQuestionIndex, unchanged: true };
+      }
+      throw new ConflictException('考试草稿版本已更新，请重新加载');
+    }
+    const updated = await this.attempts
+      .createQueryBuilder()
+      .update(ExamAttempt)
+      .set({ answers, currentQuestionIndex, draftVersion: dto.version, draftHash })
+      .where({
+        id: attempt.id,
+        tenantId: user.tenantId,
+        userId: user.userId,
+        status: 'in_progress',
+        abandonedAt: IsNull(),
+        activeKey: 'active',
+      })
+      .andWhere(`${this.quoteAttemptColumn('draftVersion')} < :version`, { version: dto.version })
+      .execute();
+    if ((updated.affected ?? 0) === 0) {
+      const latest = await this.attempts.findOne({ where: { id: attempt.id } });
+      if (latest?.draftVersion === dto.version && latest.draftHash === draftHash) {
+        return { draftVersion: dto.version, currentQuestionIndex, unchanged: true };
+      }
+      throw new ConflictException('考试草稿版本已更新，请重新加载');
+    }
+    return { draftVersion: dto.version, currentQuestionIndex, unchanged: false };
+  }
+
+  async abandon(user: AuthUser, attemptId: string): Promise<{ abandoned: boolean }> {
+    const result = await this.attempts.update(
+      {
+        tenantId: user.tenantId,
+        userId: user.userId,
+        id: attemptId,
+        status: 'in_progress',
+        activeKey: 'active',
+        abandonedAt: IsNull(),
+      },
+      { abandonedAt: new Date(), activeKey: null },
+    );
+    if ((result.affected ?? 0) === 0) throw new NotFoundException('进行中的考试不存在');
+    return { abandoned: true };
+  }
+
+  private findActiveAttempt(user: AuthUser): Promise<ExamAttempt | null> {
+    return this.attempts.findOne({
+      where: {
+        tenantId: user.tenantId,
+        userId: user.userId,
+        status: 'in_progress',
+        activeKey: 'active',
+        abandonedAt: IsNull(),
+      },
+      order: { createdAt: 'DESC' },
+    });
+  }
+
+  private async paperState(
+    attempt: ExamAttempt,
+    resumed: boolean,
+    cachedQuestions?: PublicQuestion[],
+  ): Promise<ExamPaperState> {
+    const questions = cachedQuestions ?? (await this.questions.find({
+      where: { tenantId: attempt.tenantId, id: In(attempt.questionIds) },
+    }));
+    const byId = new Map(questions.map((question) => [question.id, question]));
     return {
       attemptId: attempt.id,
-      total: picked.length,
-      questions: picked.map((q) => ({
-        id: q.id,
-        type: q.type,
-        stem: q.stem,
-        stemImageUrls: q.stemImageUrls ?? [],
-        options: q.options,
-      })),
+      total: attempt.total,
+      category: attempt.category,
+      questions: attempt.questionIds.flatMap((id) => {
+        const question = byId.get(id);
+        return question
+          ? [{
+              id: question.id,
+              type: question.type,
+              stem: question.stem,
+              stemImageUrls: question.stemImageUrls ?? [],
+              options: question.options,
+            }]
+          : [];
+      }),
+      answers: attempt.answers ?? {},
+      currentQuestionIndex: attempt.currentQuestionIndex ?? 0,
+      draftVersion: attempt.draftVersion ?? 0,
+      resumed,
     };
+  }
+
+  private normalizeDraftAnswers(
+    attempt: ExamAttempt,
+    raw: Record<string, string>,
+  ): Record<string, string> {
+    const allowed = new Set(attempt.questionIds);
+    const answers: Record<string, string> = {};
+    for (const [questionId, value] of Object.entries(raw)) {
+      if (!allowed.has(questionId)) throw new BadRequestException('草稿包含无效题目');
+      answers[questionId] = normalize(String(value));
+    }
+    return answers;
+  }
+
+  private draftHash(answers: Record<string, string>, currentQuestionIndex: number): string {
+    const stable = Object.keys(answers)
+      .sort()
+      .map((key) => [key, answers[key]]);
+    return crypto
+      .createHash('sha256')
+      .update(JSON.stringify({ answers: stable, currentQuestionIndex }))
+      .digest('hex');
+  }
+
+  private quoteAttemptColumn(name: string): string {
+    const type = this.attempts.manager.connection.options.type;
+    return type === 'mysql' || type === 'mariadb' ? `\`${name}\`` : `"${name}"`;
   }
 
   private async pickExamQuestions(
@@ -282,62 +462,97 @@ export class ExamService {
     attemptId: string,
     answers: Record<string, string>,
   ): Promise<{ score: number; correct: number; total: number; details: GradedItem[] }> {
-    const attempt = await this.attempts.findOne({
-      where: { tenantId: user.tenantId, userId: user.userId, id: attemptId },
-    });
-    if (!attempt) throw new NotFoundException('考试记录不存在');
-    if (attempt.status === 'submitted') throw new BadRequestException('该试卷已交卷');
+    const result = await this.dataSource.transaction(async (manager) => {
+      let attemptQuery = manager
+        .createQueryBuilder(ExamAttempt, 'a')
+        .where('a.tenantId = :tenantId', { tenantId: user.tenantId })
+        .andWhere('a.userId = :userId', { userId: user.userId })
+        .andWhere('a.id = :attemptId', { attemptId });
+      if (this.dataSource.options.type !== 'better-sqlite3') {
+        attemptQuery = attemptQuery.setLock('pessimistic_write');
+      }
+      const attempt = await attemptQuery.getOne();
+      if (!attempt) throw new NotFoundException('考试记录不存在');
+      if (attempt.abandonedAt) throw new BadRequestException('该试卷已放弃');
 
-    const qs = await this.questions.find({
-      where: { tenantId: user.tenantId, id: In(attempt.questionIds) },
+      const qs = await manager.find(Question, {
+        where: { tenantId: user.tenantId, id: In(attempt.questionIds) },
+      });
+      const submitted = attempt.status === 'submitted';
+      const graded = this.gradeAttempt(attempt, qs, submitted ? attempt.answers : answers);
+      if (!submitted) {
+        await manager.update(ExamAttempt, attempt.id, {
+          answers: graded.normalized,
+          correct: graded.correct,
+          score: graded.score,
+          status: 'submitted',
+          submittedAt: new Date(),
+          activeKey: null,
+          currentQuestionIndex: Math.max(0, attempt.total - 1),
+        });
+        // Keep grading and per-question statistics atomic so idempotent retries cannot skip stats.
+        await this.syncQuestionPractice(
+          user,
+          graded.details,
+          manager.getRepository(QuestionPractice),
+        );
+      }
+      return { ...graded, fresh: !submitted };
     });
-    const byId = new Map(qs.map((q) => [q.id, q]));
 
+    if (result.fresh) {
+      await this.activity.record(user, 'exam_submit', 'exam_attempt', attemptId, {
+        total: result.total,
+        correct: result.correct,
+        score: result.score,
+      });
+    }
+    return {
+      score: result.score,
+      correct: result.correct,
+      total: result.total,
+      details: result.details,
+    };
+  }
+
+  private gradeAttempt(
+    attempt: ExamAttempt,
+    questions: Question[],
+    answers: Record<string, string>,
+  ): {
+    normalized: Record<string, string>;
+    score: number;
+    correct: number;
+    total: number;
+    details: GradedItem[];
+  } {
+    const byId = new Map(questions.map((question) => [question.id, question]));
     const normalized: Record<string, string> = {};
     const details: GradedItem[] = [];
     let correct = 0;
-    // 按卷面顺序判分,保证复盘顺序稳定。
-    for (const qid of attempt.questionIds) {
-      const q = byId.get(qid);
-      if (!q) continue; // 题被删:跳过,不计入对错
-      const your = normalize(answers[qid] ?? '');
-      normalized[qid] = your;
-      const isCorrect = your === q.answer;
-      if (isCorrect) {
-        correct++;
-      }
+    for (const questionId of attempt.questionIds) {
+      const question = byId.get(questionId);
+      if (!question) continue;
+      const yourAnswer = normalize(answers[questionId] ?? '');
+      normalized[questionId] = yourAnswer;
+      const isCorrect = yourAnswer === question.answer;
+      if (isCorrect) correct++;
       details.push({
-        questionId: qid,
-        category: q.category,
-        stem: q.stem,
-        options: q.options,
-        stemImageUrls: q.stemImageUrls ?? [],
-        imageUrls: q.imageUrls ?? [],
-        yourAnswer: your,
-        correctAnswer: q.answer,
-        analysis: q.analysis,
+        questionId,
+        category: question.category,
+        stem: question.stem,
+        options: question.options,
+        stemImageUrls: question.stemImageUrls ?? [],
+        imageUrls: question.imageUrls ?? [],
+        yourAnswer,
+        correctAnswer: question.answer,
+        analysis: question.analysis,
         isCorrect,
       });
     }
     const total = attempt.total;
     const score = total > 0 ? Math.round((correct / total) * 100) : 0;
-
-    await this.attempts.update(attempt.id, {
-      answers: normalized,
-      correct,
-      score,
-      status: 'submitted',
-      submittedAt: new Date(),
-    });
-
-    await this.syncQuestionPractice(user, details);
-    await this.activity.record(user, 'exam_submit', 'exam_attempt', attempt.id, {
-      total,
-      correct,
-      score,
-    });
-
-    return { score, correct, total, details };
+    return { normalized, score, correct, total, details };
   }
 
   private sanitizeCount(value: number): number {
@@ -365,11 +580,87 @@ export class ExamService {
     return wrongs.map((w) => w.questionId).filter((id) => idSet.has(id));
   }
 
-  private async syncQuestionPractice(user: AuthUser, details: GradedItem[]): Promise<void> {
+  private async syncQuestionPractice(
+    user: AuthUser,
+    details: GradedItem[],
+    practices: Repository<QuestionPractice> = this.practices,
+  ): Promise<void> {
+    if (details.length === 0) return;
     const now = new Date();
-    for (const item of details) {
-      await this.recordQuestionPractice(user, item.questionId, item.isCorrect, now);
+    const type = practices.manager.connection.options.type;
+    const dbNow = type === 'better-sqlite3' ? now.toISOString() : now;
+    const q = (name: string) =>
+      type === 'mysql' || type === 'mariadb' ? `\`${name}\`` : `"${name}"`;
+    const columns = [
+      'id',
+      'tenantId',
+      'userId',
+      'questionId',
+      'seenCount',
+      'correctCount',
+      'wrongCount',
+      'lastSeenAt',
+      'lastCorrectAt',
+      'lastWrongAt',
+      'updatedAt',
+    ];
+    const params: unknown[] = [];
+    const placeholder = () => {
+      params.push(undefined);
+      return type === 'postgres' ? `$${params.length}` : '?';
+    };
+    const valuesSql = details
+      .map((item) => {
+        const row = [
+          crypto.randomUUID(),
+          user.tenantId,
+          user.userId,
+          item.questionId,
+          1,
+          item.isCorrect ? 1 : 0,
+          item.isCorrect ? 0 : 1,
+          dbNow,
+          item.isCorrect ? dbNow : null,
+          item.isCorrect ? null : dbNow,
+          dbNow,
+        ];
+        const slots = row.map((value) => {
+          const slot = placeholder();
+          params[params.length - 1] = value;
+          return slot;
+        });
+        return `(${slots.join(', ')})`;
+      })
+      .join(', ');
+    const table = q('question_practice');
+    const insert = `INSERT INTO ${table} (${columns.map(q).join(', ')}) VALUES ${valuesSql}`;
+    if (type === 'mysql' || type === 'mariadb') {
+      await practices.manager.query(
+        `${insert} ON DUPLICATE KEY UPDATE ` +
+          `${q('seenCount')} = ${q('seenCount')} + VALUES(${q('seenCount')}), ` +
+          `${q('correctCount')} = ${q('correctCount')} + VALUES(${q('correctCount')}), ` +
+          `${q('wrongCount')} = ${q('wrongCount')} + VALUES(${q('wrongCount')}), ` +
+          `${q('lastSeenAt')} = VALUES(${q('lastSeenAt')}), ` +
+          `${q('lastCorrectAt')} = COALESCE(VALUES(${q('lastCorrectAt')}), ${q('lastCorrectAt')}), ` +
+          `${q('lastWrongAt')} = COALESCE(VALUES(${q('lastWrongAt')}), ${q('lastWrongAt')}), ` +
+          `${q('updatedAt')} = VALUES(${q('updatedAt')})`,
+        params,
+      );
+      return;
     }
+    const current = (name: string) => `${table}.${q(name)}`;
+    const excluded = (name: string) => `EXCLUDED.${q(name)}`;
+    await practices.manager.query(
+      `${insert} ON CONFLICT (${q('tenantId')}, ${q('userId')}, ${q('questionId')}) DO UPDATE SET ` +
+        `${q('seenCount')} = ${current('seenCount')} + ${excluded('seenCount')}, ` +
+        `${q('correctCount')} = ${current('correctCount')} + ${excluded('correctCount')}, ` +
+        `${q('wrongCount')} = ${current('wrongCount')} + ${excluded('wrongCount')}, ` +
+        `${q('lastSeenAt')} = ${excluded('lastSeenAt')}, ` +
+        `${q('lastCorrectAt')} = COALESCE(${excluded('lastCorrectAt')}, ${current('lastCorrectAt')}), ` +
+        `${q('lastWrongAt')} = COALESCE(${excluded('lastWrongAt')}, ${current('lastWrongAt')}), ` +
+        `${q('updatedAt')} = ${excluded('updatedAt')}`,
+      params,
+    );
   }
 
   private async recordQuestionPractice(
@@ -377,12 +668,13 @@ export class ExamService {
     questionId: string,
     isCorrect: boolean,
     now: Date,
+    practices: Repository<QuestionPractice> = this.practices,
   ): Promise<void> {
     // 原来是先查再 save，并发提交同一题时可能丢计数；改为数据库原子累加。
-    if (await this.bumpQuestionPractice(user, questionId, isCorrect, now)) return;
+    if (await this.bumpQuestionPractice(user, questionId, isCorrect, now, practices)) return;
     try {
-      await this.practices.save(
-        this.practices.create({
+      await practices.save(
+        practices.create({
           tenantId: user.tenantId,
           userId: user.userId,
           questionId,
@@ -396,7 +688,7 @@ export class ExamService {
       );
     } catch (e) {
       if (!(e instanceof QueryFailedError)) throw e;
-      await this.bumpQuestionPractice(user, questionId, isCorrect, now);
+      await this.bumpQuestionPractice(user, questionId, isCorrect, now, practices);
     }
   }
 
@@ -405,9 +697,10 @@ export class ExamService {
     questionId: string,
     isCorrect: boolean,
     now: Date,
+    practices: Repository<QuestionPractice> = this.practices,
   ): Promise<boolean> {
-    const col = (name: string) => this.quotePracticeColumn(name);
-    const result = await this.practices
+    const col = (name: string) => this.quotePracticeColumn(name, practices);
+    const result = await practices
       .createQueryBuilder()
       .update(QuestionPractice)
       .set({
@@ -422,8 +715,11 @@ export class ExamService {
     return (result.affected ?? 0) > 0;
   }
 
-  private quotePracticeColumn(name: string): string {
-    const type = this.practices.manager.connection.options.type;
+  private quotePracticeColumn(
+    name: string,
+    practices: Repository<QuestionPractice> = this.practices,
+  ): string {
+    const type = practices.manager.connection.options.type;
     return type === 'mysql' || type === 'mariadb' ? `\`${name}\`` : `"${name}"`;
   }
 
@@ -696,6 +992,25 @@ export class ExamController {
   @Post('start')
   start(@CurrentUser() user: AuthUser, @Body() dto: StartExamDto) {
     return this.svc.start(user, dto);
+  }
+
+  @Get('active')
+  active(@CurrentUser() user: AuthUser) {
+    return this.svc.active(user);
+  }
+
+  @Put(':id/draft')
+  saveDraft(
+    @CurrentUser() user: AuthUser,
+    @Param('id') id: string,
+    @Body() dto: SaveExamDraftDto,
+  ) {
+    return this.svc.saveDraft(user, id, dto);
+  }
+
+  @Post(':id/abandon')
+  abandon(@CurrentUser() user: AuthUser, @Param('id') id: string) {
+    return this.svc.abandon(user, id);
   }
 
   @Post(':id/submit')

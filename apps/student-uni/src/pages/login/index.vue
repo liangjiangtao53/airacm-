@@ -2,6 +2,7 @@
 import { ref } from 'vue';
 import logoAsset from '@/static/maintenance-wing-logo.jpg';
 import { api, setToken } from '@/utils/api';
+import { capabilities } from '@/utils/runtime';
 
 const mode = ref<'password' | 'key'>('key');
 const phone = ref('');
@@ -9,6 +10,10 @@ const password = ref('');
 const key = ref('');
 const loading = ref(false);
 const logoUrl = logoAsset;
+const bindingToken = ref('');
+const bindingNeedsProfile = ref(false);
+const nickname = ref('');
+const showWechatLogin = capabilities.wechatLogin;
 
 function goHome() {
   uni.switchTab({ url: '/pages/index/index' });
@@ -40,6 +45,25 @@ async function submit() {
     if (mode.value === 'key') {
       const trimmed = key.value.trim();
       if (!trimmed) throw new Error('请输入卡密');
+      if (bindingToken.value) {
+        if (bindingNeedsProfile.value && (!phone.value.trim() || !nickname.value.trim())) {
+          throw new Error('请填写手机号和昵称');
+        }
+        const res = await api.bindWechatKey(
+          bindingToken.value,
+          trimmed,
+          bindingNeedsProfile.value ? phone.value.trim() : undefined,
+          bindingNeedsProfile.value ? nickname.value.trim() : undefined,
+        );
+        if (res.needProfile) {
+          bindingNeedsProfile.value = true;
+          toast('请补全手机号和昵称');
+          return;
+        }
+        setToken(res.token);
+        goHome();
+        return;
+      }
       const res = await api.keyLogin(trimmed);
       setToken(res.token);
       if (res.needProfile) {
@@ -51,6 +75,12 @@ async function submit() {
     }
 
     if (!phone.value.trim() || !password.value) throw new Error('请输入手机号和密码');
+    if (bindingToken.value) {
+      const res = await api.bindWechatPassword(bindingToken.value, phone.value.trim(), password.value);
+      setToken(res.token);
+      goHome();
+      return;
+    }
     const res = await api.login(phone.value.trim(), password.value);
     setToken(res.token);
     goHome();
@@ -60,6 +90,52 @@ async function submit() {
     loading.value = false;
   }
 }
+
+function getWechatCode(): Promise<string> {
+  return new Promise((resolve, reject) => {
+    uni.login({
+      provider: 'weixin',
+      success: (result) => (result.code ? resolve(result.code) : reject(new Error('未获取到微信登录凭证'))),
+      fail: () => reject(new Error('微信登录失败，请重试')),
+    });
+  });
+}
+
+async function loginWithWechat() {
+  if (loading.value) return;
+  loading.value = true;
+  let lastError: Error = new Error('微信登录失败，请重试');
+  try {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const result = await api.wechatLogin(await getWechatCode());
+        if (!result.needBinding) {
+          setToken(result.token);
+          goHome();
+          return;
+        }
+        bindingToken.value = result.bindingToken;
+        bindingNeedsProfile.value = false;
+        mode.value = 'key';
+        toast('请绑定已有卡密或手机号账号');
+        return;
+      } catch (error) {
+        lastError = error as Error;
+      }
+    }
+    throw lastError;
+  } catch (error) {
+    toast((error as Error).message);
+  } finally {
+    loading.value = false;
+  }
+}
+
+function restartWechatLogin() {
+  bindingToken.value = '';
+  bindingNeedsProfile.value = false;
+  void loginWithWechat();
+}
 </script>
 
 <template>
@@ -68,13 +144,21 @@ async function submit() {
       <image class="logo" :src="logoUrl" mode="aspectFill" />
       <text class="eyebrow">维修之翼</text>
       <text class="title">登录学员端</text>
-      <text class="subtitle">使用卡密或手机号登录后进入学习和交流。</text>
+      <text class="subtitle">{{ bindingToken ? '绑定已有账号后继续使用原学习记录。' : '登录后进入学习和交流。' }}</text>
     </view>
 
     <view class="card form-card">
+      <button v-if="showWechatLogin && !bindingToken" class="wechat-btn" :loading="loading" @tap="loginWithWechat">
+        微信登录
+      </button>
+      <view v-if="showWechatLogin && !bindingToken" class="divider"><text>其他登录方式</text></view>
+      <text v-if="bindingToken" class="binding-title">绑定已有账号</text>
+      <button v-if="bindingToken" class="restart-wechat" :disabled="loading" @tap="restartWechatLogin">
+        重新获取微信登录
+      </button>
       <view class="segmented">
-        <view :class="['segment', mode === 'key' && 'active']" @tap="mode = 'key'">卡密</view>
-        <view :class="['segment', mode === 'password' && 'active']" @tap="mode = 'password'">手机号</view>
+        <view :class="['segment', mode === 'key' && 'active']" @tap="mode = 'key'">{{ bindingToken ? '绑定卡密' : '卡密' }}</view>
+        <view :class="['segment', mode === 'password' && 'active']" @tap="mode = 'password'">{{ bindingToken ? '绑定账号' : '手机号' }}</view>
       </view>
 
       <view v-if="mode === 'key'" class="fields">
@@ -82,13 +166,15 @@ async function submit() {
           <input v-model="key" class="input key-input" placeholder="请输入卡密" />
           <button class="paste-btn" @tap="pasteKey">粘贴</button>
         </view>
+        <input v-if="bindingNeedsProfile" v-model="phone" class="input" type="number" placeholder="手机号" />
+        <input v-if="bindingNeedsProfile" v-model="nickname" class="input" placeholder="昵称" />
       </view>
       <view v-else class="fields">
         <input v-model="phone" class="input" type="number" placeholder="手机号" />
         <input v-model="password" class="input" password placeholder="密码" />
       </view>
 
-      <button class="btn submit" :loading="loading" @tap="submit">登录</button>
+      <button class="btn submit" :loading="loading" @tap="submit">{{ bindingToken ? '确认绑定并登录' : '登录' }}</button>
     </view>
   </view>
 </template>
@@ -127,6 +213,38 @@ async function submit() {
   display: flex;
   flex-direction: column;
   gap: 28rpx;
+}
+
+.wechat-btn {
+  background: #07c160;
+  border-radius: 18rpx;
+  color: #fff;
+  font-size: 30rpx;
+  font-weight: 700;
+  min-height: 88rpx;
+}
+
+.divider {
+  align-items: center;
+  color: rgba(17, 24, 39, 0.4);
+  display: flex;
+  font-size: 24rpx;
+  justify-content: center;
+}
+
+.binding-title {
+  color: #111827;
+  font-size: 30rpx;
+  font-weight: 700;
+}
+
+.restart-wechat {
+  background: transparent;
+  color: #1f6feb;
+  font-size: 26rpx;
+  margin: 0;
+  padding: 0;
+  text-align: left;
 }
 
 .segmented {

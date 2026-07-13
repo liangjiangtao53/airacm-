@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { onShow } from '@dcloudio/uni-app';
+import { onShow, onUnload } from '@dcloudio/uni-app';
 import { computed, ref } from 'vue';
 import { api, assetUrl, requireLogin, type CommentItem, type WrongBookItem, type WrongQuestionSource } from '@/utils/api';
+import { disableCaptureProtection, enableCaptureProtection } from '@/utils/capture';
 
 const items = ref<WrongBookItem[]>([]);
 const revealed = ref<Record<string, boolean>>({});
@@ -95,7 +96,11 @@ async function removeComment(questionId: string, commentId: string) {
   });
 }
 
-onShow(load);
+onShow(() => {
+  enableCaptureProtection();
+  void load();
+});
+onUnload(disableCaptureProtection);
 </script>
 
 <template>

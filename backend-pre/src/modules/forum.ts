@@ -24,6 +24,7 @@ import { AdminOperationLog, ForumTopic, Post, PostReply, PostReplyLike, User } f
 import { AuthUser, CurrentUser, JwtAuthGuard, JwtPayload, Roles, RolesGuard } from '../common';
 import { env } from '../config';
 import { SessionService } from '../session';
+import { WechatMiniProgramModule, WechatMiniProgramService } from './wechat-mini-program';
 
 class CreatePostDto {
   @IsString()
@@ -120,6 +121,7 @@ export class ForumService {
     @InjectRepository(ForumTopic) private readonly topics: Repository<ForumTopic>,
     @InjectRepository(User) private readonly users: Repository<User>,
     @InjectRepository(AdminOperationLog) private readonly operationLogs: Repository<AdminOperationLog>,
+    private readonly wechat: WechatMiniProgramService,
   ) {}
 
   private async logAdminOperation(
@@ -247,6 +249,10 @@ export class ForumService {
     if (!trimmed) throw new BadRequestException('内容不能为空');
     const topic = await this.topics.findOne({ where: { tenantId: user.tenantId, id: topicId } });
     if (!topic) throw new BadRequestException('主题不存在');
+    await this.wechat.checkContent(trimmed, 3, await this.userWechatOpenid(user), {
+      userId: user.userId,
+      contentType: 'forum_post',
+    });
     const p = await this.posts.save(
       this.posts.create({ tenantId: user.tenantId, topicId, userId: user.userId, content: trimmed }),
     );
@@ -311,6 +317,10 @@ export class ForumService {
     if (!trimmed) throw new BadRequestException('回复不能为空');
     const post = await this.posts.findOne({ where: { tenantId: user.tenantId, id: postId, deletedAt: IsNull() } });
     if (!post) throw new NotFoundException('帖子不存在');
+    await this.wechat.checkContent(trimmed, 2, await this.userWechatOpenid(user), {
+      userId: user.userId,
+      contentType: 'forum_reply',
+    });
     const r = await this.replies.save(
       this.replies.create({ tenantId: user.tenantId, postId, userId: user.userId, content: trimmed }),
     );
@@ -330,6 +340,14 @@ export class ForumService {
 
   private canDeleteReply(user: AuthUser, reply: Pick<PostReply, 'userId'>): boolean {
     return reply.userId === user.userId || user.role === 'admin' || user.role === 'super';
+  }
+
+  private async userWechatOpenid(user: AuthUser): Promise<string | null> {
+    const row = await this.users.findOne({
+      where: { tenantId: user.tenantId, id: user.userId },
+      select: ['wechatOpenid'],
+    });
+    return row?.wechatOpenid ?? null;
   }
 
   private canDeletePost(user: AuthUser, post: Pick<Post, 'userId'>): boolean {
@@ -494,7 +512,10 @@ export class ForumController {
 }
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Post, PostReply, PostReplyLike, ForumTopic, User, AdminOperationLog])],
+  imports: [
+    TypeOrmModule.forFeature([Post, PostReply, PostReplyLike, ForumTopic, User, AdminOperationLog]),
+    WechatMiniProgramModule,
+  ],
   controllers: [ForumController, ForumTopicController, ForumAdminController],
   providers: [ForumService],
 })

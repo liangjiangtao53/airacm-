@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { onShow } from '@dcloudio/uni-app';
+import { onShow, onUnload } from '@dcloudio/uni-app';
 import { computed, ref } from 'vue';
 import { api, assetUrl, requireLogin, type ExamAttemptSummary, type GradedItem } from '@/utils/api';
+import { disableCaptureProtection, enableCaptureProtection } from '@/utils/capture';
 
 const attempts = ref<ExamAttemptSummary[]>([]);
 const details = ref<Record<string, GradedItem[]>>({});
@@ -92,7 +93,11 @@ function isWrongSelection(item: GradedItem, key: string) {
   return item.yourAnswer.includes(key) && !item.correctAnswer.includes(key);
 }
 
-onShow(load);
+onShow(() => {
+  enableCaptureProtection();
+  void load();
+});
+onUnload(disableCaptureProtection);
 </script>
 
 <template>

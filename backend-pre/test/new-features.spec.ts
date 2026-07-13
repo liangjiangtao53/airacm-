@@ -568,7 +568,7 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
       expect(start.body.error).toContain('题库不足');
     });
 
-    it('全错得 0,且不可重复交卷', async () => {
+    it('全错得 0,重复交卷幂等返回原成绩', async () => {
       const { token } = await makeUser('user');
       const start = await request(app.getHttpServer())
         .post('/exams/start')
@@ -587,7 +587,8 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
         .post(`/exams/${attemptId}/submit`)
         .set('Authorization', `Bearer ${token}`)
         .send({ answers: wrong });
-      expect(again.status).toBe(400); // 已交卷
+      expect(again.status).toBe(201);
+      expect(again.body.data).toEqual(sub.body.data);
     });
 
     it('历史记录含已交卷成绩', async () => {
@@ -868,6 +869,9 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
       expect(start.status).toBe(201);
       expect(start.body.data.questions).toHaveLength(1);
       expect(start.body.data.questions[0].stem).toBe(stem);
+      await request(app.getHttpServer())
+        .post(`/exams/${start.body.data.attemptId}/abandon`)
+        .set('Authorization', `Bearer ${user.token}`);
 
       const q = await ds.getRepository(Question).findOneOrFail({ where: { tenantId: TENANT, stem } });
       const deleted = await request(app.getHttpServer())
@@ -1309,7 +1313,7 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
         .set('Authorization', `Bearer ${sup.token}`);
       expect(logs.status).toBe(200);
       expect(logs.body.data.total).toBeGreaterThanOrEqual(1);
-      expect(logs.body.data.items.some((log: { accessKey?: { key?: string }; createdAt?: string }) => log.accessKey?.key === key && !!log.createdAt)).toBe(true);
+      expect(logs.body.data.items.some((log: { accessKey?: { key?: string }; createdAt?: string }) => log.accessKey?.key === `****${key.slice(-4)}` && !!log.createdAt)).toBe(true);
 
       const keyRow = await ds.getRepository(AccessKey).findOneOrFail({ where: { tenantId: TENANT, key } });
       await request(app.getHttpServer())
@@ -1611,6 +1615,38 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
         .set('Authorization', `Bearer ${admin.token}`);
       expect(cleanup.status).toBe(200);
       expect(cleanup.body.data.deleted).toBeGreaterThanOrEqual(1);
+    });
+
+    it('作废卡密或解绑微信后立即撤销学员现有会话', async () => {
+      const admin = await makeUser('super');
+      const keyed = await makeUser('user');
+      const key = await ds.getRepository(AccessKey).save(
+        ds.getRepository(AccessKey).create({
+          tenantId: TENANT,
+          key: `SESSION${Date.now()}`,
+          status: 'active',
+          userId: keyed.user.userId,
+          expiresAt: new Date(Date.now() + 86_400_000),
+        }),
+      );
+      expect(
+        (await request(app.getHttpServer()).get('/auth/me').set('Authorization', `Bearer ${keyed.token}`)).status,
+      ).toBe(200);
+      await request(app.getHttpServer())
+        .post(`/admin/access-keys/${key.id}/revoke`)
+        .set('Authorization', `Bearer ${admin.token}`);
+      expect(
+        (await request(app.getHttpServer()).get('/auth/me').set('Authorization', `Bearer ${keyed.token}`)).status,
+      ).toBe(401);
+
+      const wechat = await makeUser('user');
+      await ds.getRepository(User).update(wechat.user.userId, { wechatOpenid: 'wx-session-revoke' });
+      await request(app.getHttpServer())
+        .delete(`/admin/users/${wechat.user.userId}/wechat-binding`)
+        .set('Authorization', `Bearer ${admin.token}`);
+      expect(
+        (await request(app.getHttpServer()).get('/auth/me').set('Authorization', `Bearer ${wechat.token}`)).status,
+      ).toBe(401);
     });
 
     it('操作日志仅超管可查看,并返回操作账号与时间', async () => {

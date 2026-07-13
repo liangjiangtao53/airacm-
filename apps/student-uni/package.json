@@ -7,7 +7,9 @@
     "build:h5": "uni build -p h5",
     "build:app": "uni build -p app",
     "dev:mp-weixin": "uni -p mp-weixin",
-    "build:mp-weixin": "uni build -p mp-weixin"
+    "build:mp-weixin": "node scripts/build-mp-weixin.mjs",
+    "typecheck": "vue-tsc --noEmit",
+    "test": "vitest run --config vitest.config.ts"
   },
   "dependencies": {
     "@dcloudio/uni-app": "3.0.0-alpha-1000920260615733",
@@ -22,6 +24,7 @@
     "sass": "^1.77.8",
     "typescript": "^5.9.3",
     "vite": "7.3.3",
+    "vitest": "^3.2.4",
     "vue-tsc": "^2.1.10"
   }
 }

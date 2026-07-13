@@ -42,12 +42,14 @@
         "navigationBarTitleText": "学历提升"
       }
     },
+    // #ifndef MP-WEIXIN
     {
       "path": "pages/download-app/index",
       "style": {
         "navigationBarTitleText": "下载 App"
       }
     },
+    // #endif
     {
       "path": "pages/login/index",
       "style": {

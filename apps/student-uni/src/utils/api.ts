@@ -1,10 +1,22 @@
 const TOKEN_KEY = 'airacm_token';
+import { stringifyQuery } from './query';
+import { runtimeQueryValue } from './runtime';
 
-const runtimeParams = typeof location !== 'undefined' ? new URLSearchParams(location.search) : undefined;
+function configuredBase(runtimeKey: string, envValue: string | undefined): string {
+  const value = runtimeQueryValue(runtimeKey) || envValue || '';
+  if (!value && import.meta.env.PROD) {
+    throw new Error(`生产构建缺少 ${runtimeKey} 配置`);
+  }
+  if (value) return value;
+  return import.meta.env.DEV
+    ? runtimeKey === 'apiBase'
+      ? 'http://127.0.0.1:8770'
+      : 'http://127.0.0.1:3000'
+    : '';
+}
 
-export const API_BASE = runtimeParams?.get('apiBase') || import.meta.env.VITE_API_BASE || 'http://127.0.0.1:8770';
-export const DOWNLOAD_BASE =
-  runtimeParams?.get('downloadBase') || import.meta.env.VITE_DOWNLOAD_BASE || 'http://127.0.0.1:3000';
+export const API_BASE = configuredBase('apiBase', import.meta.env.VITE_API_BASE);
+export const DOWNLOAD_BASE = configuredBase('downloadBase', import.meta.env.VITE_DOWNLOAD_BASE);
 
 export function assetUrl(path: string): string {
   if (/^https?:\/\//i.test(path)) return path;
@@ -80,8 +92,17 @@ export interface PaperQuestion {
 export interface ExamStart {
   attemptId: string;
   total: number;
+  category: string;
   questions: PaperQuestion[];
+  answers: Record<string, string>;
+  currentQuestionIndex: number;
+  draftVersion: number;
+  resumed: boolean;
 }
+
+export type WechatLoginResult =
+  | { needBinding: false; token: string; userId: string }
+  | { needBinding: true; bindingToken: string; expiresAt: string };
 
 export interface GradedItem {
   questionId: string;
@@ -180,7 +201,7 @@ export function requireLogin(): boolean {
 
 function request<T>(
   path: string,
-  opts: { method?: 'GET' | 'POST' | 'DELETE'; data?: string | AnyObject | ArrayBuffer; auth?: boolean } = {},
+  opts: { method?: 'GET' | 'POST' | 'PUT' | 'DELETE'; data?: string | AnyObject | ArrayBuffer; auth?: boolean } = {},
 ): Promise<T> {
   const header: Record<string, string> = {};
   if (opts.auth !== false) {
@@ -214,6 +235,23 @@ export const api = {
     request<KeyLoginResult>('/auth/key-login', { method: 'POST', data: { key }, auth: false }),
   completeProfile: (phone: string, nickname: string) =>
     request<LoginResult>('/auth/complete-profile', { method: 'POST', data: { phone, nickname } }),
+  wechatLogin: (code: string) =>
+    request<WechatLoginResult>('/auth/wechat/login', { method: 'POST', data: { code }, auth: false }),
+  bindWechatPassword: (bindingToken: string, phone: string, password: string) =>
+    request<LoginResult>('/auth/wechat/bind/password', {
+      method: 'POST',
+      data: { bindingToken, phone, password },
+      auth: false,
+    }),
+  bindWechatKey: (bindingToken: string, key: string, phone?: string, nickname?: string) =>
+    request<
+      | { needProfile: true }
+      | { needProfile: false; token: string; userId: string; expiresAt: string }
+    >('/auth/wechat/bind/key', {
+      method: 'POST',
+      data: { bindingToken, key, phone, nickname },
+      auth: false,
+    }),
   me: () => request<Me>('/auth/me'),
   categories: () => request<string[]>('/questions/categories'),
   questions: (params: {
@@ -224,13 +262,25 @@ export const api = {
     page?: number;
     pageSize?: number;
   } = {}) => {
-    const pairs = Object.entries(params).filter(([, value]) => value !== undefined && value !== '');
-    const qs = pairs.length ? `?${new URLSearchParams(pairs.map(([k, v]) => [k, String(v)])).toString()}` : '';
+    const qs = stringifyQuery(params);
     return request<{ items: QuestionItem[]; total: number; page: number; pageSize: number; startIndex?: number }>(`/questions${qs}`);
   },
   questionAnswer: (id: string) => request<{ answer: string; analysis: string; imageUrls?: string[] }>(`/questions/${id}/answer`),
   startExam: (category?: string) =>
     request<ExamStart>('/exams/start', { method: 'POST', data: { category } }),
+  activeExam: () => request<ExamStart | null>('/exams/active'),
+  saveExamDraft: (
+    attemptId: string,
+    version: number,
+    currentQuestionIndex: number,
+    answers: Record<string, string>,
+  ) =>
+    request<{ draftVersion: number; currentQuestionIndex: number; unchanged: boolean }>(
+      `/exams/${attemptId}/draft`,
+      { method: 'PUT', data: { version, currentQuestionIndex, answers } },
+    ),
+  abandonExam: (attemptId: string) =>
+    request<{ abandoned: boolean }>(`/exams/${attemptId}/abandon`, { method: 'POST' }),
   submitExam: (attemptId: string, answers: Record<string, string>) =>
     request<ExamResult>(`/exams/${attemptId}/submit`, { method: 'POST', data: { answers } }),
   examHistory: () => request<ExamAttemptSummary[]>('/exams/history'),
@@ -253,8 +303,7 @@ export const api = {
     request<{ deleted: boolean }>(`/questions/comments/${commentId}`, { method: 'DELETE' }),
   forumTopics: () => request<ForumTopic[]>('/forum/topics'),
   posts: (params: { topicId?: string; page?: number; pageSize?: number } = {}) => {
-    const pairs = Object.entries(params).filter(([, value]) => value !== undefined && value !== '');
-    const qs = pairs.length ? `?${new URLSearchParams(pairs.map(([k, v]) => [k, String(v)])).toString()}` : '';
+    const qs = stringifyQuery(params);
     return request<{ items: PostItem[]; total: number; page: number; pageSize: number }>(`/posts${qs}`);
   },
   createPost: (content: string, topicId: string) =>
