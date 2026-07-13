@@ -106,6 +106,12 @@ $sourceMain = Join-Path $shellDir "src\com\airacm\student\MainActivity.java"
 $generatedMain = Join-Path $generatedSrcDir "com\airacm\student\MainActivity.java"
 New-Item -ItemType Directory -Force (Split-Path $generatedMain) | Out-Null
 $mainSource = Get-Content -Raw -Encoding UTF8 $sourceMain
+$encodedApiBase = [System.Uri]::EscapeDataString($ApiBase)
+$encodedDownloadBase = [System.Uri]::EscapeDataString($DownloadBase)
+$mainSource = $mainSource.Replace(
+  "apiBase=https%3A%2F%2Fweixiuzhiyi.com.cn%2Fapi&downloadBase=https%3A%2F%2Fweixiuzhiyi.com.cn",
+  "apiBase=$encodedApiBase&downloadBase=$encodedDownloadBase"
+)
 if ($AllowScreenshots) {
   $mainSource = $mainSource -replace '(?s)\s*// SCREENSHOT_PROTECTION_START.*?// SCREENSHOT_PROTECTION_END', "`r`n    // Screenshot-enabled APK: FLAG_SECURE intentionally omitted."
 }
