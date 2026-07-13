@@ -1,41 +1,11 @@
 <script setup lang="ts">
 const qrUrl = '/static/customer-service-qr.svg';
 
-// 原页面只展示咨询入口；这里补充 docs/本科 图片文件名对应的院校名单。
+// 仅展示当前主推院校，其他学校统一引导用户咨询客服确认。
 const undergraduateSchoolGroups = [
   {
-    title: '本科主推院校',
-    schools: [
-      '商洛学院',
-      '西安外事学院',
-      '西安工业大学',
-      '西安文理学院',
-      '西安欧亚学院',
-      '西安理工大学',
-      '西安石油大学',
-      '西安航空学院',
-      '西安财经大学',
-      '陕西中医药大学',
-      '陕西师范大学',
-      '陕西理工大学',
-    ],
-  },
-  {
-    title: '其他本科院校',
-    schools: [
-      '延安大学',
-      '渭南师范学院',
-      '西北农林科技大学',
-      '西北大学',
-      '西北工业大学',
-      '西安交通大学',
-      '西安医学院',
-      '西安建筑科技大学',
-      '西安科技大学',
-      '西安邮电大学',
-      '长安大学',
-      '陕西学前师范学院',
-    ],
+    title: '主推院校',
+    schools: ['西安交通大学', '西北工业大学', '西北大学'],
   },
 ];
 
@@ -94,6 +64,7 @@ const undergraduateSchoolCount = undergraduateSchoolGroups.reduce(
           </view>
         </view>
       </view>
+      <text class="more-schools-note">更多学校请咨询客服</text>
     </view>
   </view>
 </template>
@@ -207,6 +178,13 @@ const undergraduateSchoolCount = undergraduateSchoolGroups.reduce(
   display: flex;
   flex-direction: column;
   gap: 20rpx;
+}
+
+.more-schools-note {
+  color: #1f6feb;
+  font-size: 26rpx;
+  font-weight: 700;
+  text-align: center;
 }
 
 .school-group {

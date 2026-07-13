@@ -1,11 +1,11 @@
 const qrUrl = '/images/customer-service-qr.svg';
 const advisorUrl = '/images/customer-service-advisor.png';
 
-// 按公开排名/办学层次重排，主推区优先展示综合实力更强的院校。
+// 仅展示当前主推院校，其他学校统一引导用户咨询客服确认。
 const undergraduateSchoolGroups = [
   {
-    title: '排名优先主推院校',
-    description: '优先放置 985、211、双一流和省内排名靠前院校。',
+    title: '主推院校',
+    description: '具体报读条件和批次以客服确认为准。',
     schools: [
       {
         name: '西安交通大学',
@@ -18,120 +18,9 @@ const undergraduateSchoolGroups = [
         reason: '985/211/双一流，工科实力突出。',
       },
       {
-        name: '陕西师范大学',
-        tag: '软科全国第63',
-        reason: '211/双一流，师范类优势明显。',
-      },
-      {
-        name: '西北农林科技大学',
-        tag: '软科全国第69',
-        reason: '985/211/双一流，农林生命学科强。',
-      },
-      {
         name: '西北大学',
         tag: '软科全国第70',
         reason: '211/双一流，综合类底蕴强。',
-      },
-      {
-        name: '长安大学',
-        tag: '软科全国第89',
-        reason: '211/双一流，交通土木相关优势强。',
-      },
-      {
-        name: '西安理工大学',
-        tag: '软科全国第111',
-        reason: '非双一流里省内排名靠前，工科基础好。',
-      },
-      {
-        name: '西安建筑科技大学',
-        tag: '软科全国第118',
-        reason: '建筑土木特色强，省内认可度高。',
-      },
-      {
-        name: '西安科技大学',
-        tag: '软科全国第186',
-        reason: '工科类院校，进入省内前 200 梯队。',
-      },
-      {
-        name: '西安邮电大学',
-        tag: '软科全国第196',
-        reason: '信息通信方向特色明显。',
-      },
-      {
-        name: '陕西中医药大学',
-        tag: '中医药类第18',
-        reason: '医药方向报读时优先推荐。',
-      },
-      {
-        name: '西安财经大学',
-        tag: '财经类第33',
-        reason: '财经管理类方向匹配度高。',
-      },
-    ],
-  },
-  {
-    title: '其他可咨询本科院校',
-    description: '作为补充选择，按公办优先、特色匹配和民办类型排序。',
-    schools: [
-      {
-        name: '西安医学院',
-        tag: '医药类第46',
-        reason: '医药卫生方向可作为补充选择。',
-      },
-      {
-        name: '西安工业大学',
-        tag: '省内公办梯队',
-        reason: '工科应用方向较适合。',
-      },
-      {
-        name: '西安石油大学',
-        tag: '省内公办梯队',
-        reason: '能源、工科相关方向有特色。',
-      },
-      {
-        name: '延安大学',
-        tag: '省内公办梯队',
-        reason: '综合类公办本科，可作为稳妥选择。',
-      },
-      {
-        name: '陕西理工大学',
-        tag: '省内公办梯队',
-        reason: '区域综合类本科，专业覆盖较全。',
-      },
-      {
-        name: '西安文理学院',
-        tag: '公办本科',
-        reason: '文理、教育类方向可咨询。',
-      },
-      {
-        name: '渭南师范学院',
-        tag: '公办本科',
-        reason: '师范教育方向可作为补充。',
-      },
-      {
-        name: '西安航空学院',
-        tag: '公办本科',
-        reason: '航空制造和工科应用方向有特色。',
-      },
-      {
-        name: '陕西学前师范学院',
-        tag: '公办本科',
-        reason: '学前教育、师范方向更匹配。',
-      },
-      {
-        name: '商洛学院',
-        tag: '公办本科',
-        reason: '区域本科院校，适合补充咨询。',
-      },
-      {
-        name: '西安欧亚学院',
-        tag: '民办财经类第13',
-        reason: '民办财经管理方向可作为备选。',
-      },
-      {
-        name: '西安外事学院',
-        tag: '民办本科',
-        reason: '民办应用型本科，适合补充选择。',
       },
     ],
   },
@@ -310,12 +199,10 @@ export default function UpgradePage() {
                   ))}
                 </div>
               </div>
-              <button className="w-full border-t border-ink/10 py-3 text-sm font-semibold text-sky hover:bg-sky/5">
-                查看更多院校⌄
-              </button>
             </div>
           ))}
         </div>
+        <p className="mt-5 text-center text-sm font-medium text-sky">更多学校请咨询客服</p>
       </section>
     </main>
   );
