@@ -24,13 +24,13 @@ const commentInputs = ref<Record<string, string>>({});
 const commentLists = ref<Record<string, CommentItem[]>>({});
 const startedStudyCategories = ref(new Set<string>());
 const progressRecorded = ref<Record<string, boolean>>({});
-const answeredResults = ref<Record<string, boolean>>({});
 const currentQuestion = computed(() => questions.value[currentIndex.value] || null);
 const currentNumber = computed(() => (page.value - 1) * pageSize.value + currentIndex.value + 1);
 const canPrev = computed(() => page.value > 1 || currentIndex.value > 0);
 const canNext = computed(() => currentIndex.value < questions.value.length - 1 || page.value * pageSize.value < total.value);
-const correctCount = computed(() => Object.values(answeredResults.value).filter(Boolean).length);
-const wrongCount = computed(() => Object.values(answeredResults.value).filter((ok) => !ok).length);
+const currentPractice = computed(() => currentQuestion.value?.practice || { seenCount: 0, correctCount: 0, wrongCount: 0 });
+const correctCount = computed(() => currentPractice.value.correctCount);
+const wrongCount = computed(() => currentPractice.value.wrongCount);
 const accuracy = computed(() => {
   const answered = correctCount.value + wrongCount.value;
   return answered > 0 ? Math.round((correctCount.value / answered) * 100) : 0;
@@ -98,6 +98,12 @@ async function recordStudyProgress(id?: string) {
   }
 }
 
+function updateQuestionPractice(id: string, practice: { seenCount: number; correctCount: number; wrongCount: number }) {
+  const idx = questions.value.findIndex((q) => q.id === id);
+  if (idx < 0) return;
+  questions.value[idx] = { ...questions.value[idx], practice };
+}
+
 async function reveal(id: string, recordPractice = true, autoDisplay = false, openExplanation = false) {
   if (answers.value[id]) {
     if (!autoDisplay) {
@@ -107,9 +113,13 @@ async function reveal(id: string, recordPractice = true, autoDisplay = false, op
       }
       if (recordPractice) {
         const pickedKey = [...(picked.value[id] || [])].sort().join('');
-        recordAnsweredResult(id, pickedKey, answers.value[id].answer);
-        await api.recordStudyWrong(id, pickedKey || answers.value[id].answer);
-        progressRecorded.value[id] = true;
+        if (pickedKey) {
+          const res = await api.recordStudyWrong(id, pickedKey);
+          updateQuestionPractice(id, res.practice);
+          progressRecorded.value[id] = true;
+        } else {
+          await recordStudyProgress(id);
+        }
       }
     }
     return;
@@ -123,17 +133,16 @@ async function reveal(id: string, recordPractice = true, autoDisplay = false, op
     }
     if (!recordPractice) return;
     const pickedKey = [...(picked.value[id] || [])].sort().join('');
-    recordAnsweredResult(id, pickedKey, result.answer);
-    await api.recordStudyWrong(id, pickedKey || result.answer);
-    progressRecorded.value[id] = true;
+    if (pickedKey) {
+      const res = await api.recordStudyWrong(id, pickedKey);
+      updateQuestionPractice(id, res.practice);
+      progressRecorded.value[id] = true;
+    } else {
+      await recordStudyProgress(id);
+    }
   } catch (e) {
     toast((e as Error).message);
   }
-}
-
-function recordAnsweredResult(id: string, pickedKey: string, answer: string) {
-  if (!pickedKey || answeredResults.value[id] !== undefined) return;
-  answeredResults.value[id] = pickedKey === answer;
 }
 
 function toggleCorrectAnswer() {
@@ -189,7 +198,6 @@ function changeCategory(e: { detail: { value: number } }) {
   answers.value = {};
   explanationOpen.value = {};
   progressRecorded.value = {};
-  answeredResults.value = {};
   recordStudyStart();
   loadQuestions(true);
 }

@@ -144,6 +144,12 @@ interface WrongBookItem {
   lastWrongAt: Date;
 }
 
+interface QuestionPracticeSummary {
+  seenCount: number;
+  correctCount: number;
+  wrongCount: number;
+}
+
 // 规范化答案:大写、仅留 A-H、去重、字母序。与导入时 answer 存储格式一致,保证可比对。
 function normalize(raw: string): string {
   return (raw || '')
@@ -464,16 +470,36 @@ export class ExamService {
   }
 
   // 顺序学习答错后录入错题本。服务端复核答案,避免客户端误报或伪造错题。
-  async recordStudyWrong(user: AuthUser, questionId: string, answer: string): Promise<{ ok: true; recorded: boolean }> {
+  async recordStudyWrong(
+    user: AuthUser,
+    questionId: string,
+    answer: string,
+  ): Promise<{ ok: true; recorded: boolean; practice: QuestionPracticeSummary }> {
     const q = await this.questions.findOne({ where: { tenantId: user.tenantId, id: questionId } });
     if (!q) throw new NotFoundException('题目不存在');
     const now = new Date();
     const isCorrect = normalize(answer) === q.answer;
     await this.saveStudyProgress(user, q, now);
     await this.recordQuestionPractice(user, questionId, isCorrect, now);
-    if (isCorrect) return { ok: true, recorded: false };
+    const practice = await this.loadQuestionPracticeSummary(user, questionId);
+    if (isCorrect) return { ok: true, recorded: false, practice };
     await this.recordWrong(user, questionId, 'study', now);
-    return { ok: true, recorded: true };
+    return { ok: true, recorded: true, practice };
+  }
+
+  private async loadQuestionPracticeSummary(
+    user: AuthUser,
+    questionId: string,
+  ): Promise<QuestionPracticeSummary> {
+    const row = await this.practices.findOne({
+      where: { tenantId: user.tenantId, userId: user.userId, questionId },
+      select: ['seenCount', 'correctCount', 'wrongCount'],
+    });
+    return {
+      seenCount: row?.seenCount ?? 0,
+      correctCount: row?.correctCount ?? 0,
+      wrongCount: row?.wrongCount ?? 0,
+    };
   }
 
   async recordStudyProgress(user: AuthUser, questionId: string): Promise<{ ok: true }> {

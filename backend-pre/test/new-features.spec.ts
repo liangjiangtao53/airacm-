@@ -739,24 +739,41 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
       await seedQuestions('STUDY-OTHER', 5, 'study', otherCategory, null);
       const now = new Date();
       await ds.getRepository(QuestionPractice).save(
-        ds.getRepository(QuestionPractice).create({
-          tenantId: TENANT,
-          userId: user.user.userId,
-          questionId: rows[24].id,
-          seenCount: 1,
-          correctCount: 1,
-          wrongCount: 0,
-          lastSeenAt: now,
-          lastCorrectAt: now,
-          lastWrongAt: null,
-        }),
+        [
+          ds.getRepository(QuestionPractice).create({
+            tenantId: TENANT,
+            userId: user.user.userId,
+            questionId: rows[0].id,
+            seenCount: 2,
+            correctCount: 1,
+            wrongCount: 1,
+            lastSeenAt: now,
+            lastCorrectAt: now,
+            lastWrongAt: now,
+          }),
+          ds.getRepository(QuestionPractice).create({
+            tenantId: TENANT,
+            userId: user.user.userId,
+            questionId: rows[24].id,
+            seenCount: 1,
+            correctCount: 1,
+            wrongCount: 0,
+            lastSeenAt: now,
+            lastCorrectAt: now,
+            lastWrongAt: null,
+          }),
+        ],
       );
 
       const res = await request(app.getHttpServer())
         .get(`/questions?usage=study&category=${encodeURIComponent(category)}&pageSize=10`)
         .set('Authorization', `Bearer ${user.token}`);
 
-      const items = res.body.data.items as Array<{ stem: string; category: string }>;
+      const items = res.body.data.items as Array<{
+        stem: string;
+        category: string;
+        practice: { seenCount: number; correctCount: number; wrongCount: number };
+      }>;
       expect(res.status).toBe(200);
       expect(items).toHaveLength(10);
       expect(res.body.data.total).toBe(25);
@@ -765,6 +782,8 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
       expect(res.body.data.startIndex).toBe(0);
       expect(items.every((q) => q.category === category)).toBe(true);
       expect(items.map((q) => q.stem)).toEqual(Array.from({ length: 10 }, (_, i) => `STUDY-SEQ-${i + 1}`));
+      expect(items[0].practice).toEqual({ seenCount: 2, correctCount: 1, wrongCount: 1 });
+      expect(items[1].practice).toEqual({ seenCount: 0, correctCount: 0, wrongCount: 0 });
       expect(countByPrefix(items, 'STUDY-OTHER')).toBe(0);
 
       const progress = await request(app.getHttpServer())
@@ -907,7 +926,7 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
       expect(after).toBe(before);
     });
 
-    it('study answer tracking accumulates repeated answers on one practice row', async () => {
+    it('study answer tracking returns the current user question stats', async () => {
       const user = await makeUser('user');
       const category = `ADAPTIVE-TRACK-${phoneSeq++}`;
       const [q] = await seedQuestions('STUDY-TRACK', 1, 'study', category, null);
@@ -918,29 +937,33 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
         .send({ category });
       expect(started.status).toBe(201);
 
-      const [first, second] = await Promise.all([
-        request(app.getHttpServer())
-          .post('/exams/wrong-book/study')
-          .set('Authorization', `Bearer ${user.token}`)
-          .send({ questionId: q.id, answer: 'A' }),
-        request(app.getHttpServer())
-          .post('/exams/wrong-book/study')
-          .set('Authorization', `Bearer ${user.token}`)
-          .send({ questionId: q.id, answer: 'A' }),
-      ]);
+      const first = await request(app.getHttpServer())
+        .post('/exams/wrong-book/study')
+        .set('Authorization', `Bearer ${user.token}`)
+        .send({ questionId: q.id, answer: 'B' });
 
       expect(first.status).toBe(201);
+      expect(first.body.data.recorded).toBe(true);
+      expect(first.body.data.practice).toEqual({ seenCount: 1, correctCount: 0, wrongCount: 1 });
+
+      const second = await request(app.getHttpServer())
+        .post('/exams/wrong-book/study')
+        .set('Authorization', `Bearer ${user.token}`)
+        .send({ questionId: q.id, answer: 'A' });
+
       expect(second.status).toBe(201);
+      expect(second.body.data.recorded).toBe(false);
+      expect(second.body.data.practice).toEqual({ seenCount: 2, correctCount: 1, wrongCount: 1 });
       const rows = await ds.getRepository(QuestionPractice).find({
         where: { tenantId: TENANT, userId: user.user.userId, questionId: q.id },
       });
       expect(rows).toHaveLength(1);
       expect(rows[0].seenCount).toBe(2);
-      expect(rows[0].correctCount).toBe(2);
-      expect(rows[0].wrongCount).toBe(0);
+      expect(rows[0].correctCount).toBe(1);
+      expect(rows[0].wrongCount).toBe(1);
       expect(rows[0].lastSeenAt).toBeTruthy();
       expect(rows[0].lastCorrectAt).toBeTruthy();
-      expect(rows[0].lastWrongAt).toBeNull();
+      expect(rows[0].lastWrongAt).toBeTruthy();
       const progress = await ds.getRepository(StudyQuestionProgress).findOne({
         where: { tenantId: TENANT, userId: user.user.userId, category, courseId: '' },
       });

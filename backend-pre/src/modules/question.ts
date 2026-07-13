@@ -253,6 +253,17 @@ interface ImportColumnMap {
   options: Array<{ key: string; idx: number }>;
 }
 
+interface QuestionPracticeSummary {
+  seenCount: number;
+  correctCount: number;
+  wrongCount: number;
+}
+
+type PublicQuestionItem = Omit<Question, 'answer' | 'analysis' | 'importBatchId' | 'imageUrls'> & {
+  imageUrls?: string[];
+  practice: QuestionPracticeSummary;
+};
+
 @Injectable()
 export class QuestionService {
   private readonly questionListCountCache = new Map<string, { total: number; expiresAt: number }>();
@@ -906,7 +917,7 @@ export class QuestionService {
     user: AuthUser,
     q: ListQuery,
   ): Promise<{
-    items: Array<Omit<Question, 'answer' | 'analysis' | 'importBatchId' | 'imageUrls'> & { imageUrls?: string[] }>;
+    items: PublicQuestionItem[];
     total: number;
     page: number;
     pageSize: number;
@@ -956,8 +967,12 @@ export class QuestionService {
           pageSize,
           q.page,
         );
+        const items = await this.attachPracticeStats(
+          user,
+          rows.map(({ imageUrls: _img, ...row }) => row),
+        );
         return {
-          items: rows.map(({ imageUrls: _img, ...row }) => row),
+          items,
           total: allRows.length,
           page: currentPage,
           pageSize,
@@ -985,9 +1000,35 @@ export class QuestionService {
       if (dbType === 'mysql' || dbType === 'mariadb') rowsQb.useIndex(this.questionListIndex(q));
 
       const rows = await rowsQb.getMany();
-      const items = rows.map(({ answer: _a, analysis: _an, imageUrls: _img, ...rest }) => rest);
+      const items = await this.attachPracticeStats(
+        user,
+        rows.map(({ answer: _a, analysis: _an, imageUrls: _img, ...rest }) => rest),
+      );
       return { items, total, page, pageSize };
     }
+  }
+
+  private async attachPracticeStats<T extends { id: string }>(
+    user: AuthUser,
+    items: T[],
+  ): Promise<Array<T & { practice: QuestionPracticeSummary }>> {
+    if (items.length === 0) return [];
+    const rows = await this.practices.find({
+      where: { tenantId: user.tenantId, userId: user.userId, questionId: In(items.map((item) => item.id)) },
+      select: ['questionId', 'seenCount', 'correctCount', 'wrongCount'],
+    });
+    const byQuestion = new Map(rows.map((row) => [row.questionId, row]));
+    return items.map((item) => {
+      const practice = byQuestion.get(item.id);
+      return {
+        ...item,
+        practice: {
+          seenCount: practice?.seenCount ?? 0,
+          correctCount: practice?.correctCount ?? 0,
+          wrongCount: practice?.wrongCount ?? 0,
+        },
+      };
+    });
   }
 
   // 读取用户历史练习/考试/错题状态,用于专题学习按新题/原题/错题混合排序。

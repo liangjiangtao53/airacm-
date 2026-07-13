@@ -50,6 +50,12 @@ export interface QuestionOption {
   text: string;
 }
 
+export interface QuestionPracticeSummary {
+  seenCount: number;
+  correctCount: number;
+  wrongCount: number;
+}
+
 export interface QuestionItem {
   id: string;
   courseId: string | null;
@@ -60,6 +66,7 @@ export interface QuestionItem {
   imageUrls?: string[];
   usage: QuestionUsage;
   order: number;
+  practice?: QuestionPracticeSummary;
 }
 
 export interface PaperQuestion {
@@ -236,7 +243,7 @@ export const api = {
   recordStudyProgress: (questionId: string) =>
     request<{ ok: true }>('/exams/study/progress', { method: 'POST', data: { questionId } }),
   recordStudyWrong: (questionId: string, answer: string) =>
-    request<{ ok: true; recorded: boolean }>('/exams/wrong-book/study', { method: 'POST', data: { questionId, answer } }),
+    request<{ ok: true; recorded: boolean; practice: QuestionPracticeSummary }>('/exams/wrong-book/study', { method: 'POST', data: { questionId, answer } }),
   masterWrong: (questionId: string, source: WrongQuestionSource = 'study') =>
     request<{ ok: boolean }>(`/exams/wrong-book/${questionId}/master`, { method: 'POST', data: { source } }),
   comments: (questionId: string) => request<CommentItem[]>(`/questions/${questionId}/comments`),
