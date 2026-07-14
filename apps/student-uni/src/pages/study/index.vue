@@ -25,6 +25,7 @@ const commentInputs = ref<Record<string, string>>({});
 const commentLists = ref<Record<string, CommentItem[]>>({});
 const startedStudyCategories = ref(new Set<string>());
 const progressRecorded = ref<Record<string, boolean>>({});
+const loadedCategory = ref('');
 const currentQuestion = computed(() => questions.value[currentIndex.value] || null);
 const currentNumber = computed(() => (page.value - 1) * pageSize.value + currentIndex.value + 1);
 const canPrev = computed(() => page.value > 1 || currentIndex.value > 0);
@@ -71,6 +72,7 @@ async function loadQuestions(reset = false, targetIndex = 0) {
     pageSize.value = res.pageSize;
     const nextIndex = reset ? (res.startIndex ?? targetIndex) : targetIndex;
     currentIndex.value = Math.min(Math.max(0, nextIndex), Math.max(0, res.items.length - 1));
+    loadedCategory.value = category.value;
   } catch (e) {
     toast((e as Error).message);
   } finally {
@@ -292,7 +294,10 @@ onShow(async () => {
   try {
     await loadCategories();
     await recordStudyStart();
-    await loadQuestions();
+    // Tab 页面切到模拟考试后仍会保留实例；返回时保持顺序学习当前题和作答状态。
+    if (loadedCategory.value !== category.value) {
+      await loadQuestions(true);
+    }
   } catch (e) {
     toast((e as Error).message);
   }
