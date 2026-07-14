@@ -3,6 +3,7 @@ import { spawnSync } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { syncBuildOutput } from './sync-build-output.mjs';
 
 const appDir = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -40,6 +41,8 @@ if (!/^wx[A-Za-z0-9]{16}$/.test(appId)) {
 }
 
 const inputDir = mkdtempSync(resolve(tmpdir(), 'airacm-mp-'));
+const outputDir = mkdtempSync(resolve(tmpdir(), 'airacm-mp-output-'));
+const finalOutputDir = resolve(appDir, 'dist', 'build', 'mp-weixin');
 cpSync(resolve(appDir, 'src'), inputDir, { recursive: true });
 const manifestPath = resolve(inputDir, 'manifest.json');
 const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
@@ -50,10 +53,15 @@ try {
   const cli = resolve(appDir, 'node_modules', '@dcloudio', 'vite-plugin-uni', 'bin', 'uni.js');
   const result = spawnSync(process.execPath, [cli, 'build', '-p', 'mp-weixin'], {
     cwd: appDir,
-    env: { ...process.env, UNI_INPUT_DIR: inputDir },
+    env: { ...process.env, UNI_INPUT_DIR: inputDir, UNI_OUTPUT_DIR: outputDir },
     stdio: 'inherit',
   });
-  if (result.status !== 0) process.exitCode = result.status ?? 1;
+  if (result.status !== 0) {
+    process.exitCode = result.status ?? 1;
+  } else {
+    syncBuildOutput(outputDir, finalOutputDir);
+  }
 } finally {
   rmSync(inputDir, { recursive: true, force: true });
+  rmSync(outputDir, { recursive: true, force: true });
 }

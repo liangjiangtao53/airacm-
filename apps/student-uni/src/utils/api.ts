@@ -1,6 +1,6 @@
 const TOKEN_KEY = 'airacm_token';
 import { stringifyQuery } from './query';
-import { runtimeQueryValue } from './runtime';
+import { runtimeQueryValue, runtimeTarget } from './runtime';
 
 function configuredBase(runtimeKey: string, envValue: string | undefined): string {
   const value = runtimeQueryValue(runtimeKey) || envValue || '';
@@ -27,6 +27,16 @@ interface Envelope<T> {
   success: boolean;
   data: T | null;
   error: string | null;
+}
+
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    public readonly statusCode: number,
+  ) {
+    super(message);
+    this.name = 'ApiError';
+  }
 }
 
 export type UserRole = 'user' | 'admin' | 'super';
@@ -203,7 +213,7 @@ function request<T>(
   path: string,
   opts: { method?: 'GET' | 'POST' | 'PUT' | 'DELETE'; data?: string | AnyObject | ArrayBuffer; auth?: boolean } = {},
 ): Promise<T> {
-  const header: Record<string, string> = {};
+  const header: Record<string, string> = { 'X-Client-Platform': runtimeTarget };
   if (opts.auth !== false) {
     const token = getToken();
     if (token) header.Authorization = `Bearer ${token}`;
@@ -218,7 +228,7 @@ function request<T>(
         const env = res.data as Envelope<T> | undefined;
         if (res.statusCode === 401) clearToken();
         if (res.statusCode < 200 || res.statusCode >= 300 || !env || env.success === false) {
-          reject(new Error(env?.error || `${res.statusCode} 请求失败`));
+          reject(new ApiError(env?.error || `${res.statusCode} 请求失败`, res.statusCode));
           return;
         }
         resolve(env.data as T);

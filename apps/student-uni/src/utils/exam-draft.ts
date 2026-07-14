@@ -1,7 +1,8 @@
 export interface LocalExamDraft {
   answers: Record<string, string>;
   currentQuestionIndex: number;
-  version: number;
+  baseServerVersion: number;
+  localRevision: number;
 }
 
 export function selectionsToAnswers(
@@ -24,7 +25,9 @@ export function shouldUseLocalDraft(
   _serverCurrentQuestionIndex = 0,
 ): local is LocalExamDraft {
   if (!local?.answers || !Number.isInteger(local.currentQuestionIndex)) return false;
-  const localVersion = Number(local.version);
-  if (localVersion > serverVersion) return true;
-  return false;
+  return (
+    Number(local.baseServerVersion) === serverVersion &&
+    Number.isInteger(local.localRevision) &&
+    Number(local.localRevision) > 0
+  );
 }

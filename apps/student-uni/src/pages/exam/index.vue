@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onHide, onShow, onUnload } from '@dcloudio/uni-app';
 import { computed, ref } from 'vue';
-import { api, assetUrl, requireLogin, type ExamResult, type ExamStart, type PaperQuestion } from '@/utils/api';
+import { ApiError, api, assetUrl, requireLogin, type ExamResult, type ExamStart, type PaperQuestion } from '@/utils/api';
 import { disableCaptureProtection, enableCaptureProtection } from '@/utils/capture';
 import {
   answersToSelections,
@@ -191,13 +191,15 @@ function markDraftDirty() {
   draftDirty.value = true;
   const key = localDraftKey(attemptId.value);
   const stored = uni.getStorageSync(key) as Partial<LocalExamDraft> | '';
+  const sameServerBase = Number(stored && stored.baseServerVersion) === draftVersion.value;
   uni.setStorageSync(key, {
     answers: draftAnswers(),
     currentQuestionIndex: currentIndex.value,
-    version: Math.max(draftVersion.value, Number(stored && stored.version) || 0) + 1,
+    baseServerVersion: draftVersion.value,
+    localRevision: sameServerBase ? Math.max(0, Number(stored && stored.localRevision) || 0) + 1 : 1,
   });
-  if (draftTimer) clearTimeout(draftTimer);
-  draftTimer = setTimeout(() => void flushDraft(), 3000);
+  // 首次修改后固定触发保存，避免连续答题不断重置计时器而长期只留在本机。
+  if (!draftTimer) draftTimer = setTimeout(() => void flushDraft(), 3000);
 }
 
 async function flushDraft(): Promise<void> {
@@ -232,16 +234,15 @@ async function flushDraftOnce(): Promise<boolean> {
     if (savingAttemptId !== attemptId.value || phase.value !== 'taking') return true;
     draftVersion.value = saved.draftVersion;
     draftDirty.value = savingRevision !== draftRevision;
-    if (!draftDirty.value) {
-      uni.setStorageSync(localDraftKey(savingAttemptId), {
-        answers: draftAnswers(),
-        currentQuestionIndex: currentIndex.value,
-        version: saved.draftVersion,
-      });
-    }
+    uni.setStorageSync(localDraftKey(savingAttemptId), {
+      answers: draftAnswers(),
+      currentQuestionIndex: currentIndex.value,
+      baseServerVersion: saved.draftVersion,
+      localRevision: draftDirty.value ? 1 : 0,
+    });
     return true;
   } catch (error) {
-    if ((error as Error).message.includes('版本')) {
+    if (error instanceof ApiError && error.statusCode === 409) {
       try {
         const active = await api.activeExam();
         if (active) applyPaper(active);
