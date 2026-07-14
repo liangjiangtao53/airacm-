@@ -143,7 +143,7 @@ onShow(load);
       </view>
     </view>
 
-    <button class="logout" @tap="logout">退出登录</button>
+    <button class="logout" @tap="logout()">退出登录</button>
   </view>
 </template>
 

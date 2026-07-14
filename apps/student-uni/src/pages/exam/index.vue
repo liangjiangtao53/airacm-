@@ -318,14 +318,14 @@ onUnload(() => {
         <view class="select">{{ category || '请选择考试科目' }}</view>
       </picker>
       <text v-if="category" class="hint">本次考试 {{ EXAM_CATEGORY_COUNTS[category] }} 题，考完为止</text>
-      <button class="btn" :loading="busy" @tap="start">开始考试</button>
+      <button class="btn" :loading="busy" @tap="start()">开始考试</button>
     </view>
 
     <view v-if="phase === 'taking'" class="taking" @touchstart="onTouchStart" @touchend="onTouchEnd">
       <text class="progress">共 {{ questions.length }} 题 · 已答 {{ answeredCount }}</text>
       <view class="exam-status">
         <text class="status-done">已完成 {{ answeredCount }} 题</text>
-        <button class="status-pending" :disabled="unfinishedCount === 0" @tap.stop="jumpToNextUnanswered">
+        <button class="status-pending" :disabled="unfinishedCount === 0" @tap.stop="jumpToNextUnanswered()">
           <text>未答题 {{ unfinishedCount }}</text>
           <text class="pending-action">去作答</text>
           <text class="pending-arrow">›</text>
@@ -360,7 +360,7 @@ onUnload(() => {
         <text class="nav-text">{{ currentIndex + 1 }} / {{ questions.length }}</text>
         <button class="btn secondary nav-btn" :disabled="!canNext" @tap="moveQuestion(1)">下一题</button>
       </view>
-      <button class="btn submit" :loading="busy" @tap="submit">交卷</button>
+      <button class="btn submit" :loading="busy" @tap="submit()">交卷</button>
     </view>
 
     <view v-if="phase === 'result' && result" class="result-list">

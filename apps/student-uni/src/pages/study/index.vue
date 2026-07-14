@@ -325,7 +325,7 @@ watch(currentNumber, (n) => {
       <view class="subproject active">
         <view class="subproject-head">
           <text class="subproject-title">顺序学习</text>
-          <view :class="['answer-switch', showCorrectAnswer && 'active']" @tap="toggleCorrectAnswer">
+          <view :class="['answer-switch', showCorrectAnswer && 'active']" @tap="toggleCorrectAnswer()">
             <text class="answer-switch-label">显示答案</text>
             <view class="switch-track">
               <view class="switch-thumb" />
@@ -334,7 +334,7 @@ watch(currentNumber, (n) => {
         </view>
         <text class="subproject-desc">按科目顺序刷题,答错后进入错题本。</text>
       </view>
-      <view class="subproject" @tap="openExam">
+      <view class="subproject" @tap="openExam()">
         <text class="subproject-title">模拟考试</text>
         <text class="subproject-desc">进入模拟考试,开始考试部分保持不变。</text>
       </view>
@@ -363,7 +363,7 @@ watch(currentNumber, (n) => {
           confirm-type="go"
           @confirm="jumpToQuestion"
         />
-        <button class="btn secondary jump-btn" @tap="jumpToQuestion">转到</button>
+        <button class="btn secondary jump-btn" @tap="jumpToQuestion()">转到</button>
       </view>
     </view>
 

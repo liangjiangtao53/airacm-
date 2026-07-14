@@ -148,12 +148,12 @@ function restartWechatLogin() {
     </view>
 
     <view class="card form-card">
-      <button v-if="showWechatLogin && !bindingToken" class="wechat-btn" :loading="loading" @tap="loginWithWechat">
+      <button v-if="showWechatLogin && !bindingToken" class="wechat-btn" :loading="loading" @tap="loginWithWechat()">
         微信登录
       </button>
       <view v-if="showWechatLogin && !bindingToken" class="divider"><text>其他登录方式</text></view>
       <text v-if="bindingToken" class="binding-title">绑定已有账号</text>
-      <button v-if="bindingToken" class="restart-wechat" :disabled="loading" @tap="restartWechatLogin">
+      <button v-if="bindingToken" class="restart-wechat" :disabled="loading" @tap="restartWechatLogin()">
         重新获取微信登录
       </button>
       <view class="segmented">
@@ -164,7 +164,7 @@ function restartWechatLogin() {
       <view v-if="mode === 'key'" class="fields">
         <view class="key-row">
           <input v-model="key" class="input key-input" placeholder="请输入卡密" />
-          <button class="paste-btn" @tap="pasteKey">粘贴</button>
+          <button class="paste-btn" @tap="pasteKey()">粘贴</button>
         </view>
         <input v-if="bindingNeedsProfile" v-model="phone" class="input" type="number" placeholder="手机号" />
         <input v-if="bindingNeedsProfile" v-model="nickname" class="input" placeholder="昵称" />
@@ -174,7 +174,7 @@ function restartWechatLogin() {
         <input v-model="password" class="input" password placeholder="密码" />
       </view>
 
-      <button class="btn submit" :loading="loading" @tap="submit">{{ bindingToken ? '确认绑定并登录' : '登录' }}</button>
+      <button class="btn submit" :loading="loading" @tap="submit()">{{ bindingToken ? '确认绑定并登录' : '登录' }}</button>
     </view>
   </view>
 </template>

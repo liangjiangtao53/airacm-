@@ -31,7 +31,7 @@ async function submit() {
         <input v-model="phone" class="input" type="number" placeholder="手机号" />
         <input v-model="nickname" class="input" placeholder="昵称" />
       </view>
-      <button class="btn" :loading="loading" @tap="submit">完成</button>
+      <button class="btn" :loading="loading" @tap="submit()">完成</button>
     </view>
   </view>
 </template>

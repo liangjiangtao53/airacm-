@@ -23,7 +23,7 @@ function downloadApk() {
         安装包上传后,学员可在这里下载。当前固定文件名,后续更新版本时直接替换文件,页面链接不用改。
       </text>
 
-      <button class="btn" @tap="downloadApk">下载安卓版 APK</button>
+      <button class="btn" @tap="downloadApk()">下载安卓版 APK</button>
       <text class="hint">后续由管理后台「App 安装包」上传并覆盖此文件。</text>
     </view>
   </view>

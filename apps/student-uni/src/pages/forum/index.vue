@@ -188,7 +188,7 @@ onShow(() => load());
         >
           <text class="topic-select">{{ topicName(draftTopic) || '选择主题' }}</text>
         </picker>
-        <button class="btn post-btn" :loading="posting" :disabled="!draft.trim() || !draftTopic" @tap="submit">
+        <button class="btn post-btn" :loading="posting" :disabled="!draft.trim() || !draftTopic" @tap="submit()">
           发布
         </button>
       </view>
