@@ -108,7 +108,7 @@ onUnload(disableCaptureProtection);
     </view>
 
     <view class="filter">
-      <picker mode="selector" :range="['全部模块', ...categories]" @change="changeCategory">
+      <picker mode="selector" :range="['全部模块', ...categories]" @change="changeCategory($event)">
         <view class="select">{{ category || '全部模块' }}</view>
       </picker>
       <text class="count">{{ filteredAttempts.length }} 次</text>

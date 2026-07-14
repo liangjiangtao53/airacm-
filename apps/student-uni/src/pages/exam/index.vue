@@ -314,14 +314,14 @@ onUnload(() => {
     </view>
 
     <view v-if="phase === 'idle'" class="card start-card">
-      <picker mode="selector" :range="categories" @change="changeCategory">
+      <picker mode="selector" :range="categories" @change="changeCategory($event)">
         <view class="select">{{ category || '请选择考试科目' }}</view>
       </picker>
       <text v-if="category" class="hint">本次考试 {{ EXAM_CATEGORY_COUNTS[category] }} 题，考完为止</text>
       <button class="btn" :loading="busy" @tap="start()">开始考试</button>
     </view>
 
-    <view v-if="phase === 'taking'" class="taking" @touchstart="onTouchStart" @touchend="onTouchEnd">
+    <view v-if="phase === 'taking'" class="taking" @touchstart="onTouchStart($event)" @touchend="onTouchEnd($event)">
       <text class="progress">共 {{ questions.length }} 题 · 已答 {{ answeredCount }}</text>
       <view class="exam-status">
         <text class="status-done">已完成 {{ answeredCount }} 题</text>

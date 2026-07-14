@@ -13,18 +13,18 @@ function vueFiles(directory) {
   });
 }
 
-describe('mini program tap handlers', () => {
+describe('mini program template event handlers', () => {
   it('uses explicit calls for named handlers', () => {
     const offenders = [];
     for (const file of vueFiles(resolve(scriptDir, '..', 'src'))) {
       const source = readFileSync(file, 'utf8');
-      const bareHandler = /@tap(?:\.[\w-]+)*="([A-Za-z_$][\w$]*)"/g;
+      const bareHandler = /@[a-z][\w-]*(?:\.[\w-]+)*="([A-Za-z_$][\w$]*)"/gi;
       for (const match of source.matchAll(bareHandler)) {
         const line = source.slice(0, match.index).split('\n').length;
-        offenders.push(`${file}:${line} @tap="${match[1]}"`);
+        offenders.push(`${file}:${line} ${match[0]}`);
       }
     }
 
-    expect(offenders, 'Current UniApp compiler does not invoke bare named tap handlers').toEqual([]);
+    expect(offenders, 'Current UniApp compiler does not invoke bare named event handlers').toEqual([]);
   });
 });

@@ -184,7 +184,7 @@ onShow(() => load());
           mode="selector"
           :range="topics"
           range-key="name"
-          @change="changeDraftTopic"
+          @change="changeDraftTopic($event)"
         >
           <text class="topic-select">{{ topicName(draftTopic) || '选择主题' }}</text>
         </picker>

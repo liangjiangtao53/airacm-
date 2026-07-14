@@ -111,7 +111,7 @@ onUnload(disableCaptureProtection);
     </view>
 
     <view class="filter">
-      <picker mode="selector" :range="categories" :disabled="categories.length === 0" @change="changeCategory">
+      <picker mode="selector" :range="categories" :disabled="categories.length === 0" @change="changeCategory($event)">
         <view class="select">{{ category || '暂无模块' }}</view>
       </picker>
       <text class="count">{{ filteredItems.length }} 题</text>

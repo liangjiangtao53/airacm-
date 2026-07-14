@@ -341,7 +341,7 @@ watch(currentNumber, (n) => {
     </view>
 
     <view class="card filters category-filter">
-      <picker mode="selector" :range="categories" @change="changeCategory">
+      <picker mode="selector" :range="categories" @change="changeCategory($event)">
         <view class="select">{{ category || '选择科目' }}</view>
       </picker>
     </view>
@@ -361,7 +361,7 @@ watch(currentNumber, (n) => {
           :max="total"
           min="1"
           confirm-type="go"
-          @confirm="jumpToQuestion"
+          @confirm="jumpToQuestion()"
         />
         <button class="btn secondary jump-btn" @tap="jumpToQuestion()">转到</button>
       </view>
@@ -370,7 +370,7 @@ watch(currentNumber, (n) => {
     <view v-if="loading" class="empty">加载中...</view>
     <view v-else-if="questions.length === 0" class="empty">当前科目暂无题目。</view>
 
-    <view class="question-list" @touchstart="onTouchStart" @touchend="onTouchEnd">
+    <view class="question-list" @touchstart="onTouchStart($event)" @touchend="onTouchEnd($event)">
       <view v-if="currentQuestion" class="card question-card">
         <view class="question-head">
           <text class="badge">{{ currentNumber }} / {{ total }} · {{ currentQuestion.type === 'single' ? '单选' : '多选' }}</text>
