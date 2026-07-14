@@ -328,7 +328,7 @@ onUnload(() => {
         <button class="status-pending" :disabled="unfinishedCount === 0" @tap.stop="jumpToNextUnanswered">
           <text>未答题 {{ unfinishedCount }}</text>
           <text class="pending-action">去作答</text>
-          <text class="pending-arrow">&gt;</text>
+          <text class="pending-arrow">›</text>
         </button>
       </view>
       <view v-if="currentQuestion" class="card question-card">
