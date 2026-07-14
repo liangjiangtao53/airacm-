@@ -35,3 +35,6 @@ Thumbs.db
 
 # Local release archives generated during manual/prod deploys
 airacm*.tar.gz
+
+# Screenshot-enabled APK is local QA-only and must never be published.
+frontend/public/downloads/app/airacm-android-screenshot.apk
