@@ -192,4 +192,49 @@ describe('WeChat login and binding', () => {
       }),
     ).rejects.toThrow('微信绑定已失效');
   });
+
+  it('does not allow an admin account to bind as a mini-program student', async () => {
+    currentOpenid = 'wx-openid-admin';
+    const admin = await users.save(
+      users.create({
+        tenantId: env.defaultTenantId,
+        phone: '13800000005',
+        nickname: 'admin-user',
+        passwordHash: await bcrypt.hash('Password@123', 4),
+        openid: null,
+        registrationSource: 'register',
+        role: 'admin',
+      }),
+    );
+    const login = await auth.wechatLogin({ code: 'code-admin' });
+    if (!login.needBinding) throw new Error('binding ticket expected');
+    await expect(
+      auth.bindWechatPassword({
+        bindingToken: login.bindingToken,
+        phone: admin.phone,
+        password: 'Password@123',
+      }),
+    ).rejects.toThrow('微信小程序仅支持学员账号');
+    expect((await users.findOneByOrFail({ id: admin.id })).wechatOpenid).toBeNull();
+
+    await keys.save(
+      keys.create({
+        tenantId: env.defaultTenantId,
+        key: 'ADMINKEY00000001',
+        status: 'active',
+        userId: admin.id,
+        expiresAt: new Date(Date.now() + 86_400_000),
+      }),
+    );
+    currentOpenid = 'wx-openid-admin-key';
+    const keyLogin = await auth.wechatLogin({ code: 'code-admin-key' });
+    if (!keyLogin.needBinding) throw new Error('binding ticket expected');
+    await expect(
+      auth.bindWechatKey({
+        bindingToken: keyLogin.bindingToken,
+        key: 'ADMINKEY00000001',
+      }),
+    ).rejects.toThrow('卡密关联账号无效');
+    expect((await users.findOneByOrFail({ id: admin.id })).wechatOpenid).toBeNull();
+  });
 });

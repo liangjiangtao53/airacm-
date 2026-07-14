@@ -244,7 +244,7 @@ export class ForumService {
     return { items, total, page, pageSize };
   }
 
-  async create(user: AuthUser, content: string, topicId: string): Promise<PostView> {
+  async create(user: AuthUser, content: string, topicId: string, clientPlatform?: string): Promise<PostView> {
     const trimmed = content.trim();
     if (!trimmed) throw new BadRequestException('内容不能为空');
     const topic = await this.topics.findOne({ where: { tenantId: user.tenantId, id: topicId } });
@@ -252,6 +252,7 @@ export class ForumService {
     await this.wechat.checkContent(trimmed, 3, await this.userWechatOpenid(user), {
       userId: user.userId,
       contentType: 'forum_post',
+      clientPlatform,
     });
     const p = await this.posts.save(
       this.posts.create({ tenantId: user.tenantId, topicId, userId: user.userId, content: trimmed }),
@@ -312,7 +313,7 @@ export class ForumService {
     }));
   }
 
-  async addReply(user: AuthUser, postId: string, content: string): Promise<ReplyView> {
+  async addReply(user: AuthUser, postId: string, content: string, clientPlatform?: string): Promise<ReplyView> {
     const trimmed = content.trim();
     if (!trimmed) throw new BadRequestException('回复不能为空');
     const post = await this.posts.findOne({ where: { tenantId: user.tenantId, id: postId, deletedAt: IsNull() } });
@@ -320,6 +321,7 @@ export class ForumService {
     await this.wechat.checkContent(trimmed, 2, await this.userWechatOpenid(user), {
       userId: user.userId,
       contentType: 'forum_reply',
+      clientPlatform,
     });
     const r = await this.replies.save(
       this.replies.create({ tenantId: user.tenantId, postId, userId: user.userId, content: trimmed }),
@@ -476,8 +478,12 @@ export class ForumController {
 
   @HttpPost()
   @UseGuards(JwtAuthGuard)
-  create(@CurrentUser() user: AuthUser, @Body() dto: CreatePostDto) {
-    return this.svc.create(user, dto.content, dto.topicId);
+  create(
+    @CurrentUser() user: AuthUser,
+    @Body() dto: CreatePostDto,
+    @Req() req: { headers?: { 'x-client-platform'?: string } },
+  ) {
+    return this.svc.create(user, dto.content, dto.topicId, req.headers?.['x-client-platform']);
   }
 
   @Delete(':id')
@@ -494,8 +500,13 @@ export class ForumController {
 
   @HttpPost(':id/replies')
   @UseGuards(JwtAuthGuard)
-  addReply(@CurrentUser() user: AuthUser, @Param('id') id: string, @Body() dto: CreateReplyDto) {
-    return this.svc.addReply(user, id, dto.content);
+  addReply(
+    @CurrentUser() user: AuthUser,
+    @Param('id') id: string,
+    @Body() dto: CreateReplyDto,
+    @Req() req: { headers?: { 'x-client-platform'?: string } },
+  ) {
+    return this.svc.addReply(user, id, dto.content, req.headers?.['x-client-platform']);
   }
 
   @Delete('replies/:replyId')

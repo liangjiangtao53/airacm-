@@ -81,43 +81,51 @@ export class WechatMiniProgramService {
     content: string,
     scene: WechatContentScene,
     openid?: string | null,
-    context?: { userId: string; contentType: string },
+    context?: { userId: string; contentType: string; clientPlatform?: string },
   ): Promise<{ traceId: string | null }> {
     if (!this.isContentSecurityEnabled()) return { traceId: null };
-    const accessToken = await this.getAccessToken();
-    const body: Record<string, unknown> = { content, version: 2, scene };
-    if (openid) body.openid = openid;
-    try {
-      const response = await fetch(
-        `https://api.weixin.qq.com/wxa/msg_sec_check?access_token=${encodeURIComponent(accessToken)}`,
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(body),
-          signal: AbortSignal.timeout(env.wechatMini.timeoutMs),
-        },
-      );
-      const result = (await response.json()) as ContentCheckResponse;
-      if (!response.ok || result.errcode) {
-        this.logger.warn(
-          `content check failed userId=${context?.userId ?? 'unknown'} contentType=${context?.contentType ?? 'unknown'} errcode=${result.errcode ?? response.status}`,
+    // Only WeChat-bound identities can be audited by msg_sec_check; other clients keep their existing flow.
+    if (!openid) return { traceId: null };
+    const body: Record<string, unknown> = { content, version: 2, scene, openid };
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const accessToken = await this.getAccessToken();
+        const response = await fetch(
+          `https://api.weixin.qq.com/wxa/msg_sec_check?access_token=${encodeURIComponent(accessToken)}`,
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(body),
+            signal: AbortSignal.timeout(env.wechatMini.timeoutMs),
+          },
         );
+        const result = (await response.json()) as ContentCheckResponse;
+        if ((result.errcode === 40014 || result.errcode === 42001) && attempt === 0) {
+          this.accessToken = null;
+          continue;
+        }
+        if (!response.ok || result.errcode) {
+          this.logger.warn(
+            `content check failed userId=${context?.userId ?? 'unknown'} contentType=${context?.contentType ?? 'unknown'} errcode=${result.errcode ?? response.status}`,
+          );
+          throw new ServiceUnavailableException('内容审核服务暂时不可用，请稍后重试');
+        }
+        if (result.result?.suggest !== 'pass') {
+          this.logger.warn(
+            `content rejected userId=${context?.userId ?? 'unknown'} contentType=${context?.contentType ?? 'unknown'} traceId=${result.trace_id ?? 'none'} label=${result.result?.label ?? 'unknown'}`,
+          );
+          throw new BadRequestException('内容暂无法发布，请修改后重试');
+        }
+        return { traceId: result.trace_id ?? null };
+      } catch (error) {
+        if (error instanceof BadRequestException || error instanceof ServiceUnavailableException) {
+          throw error;
+        }
+        this.logger.error('content check unavailable');
         throw new ServiceUnavailableException('内容审核服务暂时不可用，请稍后重试');
       }
-      if (result.result?.suggest !== 'pass') {
-        this.logger.warn(
-          `content rejected userId=${context?.userId ?? 'unknown'} contentType=${context?.contentType ?? 'unknown'} traceId=${result.trace_id ?? 'none'} label=${result.result?.label ?? 'unknown'}`,
-        );
-        throw new BadRequestException('内容暂无法发布，请修改后重试');
-      }
-      return { traceId: result.trace_id ?? null };
-    } catch (error) {
-      if (error instanceof BadRequestException || error instanceof ServiceUnavailableException) {
-        throw error;
-      }
-      this.logger.error('content check unavailable');
-      throw new ServiceUnavailableException('内容审核服务暂时不可用，请稍后重试');
     }
+    throw new ServiceUnavailableException('内容审核服务暂时不可用，请稍后重试');
   }
 
   private async getAccessToken(): Promise<string> {

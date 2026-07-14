@@ -7,6 +7,11 @@ interface LegacyIdentityRow {
   accessKeyCount: string | number;
 }
 
+interface DuplicateNicknameRow {
+  tenantId: string;
+  nickname: string;
+}
+
 const REAL_OPENID_RE = /^[A-Za-z0-9_-]{8,128}$/;
 
 export class BackfillWechatIdentity1783940100000 implements MigrationInterface {
@@ -20,15 +25,10 @@ export class BackfillWechatIdentity1783940100000 implements MigrationInterface {
       ['mysql', 'mariadb'].includes(queryRunner.connection.options.type)
         ? `\`${name}\``
         : `"${name}"`;
-    if (['mysql', 'mariadb'].includes(queryRunner.connection.options.type)) {
-      await queryRunner.query(
-        `ALTER TABLE ${q('user')} MODIFY ${q('wechatOpenid')} varchar(128) CHARACTER SET ascii COLLATE ascii_bin NULL`,
-      );
-    }
     const rows = (await queryRunner.query(
-      `SELECT u.${q('id')} AS id, u.${q('tenantId')} AS tenantId, u.${q('openid')} AS openid, ` +
+      `SELECT u.${q('id')} AS ${q('id')}, u.${q('tenantId')} AS ${q('tenantId')}, u.${q('openid')} AS ${q('openid')}, ` +
         `(SELECT COUNT(*) FROM ${q('access_key')} k WHERE k.${q('tenantId')} = u.${q('tenantId')} ` +
-        `AND k.${q('userId')} = u.${q('id')}) AS accessKeyCount FROM ${q('user')} u`,
+        `AND k.${q('userId')} = u.${q('id')}) AS ${q('accessKeyCount')} FROM ${q('user')} u`,
     )) as LegacyIdentityRow[];
 
     const realRows = rows.filter((row) => this.isRealOpenid(row.openid));
@@ -47,9 +47,19 @@ export class BackfillWechatIdentity1783940100000 implements MigrationInterface {
       seen.add(key);
     }
     const sourceConflicts = realRows.filter((row) => Number(row.accessKeyCount) > 0);
-    if (duplicateKeys.size || malformedRows.length || sourceConflicts.length) {
+    const duplicateNicknames = (await queryRunner.query(
+      `SELECT ${q('tenantId')} AS ${q('tenantId')}, ${q('nickname')} AS ${q('nickname')} ` +
+        `FROM ${q('user')} GROUP BY ${q('tenantId')}, ${q('nickname')} HAVING COUNT(*) > 1`,
+    )) as DuplicateNicknameRow[];
+    if (duplicateKeys.size || malformedRows.length || sourceConflicts.length || duplicateNicknames.length) {
       throw new Error(
-        `微信身份迁移预检失败: duplicateOpenids=${duplicateKeys.size}, malformedOpenids=${malformedRows.length}, sourceConflicts=${sourceConflicts.length}`,
+        `微信身份迁移预检失败: duplicateOpenids=${duplicateKeys.size}, malformedOpenids=${malformedRows.length}, sourceConflicts=${sourceConflicts.length}, duplicateNicknames=${duplicateNicknames.length}`,
+      );
+    }
+
+    if (['mysql', 'mariadb'].includes(queryRunner.connection.options.type)) {
+      await queryRunner.query(
+        `ALTER TABLE ${q('user')} MODIFY ${q('wechatOpenid')} varchar(128) CHARACTER SET ascii COLLATE ascii_bin NULL`,
       );
     }
 
@@ -83,6 +93,16 @@ export class BackfillWechatIdentity1783940100000 implements MigrationInterface {
         }),
       );
     }
+    if (!table?.indices.some((index) => index.name === 'UQ_user_tenant_nickname')) {
+      await queryRunner.createIndex(
+        'user',
+        new TableIndex({
+          name: 'UQ_user_tenant_nickname',
+          columnNames: ['tenantId', 'nickname'],
+          isUnique: true,
+        }),
+      );
+    }
   }
 
   async down(queryRunner: QueryRunner): Promise<void> {
@@ -90,6 +110,9 @@ export class BackfillWechatIdentity1783940100000 implements MigrationInterface {
     const table = await queryRunner.getTable('user');
     if (table?.indices.some((index) => index.name === 'UQ_user_tenant_wechat_openid')) {
       await queryRunner.dropIndex('user', 'UQ_user_tenant_wechat_openid');
+    }
+    if (table?.indices.some((index) => index.name === 'UQ_user_tenant_nickname')) {
+      await queryRunner.dropIndex('user', 'UQ_user_tenant_nickname');
     }
     if (await queryRunner.hasColumn('user', 'wechatOpenid')) {
       const q = (name: string): string =>

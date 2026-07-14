@@ -21,6 +21,7 @@ uploads/
 .env
 .env.local
 .env.*.local
+backend-pre/load-accounts.json
 
 # TLS 证书/私钥与 certbot 挑战目录:绝不入库
 deploy/nginx/certs/

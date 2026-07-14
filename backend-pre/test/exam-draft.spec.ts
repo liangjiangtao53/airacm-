@@ -2,7 +2,7 @@ import { ConflictException } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { TypeOrmModule, getRepositoryToken } from '@nestjs/typeorm';
 import { JwtModule } from '@nestjs/jwt';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import { ALL_ENTITIES, ExamPaperRule, Question, QuestionPractice, User } from '../src/entities';
 import { ExamModule, ExamService } from '../src/modules/exam';
 import { QuestionPoolCacheService } from '../src/modules/question-pool-cache';
@@ -113,9 +113,35 @@ describe('exam draft lifecycle', () => {
       }),
     ).rejects.toBeInstanceOf(ConflictException);
 
+    const originalQuestions = await questions.find({
+      where: { id: In(first.questions.map((question) => question.id)) },
+    });
+    const originalById = new Map(originalQuestions.map((question) => [question.id, question]));
+    for (const question of originalQuestions) {
+      await questions.update(question.id, {
+        stem: `changed ${question.stem}`,
+        answer: question.answer === 'A' ? 'B' : 'A',
+        analysis: `changed ${question.analysis}`,
+      });
+    }
+
     const submitted = await service.submit(user, first.attemptId, answer);
     const retried = await service.submit(user, first.attemptId, {});
     expect(retried).toEqual(submitted);
+    expect(submitted.correct).toBe(1);
+    const review = await service.review(user, first.attemptId);
+    expect(review.details).toHaveLength(2);
+    for (const detail of review.details) {
+      const original = originalById.get(detail.questionId)!;
+      expect(detail.stem).toBe(original.stem);
+      expect(detail.correctAnswer).toBe(original.answer);
+      expect(detail.analysis).toBe(original.analysis);
+    }
+    const history = await service.history(user);
+    expect(history).toHaveLength(1);
+    expect(Object.keys(history[0]).sort()).toEqual(
+      ['category', 'correct', 'courseId', 'id', 'score', 'submittedAt', 'total'].sort(),
+    );
     const practices = await module
       .get<Repository<QuestionPractice>>(getRepositoryToken(QuestionPractice))
       .find({ where: { tenantId: user.tenantId, userId: user.userId } });

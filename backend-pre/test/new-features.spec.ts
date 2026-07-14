@@ -85,10 +85,12 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
   ): Promise<{ user: AuthUser; token: string }> {
     // 单点登录:role=user 的 token 必须带 sid 且与 user.sessionId 一致,否则守卫 401。
     const sid = crypto.randomUUID();
+    const phone = uniquePhone();
     const u = await ds.getRepository(User).save(
       ds.getRepository(User).create({
         tenantId: TENANT,
-        phone: uniquePhone(),
+        phone,
+        nickname: `test-${phone}`,
         passwordHash: 'x',
         role,
         openid: null,

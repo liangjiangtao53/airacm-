@@ -9,6 +9,7 @@ import {
   Patch,
   Post,
   Query,
+  Req,
   Res,
   UploadedFile,
   UseGuards,
@@ -1130,6 +1131,7 @@ export class QuestionService {
     user: AuthUser,
     questionId: string,
     content: string,
+    clientPlatform?: string,
   ): Promise<{ id: string; userId: string; nickname: string; content: string; createdAt: Date; canDelete: boolean }> {
     const trimmed = content.trim();
     if (!trimmed) throw new BadRequestException('评论不能为空');
@@ -1142,6 +1144,7 @@ export class QuestionService {
     await this.wechat.checkContent(trimmed, 2, author?.wechatOpenid ?? null, {
       userId: user.userId,
       contentType: 'question_comment',
+      clientPlatform,
     });
     const c = await this.comments.save(
       this.comments.create({
@@ -1498,8 +1501,9 @@ export class QuestionController {
     @CurrentUser() user: AuthUser,
     @Param('id') id: string,
     @Body() dto: CreateCommentDto,
+    @Req() req: { headers?: { 'x-client-platform'?: string } },
   ) {
-    return this.svc.addComment(user, id, dto.content);
+    return this.svc.addComment(user, id, dto.content, req.headers?.['x-client-platform']);
   }
 
   @Delete('comments/:commentId')

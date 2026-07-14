@@ -23,7 +23,6 @@ import { Throttle } from '@nestjs/throttler';
 import * as crypto from 'crypto';
 import { AccessKey, AdminOperationLog, User, Wallet, WechatBindSession } from '../entities';
 import { AuthUser, CurrentUser, JwtAuthGuard, Roles, RolesGuard, JwtPayload } from '../common';
-import { SessionService } from '../session';
 import { env } from '../config';
 import { UserActivityModule, UserActivityService } from './user-activity';
 
@@ -95,7 +94,6 @@ export class AccessKeyService {
     @InjectRepository(User) private readonly users: Repository<User>,
     @InjectRepository(AdminOperationLog) private readonly operationLogs: Repository<AdminOperationLog>,
     private readonly jwt: JwtService,
-    private readonly session: SessionService,
     private readonly dataSource: DataSource,
     private readonly activity: UserActivityService,
   ) {}
@@ -155,15 +153,50 @@ export class AccessKeyService {
     tenantId: string,
     key: string,
   ): Promise<{ token: string; userId: string; expiresAt: Date; needProfile: boolean }> {
-    const k = await this.keys.findOne({ where: { tenantId, key: key.trim() } });
+    const normalizedKey = key.trim();
+    const k = await this.keys.findOne({ where: { tenantId, key: normalizedKey } });
     if (!k || k.status !== 'active') throw new UnauthorizedException('卡密无效');
     const expiresInSec = this.remainingSec(k.expiresAt);
 
     if (k.userId) {
-      await this.activity.recordAccessKeyLogin(tenantId, k, k.userId, false);
-      const sid = await this.session.issue(k.userId);
-      const token = this.signUserToken(k.userId, tenantId, sid, expiresInSec);
-      return { token, userId: k.userId, expiresAt: k.expiresAt, needProfile: false };
+      const result = await this.dataSource.transaction(async (manager) => {
+        let keyQuery = manager
+          .createQueryBuilder(AccessKey, 'k')
+          .where('k.tenantId = :tenantId', { tenantId })
+          .andWhere('k.key = :key', { key: normalizedKey });
+        if (this.dataSource.options.type !== 'better-sqlite3') {
+          keyQuery = keyQuery.setLock('pessimistic_write');
+        }
+        const lockedKey = await keyQuery.getOne();
+        if (!lockedKey || lockedKey.status !== 'active' || !lockedKey.userId) {
+          throw new UnauthorizedException('卡密无效');
+        }
+        const lockedExpiresInSec = this.remainingSec(lockedKey.expiresAt);
+        let userQuery = manager
+          .createQueryBuilder(User, 'u')
+          .where('u.tenantId = :tenantId', { tenantId })
+          .andWhere('u.id = :userId', { userId: lockedKey.userId });
+        if (this.dataSource.options.type !== 'better-sqlite3') {
+          userQuery = userQuery.setLock('pessimistic_write');
+        }
+        const user = await userQuery.getOne();
+        if (!user || user.role !== 'user') {
+          throw new UnauthorizedException('卡密关联账号无效');
+        }
+        const sid = crypto.randomUUID();
+        await manager.update(User, { tenantId, id: lockedKey.userId }, { sessionId: sid });
+        return {
+          key: lockedKey,
+          token: this.signUserToken(lockedKey.userId, tenantId, sid, lockedExpiresInSec),
+        };
+      });
+      await this.activity.recordAccessKeyLogin(tenantId, result.key, result.key.userId!, false);
+      return {
+        token: result.token,
+        userId: result.key.userId!,
+        expiresAt: result.key.expiresAt,
+        needProfile: false,
+      };
     }
 
     await this.activity.recordAccessKeyLogin(tenantId, k, null, true);
@@ -235,14 +268,21 @@ export class AccessKeyService {
         }
         const existing = await userQuery.getOne();
         if (!existing) throw new UnauthorizedException('卡密关联账号不存在');
+        if (existing.role !== 'user') throw new UnauthorizedException('卡密关联账号无效');
         if (existing.wechatOpenid && existing.wechatOpenid !== bindSession!.wechatOpenid) {
           throw new BadRequestException('该账号已绑定其他微信，请联系管理员');
         }
         await manager.update(User, existing.id, {
           wechatOpenid: bindSession!.wechatOpenid,
+          registrationSource: 'key',
           sessionId: sid,
         });
-        user = { ...existing, wechatOpenid: bindSession!.wechatOpenid, sessionId: sid };
+        user = {
+          ...existing,
+          wechatOpenid: bindSession!.wechatOpenid,
+          registrationSource: 'key',
+          sessionId: sid,
+        };
       } else {
         if (!profile) throw new BadRequestException('请先补全手机号和昵称');
         const nickname = profile.nickname.trim();
@@ -295,25 +335,42 @@ export class AccessKeyService {
     phone: string,
     nickname: string,
   ): Promise<{ token: string; userId: string }> {
-    const k = await this.keys.findOne({ where: { tenantId, id: keyId } });
-    if (!k || k.status !== 'active') throw new UnauthorizedException('卡密无效');
-    const expiresInSec = this.remainingSec(k.expiresAt);
-
-    if (k.userId) {
-      const sid = await this.session.issue(k.userId);
-      return { token: this.signUserToken(k.userId, tenantId, sid, expiresInSec), userId: k.userId };
-    }
-
     const nick = nickname.trim();
-    if (await this.users.findOne({ where: { tenantId, nickname: nick } })) {
-      throw new BadRequestException('昵称已被使用,请换一个');
-    }
-    if (await this.users.findOne({ where: { tenantId, phone } })) {
-      throw new BadRequestException('该手机号已被占用');
-    }
+    const result = await this.dataSource.transaction(async (m) => {
+      let keyQuery = m
+        .createQueryBuilder(AccessKey, 'k')
+        .where('k.tenantId = :tenantId', { tenantId })
+        .andWhere('k.id = :keyId', { keyId });
+      if (this.dataSource.options.type !== 'better-sqlite3') {
+        keyQuery = keyQuery.setLock('pessimistic_write');
+      }
+      const key = await keyQuery.getOne();
+      if (!key || key.status !== 'active') throw new UnauthorizedException('卡密无效');
+      const expiresInSec = this.remainingSec(key.expiresAt);
+      const sid = crypto.randomUUID();
 
-    const sid = crypto.randomUUID();
-    const userId = await this.dataSource.transaction(async (m) => {
+      if (key.userId) {
+        let userQuery = m
+          .createQueryBuilder(User, 'u')
+          .where('u.tenantId = :tenantId', { tenantId })
+          .andWhere('u.id = :userId', { userId: key.userId });
+        if (this.dataSource.options.type !== 'better-sqlite3') {
+          userQuery = userQuery.setLock('pessimistic_write');
+        }
+        const existing = await userQuery.getOne();
+        if (!existing || existing.role !== 'user') {
+          throw new UnauthorizedException('卡密关联账号无效');
+        }
+        await m.update(User, existing.id, { sessionId: sid });
+        return { userId: existing.id, sid, expiresInSec };
+      }
+
+      if (await m.findOne(User, { where: { tenantId, nickname: nick } })) {
+        throw new BadRequestException('昵称已被使用,请换一个');
+      }
+      if (await m.findOne(User, { where: { tenantId, phone } })) {
+        throw new BadRequestException('该手机号已被占用');
+      }
       const u = await m.save(
         m.create(User, {
           tenantId,
@@ -321,18 +378,21 @@ export class AccessKeyService {
           nickname: nick,
           role: 'user',
           passwordHash: '',
-          openid: `key:${k.id}`, // 标记来源=卡密,用户列表据此区分
+          openid: `key:${key.id}`, // 标记来源=卡密,用户列表据此区分
           registrationSource: 'key',
           sessionId: sid,
-          firstLoginAt: k.firstLoginAt ?? new Date(),
-          lastLoginAt: k.lastLoginAt ?? new Date(),
+          firstLoginAt: key.firstLoginAt ?? new Date(),
+          lastLoginAt: key.lastLoginAt ?? new Date(),
         }),
       );
       await m.save(m.create(Wallet, { tenantId, userId: u.id, balance: 0 }));
-      await m.update(AccessKey, k.id, { userId: u.id });
-      return u.id;
+      await m.update(AccessKey, key.id, { userId: u.id });
+      return { userId: u.id, sid, expiresInSec };
     });
-    return { token: this.signUserToken(userId, tenantId, sid, expiresInSec), userId };
+    return {
+      token: this.signUserToken(result.userId, tenantId, result.sid, result.expiresInSec),
+      userId: result.userId,
+    };
   }
 
   private remainingSec(expiresAt: Date): number {
@@ -374,9 +434,18 @@ export class AccessKeyService {
     const k = await this.keys.findOne({ where: { tenantId, id } });
     if (!k) throw new NotFoundException('卡密不存在');
     await this.dataSource.transaction(async (manager) => {
-      await manager.update(AccessKey, k.id, { status: 'revoked' });
-      if (k.userId) {
-        await manager.update(User, { tenantId, id: k.userId }, { sessionId: crypto.randomUUID() });
+      let keyQuery = manager
+        .createQueryBuilder(AccessKey, 'lockedKey')
+        .where('lockedKey.tenantId = :tenantId', { tenantId })
+        .andWhere('lockedKey.id = :id', { id });
+      if (this.dataSource.options.type !== 'better-sqlite3') {
+        keyQuery = keyQuery.setLock('pessimistic_write');
+      }
+      const lockedKey = await keyQuery.getOne();
+      if (!lockedKey) throw new NotFoundException('卡密不存在');
+      await manager.update(AccessKey, lockedKey.id, { status: 'revoked' });
+      if (lockedKey.userId) {
+        await manager.update(User, { tenantId, id: lockedKey.userId }, { sessionId: crypto.randomUUID() });
       }
     });
     if (admin) {
@@ -407,15 +476,23 @@ export class AccessKeyService {
   }
 
   async updateExpiresAt(tenantId: string, id: string, ttlDays: number, admin?: AuthUser): Promise<AccessKey> {
-    const k = await this.keys.findOne({ where: { tenantId, id } });
-    if (!k) throw new NotFoundException('卡密不存在');
-    if (k.status === 'revoked') throw new BadRequestException('已作废卡密不能修改有效期');
     const expiresAt = new Date(Date.now() + ttlDays * DAY_MS);
-    await this.dataSource.transaction(async (manager) => {
-      await manager.update(AccessKey, k.id, { expiresAt });
-      if (k.userId) {
-        await manager.update(User, { tenantId, id: k.userId }, { sessionId: crypto.randomUUID() });
+    const k = await this.dataSource.transaction(async (manager) => {
+      let keyQuery = manager
+        .createQueryBuilder(AccessKey, 'k')
+        .where('k.tenantId = :tenantId', { tenantId })
+        .andWhere('k.id = :id', { id });
+      if (this.dataSource.options.type !== 'better-sqlite3') {
+        keyQuery = keyQuery.setLock('pessimistic_write');
       }
+      const locked = await keyQuery.getOne();
+      if (!locked) throw new NotFoundException('卡密不存在');
+      if (locked.status !== 'active') throw new BadRequestException('已作废卡密不能修改有效期');
+      await manager.update(AccessKey, locked.id, { expiresAt });
+      if (locked.userId) {
+        await manager.update(User, { tenantId, id: locked.userId }, { sessionId: crypto.randomUUID() });
+      }
+      return locked;
     });
     if (admin) {
       await this.logAdminOperation(admin, 'access_key_update_ttl', 'access_key', id, {

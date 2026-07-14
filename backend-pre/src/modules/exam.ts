@@ -21,6 +21,7 @@ import * as crypto from 'crypto';
 import {
   ExamAttempt,
   AdminOperationLog,
+  ExamQuestionSnapshot,
   ExamPaperRule,
   Question,
   QuestionOption,
@@ -253,6 +254,15 @@ export class ExamService {
       throw new BadRequestException(`题库不足,当前仅 ${picked.length} 题,本模块考试需要 ${count} 题`);
     }
     if (picked.length === 0) throw new BadRequestException('暂无考试题目');
+    const pickedRows = await this.questions.find({
+      where: { tenantId: user.tenantId, id: In(picked.map((question) => question.id)) },
+    });
+    const pickedById = new Map(pickedRows.map((question) => [question.id, question]));
+    const snapshots = picked.map((question) => {
+      const row = pickedById.get(question.id);
+      if (!row) throw new ConflictException('题库刚刚发生变化，请重新开始考试');
+      return this.snapshotQuestion(row);
+    });
     let attempt: ExamAttempt;
     try {
       attempt = await this.attempts.save(
@@ -262,6 +272,7 @@ export class ExamService {
           courseId: dto.courseId ?? null,
           category,
           questionIds: picked.map((q) => q.id),
+          questionSnapshots: snapshots,
           answers: {},
           total: picked.length,
           status: 'in_progress',
@@ -283,7 +294,7 @@ export class ExamService {
       courseId: dto.courseId ?? null,
       total: picked.length,
     });
-    return this.paperState(attempt, false, picked);
+    return this.paperState(attempt, false, snapshots);
   }
 
   async active(user: AuthUser): Promise<ExamPaperState | null> {
@@ -373,27 +384,23 @@ export class ExamService {
   private async paperState(
     attempt: ExamAttempt,
     resumed: boolean,
-    cachedQuestions?: PublicQuestion[],
+    cachedQuestions?: ExamQuestionSnapshot[],
   ): Promise<ExamPaperState> {
-    const questions = cachedQuestions ?? (await this.questions.find({
-      where: { tenantId: attempt.tenantId, id: In(attempt.questionIds) },
-    }));
+    const questions = cachedQuestions ?? (await this.resolveAttemptSnapshots(attempt));
     const byId = new Map(questions.map((question) => [question.id, question]));
     return {
       attemptId: attempt.id,
       total: attempt.total,
       category: attempt.category,
-      questions: attempt.questionIds.flatMap((id) => {
-        const question = byId.get(id);
-        return question
-          ? [{
-              id: question.id,
-              type: question.type,
-              stem: question.stem,
-              stemImageUrls: question.stemImageUrls ?? [],
-              options: question.options,
-            }]
-          : [];
+      questions: attempt.questionIds.map((id) => {
+        const question = byId.get(id)!;
+        return {
+          id: question.id,
+          type: question.type,
+          stem: question.stem,
+          stemImageUrls: question.stemImageUrls,
+          options: question.options,
+        };
       }),
       answers: attempt.answers ?? {},
       currentQuestionIndex: attempt.currentQuestionIndex ?? 0,
@@ -423,6 +430,40 @@ export class ExamService {
       .createHash('sha256')
       .update(JSON.stringify({ answers: stable, currentQuestionIndex }))
       .digest('hex');
+  }
+
+  private snapshotQuestion(question: Question): ExamQuestionSnapshot {
+    return {
+      id: question.id,
+      category: question.category,
+      type: question.type,
+      stem: question.stem,
+      options: question.options,
+      stemImageUrls: question.stemImageUrls ?? [],
+      imageUrls: question.imageUrls ?? [],
+      answer: question.answer,
+      analysis: question.analysis,
+    };
+  }
+
+  private async resolveAttemptSnapshots(
+    attempt: ExamAttempt,
+    questions: Repository<Question> = this.questions,
+  ): Promise<ExamQuestionSnapshot[]> {
+    if (attempt.questionSnapshots?.length === attempt.questionIds.length) {
+      const byId = new Map(attempt.questionSnapshots.map((question) => [question.id, question]));
+      if (attempt.questionIds.every((id) => byId.has(id))) {
+        return attempt.questionIds.map((id) => byId.get(id)!);
+      }
+    }
+    const current = await questions.find({
+      where: { tenantId: attempt.tenantId, id: In(attempt.questionIds) },
+    });
+    if (current.length !== attempt.questionIds.length) {
+      throw new ConflictException('考试题库已发生变化，请联系管理员恢复题目后再继续');
+    }
+    const byId = new Map(current.map((question) => [question.id, this.snapshotQuestion(question)]));
+    return attempt.questionIds.map((id) => byId.get(id)!);
   }
 
   private quoteAttemptColumn(name: string): string {
@@ -475,9 +516,7 @@ export class ExamService {
       if (!attempt) throw new NotFoundException('考试记录不存在');
       if (attempt.abandonedAt) throw new BadRequestException('该试卷已放弃');
 
-      const qs = await manager.find(Question, {
-        where: { tenantId: user.tenantId, id: In(attempt.questionIds) },
-      });
+      const qs = await this.resolveAttemptSnapshots(attempt, manager.getRepository(Question));
       const submitted = attempt.status === 'submitted';
       const graded = this.gradeAttempt(attempt, qs, submitted ? attempt.answers : answers);
       if (!submitted) {
@@ -517,7 +556,7 @@ export class ExamService {
 
   private gradeAttempt(
     attempt: ExamAttempt,
-    questions: Question[],
+    questions: ExamQuestionSnapshot[],
     answers: Record<string, string>,
   ): {
     normalized: Record<string, string>;
@@ -843,7 +882,7 @@ export class ExamService {
     const items: WrongBookItem[] = [];
     for (const r of rows) {
       const q = byId.get(r.questionId);
-      if (!q) continue; // 题已删,跳过
+      if (!q) continue; // 题目已删除时不阻断整个错题本。
       items.push({
         questionId: q.id,
         category: q.category,
@@ -879,9 +918,10 @@ export class ExamService {
   }
 
   // 历史成绩列表(摘要)。
-  async history(user: AuthUser): Promise<ExamAttempt[]> {
+  async history(user: AuthUser): Promise<Array<Pick<ExamAttempt, 'id' | 'courseId' | 'category' | 'total' | 'correct' | 'score' | 'submittedAt'>>> {
     return this.attempts.find({
       where: { tenantId: user.tenantId, userId: user.userId, status: 'submitted', deletedAt: IsNull() },
+      select: ['id', 'courseId', 'category', 'total', 'correct', 'score', 'submittedAt'],
       order: { submittedAt: 'DESC' },
       take: 50,
     });
@@ -918,14 +958,12 @@ export class ExamService {
     if (!attempt) throw new NotFoundException('考试记录不存在');
     if (attempt.status !== 'submitted') throw new BadRequestException('该试卷尚未交卷');
 
-    const qs = await this.questions.find({
-      where: { tenantId: user.tenantId, id: In(attempt.questionIds) },
-    });
+    const qs = await this.resolveAttemptSnapshots(attempt);
     const byId = new Map(qs.map((q) => [q.id, q]));
     const details: GradedItem[] = [];
     for (const qid of attempt.questionIds) {
       const q = byId.get(qid);
-      if (!q) continue; // 题已删,跳过
+      if (!q) throw new ConflictException('考试题目快照不完整，请联系管理员');
       const your = attempt.answers[qid] ?? '';
       details.push({
         questionId: qid,

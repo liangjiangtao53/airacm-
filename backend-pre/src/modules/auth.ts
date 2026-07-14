@@ -7,6 +7,9 @@ import {
   Post,
   UseGuards,
   BadRequestException,
+  Logger,
+  OnModuleDestroy,
+  OnModuleInit,
   UnauthorizedException,
 } from '@nestjs/common';
 import { InjectRepository, TypeOrmModule } from '@nestjs/typeorm';
@@ -126,7 +129,9 @@ type WechatLoginResult =
   | { needBinding: true; bindingToken: string; expiresAt: Date };
 
 @Injectable()
-export class AuthService {
+export class AuthService implements OnModuleInit, OnModuleDestroy {
+  private readonly logger = new Logger(AuthService.name);
+  private bindingCleanupTimer: ReturnType<typeof setInterval> | null = null;
   constructor(
     @InjectRepository(User) private readonly users: Repository<User>,
     @InjectRepository(Wallet) private readonly wallets: Repository<Wallet>,
@@ -143,6 +148,19 @@ export class AuthService {
   ) {}
 
   private nextBindingCleanupAt = 0;
+
+  onModuleInit(): void {
+    this.bindingCleanupTimer = setInterval(() => {
+      void this.cleanupBindingSessions(true).catch((error) => {
+        this.logger.error('wechat binding-session cleanup failed', error);
+      });
+    }, 60_000);
+    this.bindingCleanupTimer.unref?.();
+  }
+
+  onModuleDestroy(): void {
+    if (this.bindingCleanupTimer) clearInterval(this.bindingCleanupTimer);
+  }
 
   // 发送注册验证码:已注册手机号直接拒绝,避免无谓短信与撞库探测。
   async sendCode(phone: string): Promise<{ sent: true }> {
@@ -223,19 +241,10 @@ export class AuthService {
     const { openid } = await this.wechat.exchangeCode(dto.code);
     const user = await this.users.findOne({ where: { tenantId, wechatOpenid: openid } });
     if (user) {
-      const expiresAt =
-        user.registrationSource === 'key'
-          ? await this.accessKeys.activeKeyExpiry(tenantId, user.id)
-          : undefined;
-      await this.activity.recordWechatLogin(user);
-      return {
-        needBinding: false,
-        token: await this.issue(
-          { userId: user.id, tenantId: user.tenantId, role: user.role },
-          expiresAt,
-        ),
-        userId: user.id,
-      };
+      if (user.role !== 'user') {
+        throw new UnauthorizedException('微信小程序仅支持学员账号');
+      }
+      return this.completeWechatLogin(user, openid);
     }
     return this.createBindingSession(tenantId, openid);
   }
@@ -272,6 +281,9 @@ export class AuthService {
           !(await bcrypt.compare(dto.password, existing.passwordHash))
         ) {
           throw new UnauthorizedException('手机号或密码错误');
+        }
+        if (existing.role !== 'user') {
+          throw new UnauthorizedException('微信小程序仅支持学员账号');
         }
         if (existing.wechatOpenid && existing.wechatOpenid !== binding!.wechatOpenid) {
           throw new BadRequestException('该账号已绑定其他微信，请联系管理员');
@@ -322,9 +334,9 @@ export class AuthService {
     const tenantId = env.defaultTenantId;
     const tokenHash = this.hashBindingToken(dto.bindingToken);
     try {
-      await this.claimBindingAttempt(tokenHash);
       const needsProfile = await this.accessKeys.keyNeedsProfile(tenantId, dto.key);
       if (needsProfile && (!dto.phone || !dto.nickname)) return { needProfile: true };
+      await this.claimBindingAttempt(tokenHash);
       const result = await this.accessKeys.bindWechatByKey(
         tenantId,
         tokenHash,
@@ -341,6 +353,54 @@ export class AuthService {
     } catch (error) {
       this.rethrowBindingError(error);
     }
+  }
+
+  private async completeWechatLogin(
+    candidate: User,
+    openid: string,
+  ): Promise<{ needBinding: false; token: string; userId: string }> {
+    const result = await this.dataSource.transaction(async (manager) => {
+      let expiresAt: Date | undefined;
+      if (candidate.registrationSource === 'key') {
+        let keyQuery = manager
+          .createQueryBuilder(AccessKey, 'k')
+          .where('k.tenantId = :tenantId', { tenantId: candidate.tenantId })
+          .andWhere('k.userId = :userId', { userId: candidate.id })
+          .andWhere('k.status = :status', { status: 'active' })
+          .andWhere('k.expiresAt > :now', { now: new Date() })
+          .orderBy('k.expiresAt', 'DESC');
+        if (this.dataSource.options.type !== 'better-sqlite3') {
+          keyQuery = keyQuery.setLock('pessimistic_write');
+        }
+        const key = await keyQuery.getOne();
+        if (!key) throw new UnauthorizedException('卡密已过期或作废');
+        expiresAt = key.expiresAt;
+      }
+
+      let userQuery = manager
+        .createQueryBuilder(User, 'u')
+        .where('u.tenantId = :tenantId', { tenantId: candidate.tenantId })
+        .andWhere('u.id = :userId', { userId: candidate.id });
+      if (this.dataSource.options.type !== 'better-sqlite3') {
+        userQuery = userQuery.setLock('pessimistic_write');
+      }
+      const current = await userQuery.getOne();
+      if (!current || current.wechatOpenid !== openid || current.role !== 'user') {
+        throw new UnauthorizedException('微信绑定状态已变化，请重新登录');
+      }
+      const sid = crypto.randomUUID();
+      await manager.update(User, current.id, { sessionId: sid });
+      return {
+        user: { ...current, sessionId: sid },
+        token: this.signWithSession(
+          { userId: current.id, tenantId: current.tenantId, role: current.role },
+          sid,
+          expiresAt,
+        ),
+      };
+    });
+    await this.activity.recordWechatLogin(result.user);
+    return { needBinding: false, token: result.token, userId: result.user.id };
   }
 
   private async createBindingSession(
@@ -363,9 +423,9 @@ export class AuthService {
     return { needBinding: true, bindingToken, expiresAt };
   }
 
-  private async cleanupBindingSessions(): Promise<void> {
+  private async cleanupBindingSessions(force = false): Promise<void> {
     const now = Date.now();
-    if (now < this.nextBindingCleanupAt) return;
+    if (!force && now < this.nextBindingCleanupAt) return;
     this.nextBindingCleanupAt = now + 60_000;
     const stale = await this.bindSessions
       .createQueryBuilder('s')
@@ -393,10 +453,16 @@ export class AuthService {
   }
 
   private rethrowBindingError(error: unknown): never {
-    if (error instanceof QueryFailedError) {
+    if (error instanceof QueryFailedError && this.isUniqueViolation(error)) {
       throw new BadRequestException('微信或账号已被绑定，请联系管理员');
     }
     throw error;
+  }
+
+  private isUniqueViolation(error: QueryFailedError): boolean {
+    const driver = (error as QueryFailedError & { driverError?: { code?: string | number; errno?: number } }).driverError;
+    const code = String(driver?.code ?? driver?.errno ?? '');
+    return code === 'ER_DUP_ENTRY' || code === '1062' || code === '23505' || code.startsWith('SQLITE_CONSTRAINT');
   }
 
   private async claimBindingAttempt(tokenHash: string): Promise<void> {

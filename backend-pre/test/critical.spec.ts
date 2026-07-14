@@ -64,10 +64,12 @@ describe('CRITICAL paths', () => {
 
   // 每个用例独立数据,避免互相污染。
   async function freshUser(balance: number): Promise<AuthUser> {
+    const phone = `1${Math.floor(1e10 + Math.random() * 8e9)}`.slice(0, 11);
     const user = await ds.getRepository(User).save(
       ds.getRepository(User).create({
         tenantId: TENANT,
-        phone: `1${Math.floor(1e10 + Math.random() * 8e9)}`.slice(0, 11),
+        phone,
+        nickname: `test-${phone}`,
         passwordHash: 'x',
         openid: null,
       }),
@@ -325,10 +327,12 @@ describe('CRITICAL paths', () => {
   });
 
   async function freshAdmin(role: 'admin' | 'super' = 'admin'): Promise<AuthUser> {
+    const phone = `1${Math.floor(1e10 + Math.random() * 8e9)}`.slice(0, 11);
     const u = await ds.getRepository(User).save(
       ds.getRepository(User).create({
         tenantId: TENANT,
-        phone: `1${Math.floor(1e10 + Math.random() * 8e9)}`.slice(0, 11),
+        phone,
+        nickname: `test-${phone}`,
         passwordHash: 'x',
         role,
         openid: null,

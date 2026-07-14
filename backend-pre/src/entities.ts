@@ -13,11 +13,20 @@ import {
 
 // Timestamp column type is driver-specific: Postgres uses timestamptz, MySQL/SQLite use datetime.
 // CreateDateColumn/UpdateDateColumn 由 TypeORM 自动按驱动选型,无需处理。
+const DB_TYPE = process.env.DB_TYPE ?? (process.env.NODE_ENV === 'production' ? 'mysql' : 'better-sqlite3');
 const TS_TYPE: 'timestamptz' | 'datetime' =
-  (process.env.DB_TYPE ?? (process.env.NODE_ENV === 'production' ? 'mysql' : 'better-sqlite3')) ===
-  'postgres'
+  DB_TYPE === 'postgres'
     ? 'timestamptz'
     : 'datetime';
+const LARGE_JSON_TYPE: 'longtext' | 'text' =
+  process.env.NODE_ENV !== 'test' && (DB_TYPE === 'mysql' || DB_TYPE === 'mariadb') ? 'longtext' : 'text';
+const LARGE_JSON_TRANSFORMER = {
+  to: (value: unknown): string | null => value == null ? null : JSON.stringify(value),
+  from: (value: unknown): unknown => {
+    if (value == null || typeof value !== 'string') return value;
+    return JSON.parse(value);
+  },
+};
 
 export type LessonAccess = 'free' | 'paid' | 'vip' | 'password';
 export type LessonType = 'video' | 'text';
@@ -71,6 +80,18 @@ export class ExamPaperRule {
 export interface QuestionOption {
   key: string; // A / B / C / D
   text: string;
+}
+
+export interface ExamQuestionSnapshot {
+  id: string;
+  category: string;
+  type: 'single' | 'multiple';
+  stem: string;
+  options: QuestionOption[];
+  stemImageUrls: string[];
+  imageUrls: string[];
+  answer: string;
+  analysis: string;
 }
 
 // 题目科目分类(机务执照模块 M1-M9 + 无人机)。导入时按科目归档。
@@ -194,6 +215,7 @@ export class Tenant {
 
 @Entity('user')
 @Index(['tenantId', 'phone'], { unique: true })
+@Index('UQ_user_tenant_nickname', ['tenantId', 'nickname'], { unique: true })
 @Index('UQ_user_tenant_wechat_openid', ['tenantId', 'wechatOpenid'], { unique: true })
 export class User {
   @PrimaryGeneratedColumn('uuid')
@@ -626,6 +648,10 @@ export class ExamAttempt {
   // 本次卷子的题目 id 顺序(组卷时锁定)。
   @Column({ type: 'simple-json' })
   questionIds!: string[];
+
+  // Keep grading and review stable when administrators replace question-bank data.
+  @Column({ type: LARGE_JSON_TYPE, nullable: true, transformer: LARGE_JSON_TRANSFORMER })
+  questionSnapshots!: ExamQuestionSnapshot[] | null;
 
   // 提交答案 {questionId: 'A'|'AC'}。未交卷前为空。
   @Column({ type: 'simple-json' })

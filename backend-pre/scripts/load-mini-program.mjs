@@ -11,8 +11,15 @@ const maxLimitMs = Math.max(p95LimitMs, Number(process.env.LOAD_MAX_LIMIT_MS) ||
 if (process.env.ALLOW_LOAD_TEST !== 'true') {
   throw new Error('设置 ALLOW_LOAD_TEST=true 后才能执行负载测试');
 }
-if (/weixiuzhiyi\.com\.cn/i.test(baseUrl)) {
-  throw new Error('负载测试禁止指向生产域名');
+const allowedHosts = new Set(
+  (process.env.LOAD_ALLOWED_HOSTS || '127.0.0.1,localhost,::1')
+    .split(',')
+    .map((host) => host.trim().toLowerCase())
+    .filter(Boolean),
+);
+const targetHost = new URL(baseUrl).hostname.toLowerCase();
+if (!allowedHosts.has(targetHost)) {
+  throw new Error(`负载测试目标 ${targetHost} 不在 LOAD_ALLOWED_HOSTS 明确允许列表中`);
 }
 
 const metrics = new Map();
@@ -28,7 +35,11 @@ async function request(route, path, options = {}) {
   const started = performance.now();
   let ok = false;
   try {
-    const response = await fetch(`${baseUrl}${path}`, options);
+    const response = await fetch(`${baseUrl}${path}`, {
+      ...options,
+      redirect: 'manual',
+      signal: options.signal || AbortSignal.timeout(maxLimitMs),
+    });
     const body = await response.json();
     ok = response.ok && body?.success !== false;
     if (!ok) throw new Error(body?.error || `${response.status} request failed`);
@@ -51,31 +62,14 @@ async function login(account) {
   return result.token;
 }
 
-async function runUser(account) {
-  const token = await login(account);
-  const headers = { authorization: `Bearer ${token}`, 'content-type': 'application/json' };
-  const paper = await request('exam_start', '/exams/start', {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({ category }),
-  });
-  const answers = {};
-  for (let index = 0; index < Math.min(3, paper.questions.length); index++) {
-    answers[paper.questions[index].id] = paper.questions[index].options[0]?.key || '';
-    await request('exam_draft', `/exams/${paper.attemptId}/draft`, {
-      method: 'PUT',
-      headers,
-      body: JSON.stringify({ version: index + 1, currentQuestionIndex: index, answers }),
-    });
+async function runStage(name, items, action) {
+  const results = await Promise.allSettled(items.map(action));
+  const failed = results.filter((result) => result.status === 'rejected');
+  if (failed.length) {
+    const first = failed[0].reason instanceof Error ? failed[0].reason.message : String(failed[0].reason);
+    throw new Error(`${name} failed=${failed.length}/${results.length}: ${first}`);
   }
-  await request('study_page', `/questions?usage=study&category=${encodeURIComponent(category)}&page=1&pageSize=20`, {
-    headers,
-  });
-  await request('exam_submit', `/exams/${paper.attemptId}/submit`, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({ answers }),
-  });
+  return results.map((result) => result.value);
 }
 
 function percentile(sorted, value) {
@@ -87,9 +81,72 @@ const accounts = JSON.parse(await readFile(accountFile, 'utf8'));
 if (!Array.isArray(accounts) || accounts.length < concurrency) {
   throw new Error(`需要至少 ${concurrency} 个不同测试账号`);
 }
+const accountIdentities = accounts.slice(0, concurrency).map((account) =>
+  account.token
+    ? `token:${account.token}`
+    : account.key
+      ? `key:${String(account.key).trim().toUpperCase()}`
+      : `phone:${String(account.phone || '').trim()}`,
+);
+if (new Set(accountIdentities).size !== accountIdentities.length) {
+  throw new Error('负载测试账号存在重复，必须使用不同用户');
+}
 
 const started = performance.now();
-const results = await Promise.allSettled(accounts.slice(0, concurrency).map(runUser));
+let workflowFailed = false;
+try {
+  const tokens = await runStage('login', accounts.slice(0, concurrency), login);
+  const contexts = tokens.map((token) => ({
+    headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+    paper: null,
+    answers: {},
+  }));
+  const papers = await runStage('exam_start', contexts, (context) =>
+    request('exam_start', '/exams/start', {
+      method: 'POST',
+      headers: context.headers,
+      body: JSON.stringify({ category }),
+    }),
+  );
+  papers.forEach((paper, index) => {
+    contexts[index].paper = paper;
+    contexts[index].answers = Object.fromEntries(paper.questions.map((question) => [question.id, '']));
+  });
+  for (let version = 1; version <= 3; version++) {
+    await runStage(`exam_draft_v${version}`, contexts, (context) => {
+      const answerIndex = Math.min(version - 1, context.paper.questions.length - 1);
+      const question = context.paper.questions[answerIndex];
+      if (question) context.answers[question.id] = question.options[0]?.key || '';
+      return request('exam_draft', `/exams/${context.paper.attemptId}/draft`, {
+        method: 'PUT',
+        headers: context.headers,
+        body: JSON.stringify({
+          version,
+          currentQuestionIndex: Math.max(0, answerIndex),
+          answers: context.answers,
+        }),
+      });
+    });
+  }
+  await runStage('exam_active', contexts, (context) =>
+    request('exam_active', '/exams/active', { headers: context.headers }),
+  );
+  await runStage('study_page', contexts, (context) =>
+    request('study_page', `/questions?usage=study&category=${encodeURIComponent(category)}&page=1&pageSize=20`, {
+      headers: context.headers,
+    }),
+  );
+  await runStage('exam_submit', contexts, (context) =>
+    request('exam_submit', `/exams/${context.paper.attemptId}/submit`, {
+      method: 'POST',
+      headers: context.headers,
+      body: JSON.stringify({ answers: context.answers }),
+    }),
+  );
+} catch (error) {
+  workflowFailed = true;
+  console.error(error instanceof Error ? error.message : error);
+}
 const elapsedSec = (performance.now() - started) / 1000;
 for (const [route, row] of metrics) {
   const sorted = row.times.sort((a, b) => a - b);
@@ -102,6 +159,5 @@ for (const [route, row] of metrics) {
   );
   if (p95 > p95LimitMs || max > maxLimitMs) process.exitCode = 1;
 }
-const failed = results.filter((result) => result.status === 'rejected');
-console.log(`users=${results.length} failed=${failed.length} elapsed=${elapsedSec.toFixed(1)}s`);
-if (failed.length / results.length >= 0.01) process.exitCode = 1;
+console.log(`users=${concurrency} workflowFailed=${workflowFailed} elapsed=${elapsedSec.toFixed(1)}s`);
+if (workflowFailed) process.exitCode = 1;
