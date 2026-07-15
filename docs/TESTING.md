@@ -80,6 +80,9 @@ npm --prefix apps/student-uni run build:h5 -- --base ./
 
 # Android APK 打包
 powershell -ExecutionPolicy Bypass -File scripts\package-student-apk.ps1
+
+# 同时生成两个包：正式防截图包会更新公开下载文件，允许截图包只保留在 D:\AndroidLab\apk 用于本机 QA
+powershell -ExecutionPolicy Bypass -File scripts\package-student-apk.ps1 -BuildBoth
 ```
 
 ### 3.2 最近验证结果
@@ -100,6 +103,7 @@ powershell -ExecutionPolicy Bypass -File scripts\package-student-apk.ps1
 - App 学习页:10/20/30 每页、输入页码后点击跳转、查看答案旁评论。
 - App 错题本:查看答案/已掌握旁评论。
 - App 防截图:真机或模拟器截图不应露出 App 内容。
+- 双包截图验证:先安装 `D:\AndroidLab\apk\airacm-android-screenshot.apk`，截图应显示 App；再安装 `D:\AndroidLab\apk\airacm-android.apk`，截图应隐藏 App 内容。允许截图包不得复制到 `frontend/public` 或提交。
 
 ## 4. 压力测试结果(单进程 + sqlite + 本机)
 
