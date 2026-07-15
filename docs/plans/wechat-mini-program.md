@@ -18,21 +18,21 @@ Repo: liangjiangtao53/airacm-
 
 ## Implementation Status
 
-Code implementation completed on 2026-07-13. Automated verification currently passes:
+Code implementation completed on 2026-07-13 and the personal-subject review build was adjusted on 2026-07-15. Automated verification currently passes:
 
-- Backend build and Jest: 5 suites, 84 tests.
-- Student client typecheck and Vitest: 2 files, 4 tests.
+- Backend build and Jest: 7 suites, 96 tests.
+- Student client typecheck and Vitest: 5 files, 11 tests.
 - Admin production build, student H5 build, Android App web build, and MP-WEIXIN build.
 - Production artifact scan: no AppSecret, test secret, localhost, or `127.0.0.1` API address.
 - MP-WEIXIN build injects AppID only into the generated project and restores the source manifest.
 
-Still pending: real AppID/AppSecret configuration, WeChat domain and privacy setup, DevTools experience build, Android/iPhone real-device QA, isolated MySQL 200-user load test, production backup/migrations/deployment, and WeChat review. These are not marked complete by local automated tests.
+The real AppID/AppSecret and official access-token check are complete, as are DevTools automation and card-login smoke testing. Still pending: WeChat domain/privacy/service-category console verification, Android/iPhone full real-device QA, isolated MySQL 200-user load test, production backup/migrations/deployment, the updated DevTools upload, and WeChat review.
 
 ## Vision
 
 ### 10x Check
 
-Users should be able to open Maintenance Wing from WeChat and continue the same learning, exam, wrong-question, review, forum, and education flows without installing an APK. Android App, H5, and WeChat Mini Program share one student codebase, one backend, one account, and one set of learning records.
+Users should be able to open Maintenance Wing from WeChat and continue the learning, exam, wrong-question, review, and education flows without installing an APK. Android App and H5 additionally retain forum and comment flows; all clients continue sharing one student codebase, one backend, one account, and one set of learning records.
 
 The goal is not merely to make `build:mp-weixin` succeed. The release is complete only when production login, account binding, card expiry, images, study continuation, exam drafts, comments, security checks, real-device behavior, and rollback are verified.
 

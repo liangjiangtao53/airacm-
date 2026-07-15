@@ -53,8 +53,8 @@ const undergraduateSchoolCount = undergraduateSchoolGroups.reduce(
         @error="qrLoadFailed = true"
       />
       <view v-else class="qr qr-empty">客服二维码暂未配置</view>
-      <text class="qr-title">扫码添加客服</text>
-      <text class="subtitle qr-note">二维码由客服后台提供，如无法显示请稍后重试。</text>
+      <text class="qr-title">客服二维码</text>
+      <text class="subtitle qr-note">二维码由客服后台更新；如暂时无法识别，请稍后再试。</text>
     </view>
 
     <view class="card schools-card">
