@@ -132,6 +132,8 @@ cat .env
 | `JWT_EXPIRES_IN` | 登录有效期,默认 `30d` |
 | `APP_UPLOAD_DIR` | App 安装包共享目录,默认 `./uploads/app` |
 | `QUESTION_IMAGE_DIR` | 题库图片共享目录,默认 `./uploads/question-images` |
+| `CUSTOMER_SERVICE_QR_DIR` | Docker 宿主机上的客服二维码目录，放置文件 `customer-service-qr.png`，默认 `./uploads/customer-service` |
+| `CUSTOMER_SERVICE_QR_PATH` | 直接运行后端时的二维码完整路径，默认 `backend-pre/uploads/customer-service/customer-service-qr.png` |
 | `DB_MIGRATIONS_RUN` | 启动时自动执行数据库 migration,默认 `true` |
 | `SMS_DEV_MODE` / `ALI_SMS_*` | 要发注册短信则关 dev 模式并填阿里云短信密钥 |
 

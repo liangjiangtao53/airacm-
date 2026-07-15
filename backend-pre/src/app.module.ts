@@ -19,6 +19,7 @@ import { AccessKeyModule } from './modules/access-key';
 import { ForumModule } from './modules/forum';
 import { AppReleaseModule } from './modules/app-release';
 import { WechatMiniProgramModule } from './modules/wechat-mini-program';
+import { PublicContentModule } from './modules/public-content';
 
 @Controller()
 class HealthController {
@@ -48,6 +49,7 @@ class HealthController {
     ForumModule,
     AppReleaseModule,
     WechatMiniProgramModule,
+    PublicContentModule,
   ],
   controllers: [HealthController],
   providers: [

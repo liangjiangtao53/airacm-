@@ -1,5 +1,10 @@
 <script setup lang="ts">
-const qrUrl = '/static/customer-service-qr.svg';
+import { ref } from 'vue';
+import { assetUrl } from '../../utils/api';
+
+// 原来使用打包内的占位图；改为同域后端图片，后续换码无需重新发布小程序。
+const qrUrl = assetUrl('/app/customer-service-qr');
+const qrLoadFailed = ref(false);
 
 // 仅展示当前主推院校，其他学校统一引导用户咨询客服确认。
 const undergraduateSchoolGroups = [
@@ -39,9 +44,17 @@ const undergraduateSchoolCount = undergraduateSchoolGroups.reduce(
     </view>
 
     <view class="card qr-card">
-      <image :src="qrUrl" mode="aspectFit" class="qr" />
+      <image
+        v-if="!qrLoadFailed"
+        :src="qrUrl"
+        mode="aspectFit"
+        class="qr"
+        show-menu-by-longpress
+        @error="qrLoadFailed = true"
+      />
+      <view v-else class="qr qr-empty">客服二维码暂未配置</view>
       <text class="qr-title">扫码添加客服</text>
-      <text class="subtitle qr-note">当前二维码为占位图,替换静态资源后页面自动显示真实二维码。</text>
+      <text class="subtitle qr-note">二维码由客服后台提供，如无法显示请稍后重试。</text>
     </view>
 
     <view class="card schools-card">
@@ -127,6 +140,14 @@ const undergraduateSchoolCount = undergraduateSchoolGroups.reduce(
   height: 420rpx;
   padding: 24rpx;
   width: 420rpx;
+}
+
+.qr-empty {
+  align-items: center;
+  color: rgba(17, 24, 39, 0.45);
+  display: flex;
+  font-size: 26rpx;
+  justify-content: center;
 }
 
 .qr-title {
