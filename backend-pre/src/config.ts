@@ -51,6 +51,7 @@ export const env = {
     process.env.CUSTOMER_SERVICE_QR_PATH ||
       resolve(backendRoot, 'uploads', 'customer-service', 'customer-service-qr.png'),
   ),
+  customerServiceQrFallbackPath: resolve(backendRoot, 'assets', 'mock-customer-service-qr.png'),
 
   // 短信:dev 走万能码;生产接阿里云短信(Dysmsapi)。
   sms: {

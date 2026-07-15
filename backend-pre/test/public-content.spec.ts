@@ -11,6 +11,7 @@ describe('PublicContentController', () => {
   let app: INestApplication;
   let tempDir: string;
   const originalQrPath = env.customerServiceQrPath;
+  const originalFallbackPath = env.customerServiceQrFallbackPath;
 
   beforeAll(async () => {
     tempDir = await mkdtemp(join(tmpdir(), 'airacm-qr-'));
@@ -21,6 +22,7 @@ describe('PublicContentController', () => {
 
   afterAll(async () => {
     env.customerServiceQrPath = originalQrPath;
+    env.customerServiceQrFallbackPath = originalFallbackPath;
     await app.close();
     await rm(tempDir, { recursive: true, force: true });
   });
@@ -41,8 +43,19 @@ describe('PublicContentController', () => {
     expect(response.body).toEqual(image);
   });
 
-  it('returns 404 when the QR image is not configured', async () => {
+  it('returns the backend fallback image before a real QR is configured', async () => {
+    const fallbackImage = Buffer.from('fallback-png');
     env.customerServiceQrPath = join(tempDir, 'missing.png');
+    env.customerServiceQrFallbackPath = join(tempDir, 'mock-customer-service-qr.png');
+    await writeFile(env.customerServiceQrFallbackPath, fallbackImage);
+
+    const response = await request(app.getHttpServer()).get('/app/customer-service-qr').expect(200);
+    expect(response.body).toEqual(fallbackImage);
+  });
+
+  it('returns 404 when neither the real nor fallback image exists', async () => {
+    env.customerServiceQrPath = join(tempDir, 'missing.png');
+    env.customerServiceQrFallbackPath = join(tempDir, 'missing-fallback.png');
     await request(app.getHttpServer()).get('/app/customer-service-qr').expect(404);
   });
 });

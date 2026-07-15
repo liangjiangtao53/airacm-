@@ -137,6 +137,8 @@ cat .env
 | `DB_MIGRATIONS_RUN` | 启动时自动执行数据库 migration,默认 `true` |
 | `SMS_DEV_MODE` / `ALI_SMS_*` | 要发注册短信则关 dev 模式并填阿里云短信密钥 |
 
+真实二维码文件尚未放置时，接口会返回后端内置的不可识别模拟图；替换 `customer-service-qr.png` 后立即生效，无需重新发布小程序或重启后端。
+
 服务器上重新生成密钥(可选,更安全):
 
 ```bash
