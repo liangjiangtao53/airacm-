@@ -18,6 +18,7 @@ type Tile = {
 };
 
 const h5Tiles: Tile[] = [
+  // #ifndef MP-WEIXIN
   {
     title: '交流',
     desc: '发帖提问，与同行讨论交流',
@@ -25,6 +26,7 @@ const h5Tiles: Tile[] = [
     type: 'tab',
     large: true,
   },
+  // #endif
   {
     title: '下载 App',
     desc: '安卓版安装包上线后在这里下载',
@@ -59,12 +61,14 @@ const appTiles: Tile[] = [
     url: '/pages/wrong/index',
     type: 'tab',
   },
+  // #ifndef MP-WEIXIN
   {
     title: '交流',
     desc: '发帖提问,与同行讨论交流',
     url: '/pages/forum/index',
     type: 'tab',
   },
+  // #endif
   {
     title: '学历提升',
     desc: '咨询报读与资料领取',
@@ -74,9 +78,16 @@ const appTiles: Tile[] = [
 ];
 
 const tiles = capabilities.appDownload ? h5Tiles : appTiles;
-const subtitle = capabilities.appDownload
+// 微信个人主体不开放社交类目，提审包必须从编译产物中排除公开交流能力。
+let subtitle = '';
+// #ifdef MP-WEIXIN
+subtitle = '专题学习 · 考试回顾 · 错题本 · 学历提升';
+// #endif
+// #ifndef MP-WEIXIN
+subtitle = capabilities.appDownload
   ? '交流 · App 下载 · 学历提升'
   : '专题学习 · 考试回顾 · 错题本 · 交流 · 学历提升';
+// #endif
 
 function roleLabel(role?: Me['role']) {
   if (role === 'super') return '超级管理员';

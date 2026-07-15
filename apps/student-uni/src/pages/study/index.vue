@@ -1,7 +1,10 @@
 <script setup lang="ts">
 import { onShow, onUnload } from '@dcloudio/uni-app';
 import { computed, ref, watch } from 'vue';
-import { api, assetUrl, requireLogin, type CommentItem, type QuestionItem } from '@/utils/api';
+import { api, assetUrl, requireLogin, type QuestionItem } from '@/utils/api';
+// #ifndef MP-WEIXIN
+import type { CommentItem } from '@/utils/api';
+// #endif
 import { disableCaptureProtection, enableCaptureProtection } from '@/utils/capture';
 
 const categories = ref<string[]>([]);
@@ -20,9 +23,11 @@ const currentIndex = ref(0);
 const touchStartX = ref(0);
 const showCorrectAnswer = ref(false);
 const jumpNumber = ref('1');
+// #ifndef MP-WEIXIN
 const commentOpen = ref<Record<string, boolean>>({});
 const commentInputs = ref<Record<string, string>>({});
 const commentLists = ref<Record<string, CommentItem[]>>({});
+// #endif
 const startedStudyCategories = ref(new Set<string>());
 const progressRecorded = ref<Record<string, boolean>>({});
 const loadedCategory = ref('');
@@ -250,6 +255,7 @@ function onTouchEnd(e: TouchEvent) {
   nextQuestion(delta > 0 ? -1 : 1);
 }
 
+// #ifndef MP-WEIXIN
 async function toggleComments(questionId: string) {
   commentOpen.value[questionId] = !commentOpen.value[questionId];
   if (!commentOpen.value[questionId] || commentLists.value[questionId]) return;
@@ -287,6 +293,7 @@ async function removeComment(questionId: string, commentId: string) {
     },
   });
 }
+// #endif
 
 onShow(async () => {
   if (!requireLogin()) return;
@@ -408,9 +415,11 @@ watch(currentNumber, (n) => {
           <button class="btn secondary action" @tap="toggleExplanation(currentQuestion.id)">
             {{ shouldShowExplanation(currentQuestion.id) ? '收起解析' : '查看解析' }}
           </button>
+          <!-- #ifndef MP-WEIXIN -->
           <button class="btn secondary action" @tap="toggleComments(currentQuestion.id)">
             {{ commentOpen[currentQuestion.id] ? '收起评论' : '评论' }}
           </button>
+          <!-- #endif -->
         </view>
         <view v-if="shouldShowExplanation(currentQuestion.id)" class="answer-box">
           <text class="answer">答案: {{ answers[currentQuestion.id].answer }}</text>
@@ -423,6 +432,7 @@ watch(currentNumber, (n) => {
             class="question-image"
           />
         </view>
+        <!-- #ifndef MP-WEIXIN -->
         <view v-if="commentOpen[currentQuestion.id]" class="comment-box">
           <view class="comment-form">
             <input v-model="commentInputs[currentQuestion.id]" class="comment-input" placeholder="写下你的想法..." />
@@ -437,6 +447,7 @@ watch(currentNumber, (n) => {
             <text class="comment-content">{{ c.content }}</text>
           </view>
         </view>
+        <!-- #endif -->
       </view>
     </view>
 
@@ -456,8 +467,7 @@ watch(currentNumber, (n) => {
 .question-card,
 .options,
 .subprojects,
-.answer-box,
-.comment-box {
+.answer-box {
   display: flex;
   flex-direction: column;
 }
@@ -470,8 +480,7 @@ watch(currentNumber, (n) => {
   gap: 18rpx;
 }
 
-.subproject-head,
-.comment-head {
+.subproject-head {
   align-items: center;
   display: flex;
   flex-direction: row;
@@ -725,8 +734,7 @@ watch(currentNumber, (n) => {
   padding: 20rpx;
 }
 
-.question-actions,
-.comment-form {
+.question-actions {
   align-items: center;
   display: flex;
   flex-direction: row;
@@ -734,6 +742,7 @@ watch(currentNumber, (n) => {
   gap: 14rpx;
 }
 
+/* #ifndef MP-WEIXIN */
 .comment-box {
   border-top: 2rpx solid rgba(17, 24, 39, 0.06);
   gap: 12rpx;
@@ -782,6 +791,7 @@ watch(currentNumber, (n) => {
 .comment-content {
   color: rgba(17, 24, 39, 0.76);
 }
+/* #endif */
 
 .pager {
   align-items: center;

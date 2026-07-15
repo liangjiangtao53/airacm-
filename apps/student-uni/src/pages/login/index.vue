@@ -144,7 +144,12 @@ function restartWechatLogin() {
       <image class="logo" :src="logoUrl" mode="aspectFill" />
       <text class="eyebrow">维修之翼</text>
       <text class="title">登录学员端</text>
+      <!-- #ifdef MP-WEIXIN -->
+      <text class="subtitle">{{ bindingToken ? '绑定已有账号后继续使用原学习记录。' : '登录后进入学习与练习。' }}</text>
+      <!-- #endif -->
+      <!-- #ifndef MP-WEIXIN -->
       <text class="subtitle">{{ bindingToken ? '绑定已有账号后继续使用原学习记录。' : '登录后进入学习和交流。' }}</text>
+      <!-- #endif -->
     </view>
 
     <view class="card form-card">

@@ -306,6 +306,8 @@ export const api = {
     request<{ ok: true; recorded: boolean; practice: QuestionPracticeSummary }>('/exams/wrong-book/study', { method: 'POST', data: { questionId, answer } }),
   masterWrong: (questionId: string, source: WrongQuestionSource = 'study') =>
     request<{ ok: boolean }>(`/exams/wrong-book/${questionId}/master`, { method: 'POST', data: { source } }),
+  // 微信个人主体版本不提供公开 UGC；条件编译确保相关路由不会进入提审包。
+  // #ifndef MP-WEIXIN
   comments: (questionId: string) => request<CommentItem[]>(`/questions/${questionId}/comments`),
   addComment: (questionId: string, content: string) =>
     request<CommentItem>(`/questions/${questionId}/comments`, { method: 'POST', data: { content } }),
@@ -325,4 +327,5 @@ export const api = {
   deletePostReply: (id: string) => request<{ deleted: boolean }>(`/posts/replies/${id}`, { method: 'DELETE' }),
   togglePostReplyLike: (id: string) =>
     request<{ liked: boolean; likeCount: number }>(`/posts/replies/${id}/like`, { method: 'POST' }),
+  // #endif
 };
