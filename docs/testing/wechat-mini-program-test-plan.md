@@ -6,7 +6,7 @@ Repo: liangjiangtao53/airacm-
 
 ## 当前执行结果（2026-07-15）
 
-- [x] 后端构建通过，Jest 5 个测试套件、84 项测试通过。
+- [x] 后端构建通过，Jest 7 个测试套件、96 项测试通过。
 - [x] 学生端 `vue-tsc --noEmit` 通过，Vitest 5 个文件、11 项测试通过。
 - [x] Admin、H5、Android App web 资源和 MP-WEIXIN 构建通过。
 - [x] 小程序缺少 AppID 时构建会失败；测试 AppID 只进入生成产物，不写回源码。
@@ -36,7 +36,7 @@ Repo: liangjiangtao53/airacm-
 - `pages/exam-review/index`：全部题目、100 分制、答案颜色、按需解析。
 - `pages/wrong/index`：只显示顺序学习错题和模块筛选，不显示评论。
 - `pages/forum/index`：不得注册到 MP-WEIXIN 路由，也不得生成页面目录。
-- `pages/upgrade/index`：只显示三所学校和客服提示。
+- `pages/upgrade/index`：只显示三所学校、客服提示和后端返回的客服二维码。
 
 ## 受影响接口
 
@@ -47,6 +47,7 @@ Repo: liangjiangtao53/airacm-
 - `GET /exams/active`
 - `PUT /exams/:id/draft`
 - `POST /exams/:id/abandon`
+- `GET /app/customer-service-qr`
 - 现有论坛主题、回复、题目评论接口不得出现在 MP-WEIXIN 产物中；H5 和 Android App 保持不变
 - 现有学习、考试、错题和回顾接口回归
 
@@ -105,6 +106,11 @@ Repo: liangjiangtao53/airacm-
 - 双击提交不会生成重复内容。
 - 没有微信 openid 时按当前微信接口允许的请求格式处理。
 
+### 客服二维码
+
+- 配置真实二维码文件时返回该图片；未配置时返回内置的不可识别模拟图。
+- 真实文件和内置模拟图都缺失时返回 404；图片响应使用 `no-store`，便于后台替换后立即生效。
+
 ### 考试草稿
 
 - 两个并发开始请求只产生一个 activeKey。
@@ -132,6 +138,7 @@ Repo: liangjiangtao53/airacm-
 - iPhone 记录无法保证防截图的平台限制，不把它误判为业务失败。
 - 卡密粘贴、中文输入、返回键、快速双击、慢网、断网、切后台和微信杀进程。
 - 所有题干图片和解析图片通过 HTTPS 正常显示。
+- 学历提升页能显示客服二维码；后台替换真实图片后无需重新发布小程序即可更新。
 - 小程序没有论坛、评论、“下载 App”入口，Admin 页面不可达。
 
 ## 顺序学习重点回归
