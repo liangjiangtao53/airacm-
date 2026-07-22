@@ -846,6 +846,10 @@ export class AccessKey {
   @Column({ type: 'varchar', nullable: true })
   userId!: string | null;
 
+  // 人工发放后可先标记为已分配；真实登录后 firstLoginAt 也会视为已分配。
+  @Column({ type: 'boolean', default: false })
+  assigned!: boolean;
+
   @Column({ type: TS_TYPE, nullable: true })
   firstLoginAt!: Date | null;
 

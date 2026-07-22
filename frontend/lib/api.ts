@@ -154,6 +154,7 @@ export interface AccessKeyItem {
   status: string;
   expiresAt: string;
   createdAt: string;
+  assigned: boolean;
   firstLoginAt: string | null;
   lastLoginAt: string | null;
 }
@@ -542,6 +543,11 @@ export const api = {
     req<AccessKeyItem>(`/admin/access-keys/${id}`, {
       method: 'POST',
       body: { ttlDays },
+    }),
+  updateKeyAssignment: (id: string, assigned: boolean) =>
+    req<AccessKeyItem>(`/admin/access-keys/${id}/assignment`, {
+      method: 'POST',
+      body: { assigned },
     }),
   deleteKey: (id: string) => req<{ deleted: number }>(`/admin/access-keys/${id}`, { method: 'DELETE' }),
   cleanupKeys: () => req<{ deleted: number }>('/admin/access-keys/cleanup', { method: 'DELETE' }),

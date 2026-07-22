@@ -53,6 +53,7 @@ const operationActionOptions = [
   { value: 'app_apk_upload', label: '上传 App' },
   { value: 'access_key_generate', label: '生成卡密' },
   { value: 'access_key_update_ttl', label: '改有效期' },
+  { value: 'access_key_update_assignment', label: '标记卡密分配' },
   { value: 'access_key_revoke', label: '作废卡密' },
   { value: 'access_key_cleanup', label: '清理卡密' },
   { value: 'access_key_delete', label: '删除卡密' },
@@ -158,6 +159,7 @@ export default function AdminPage() {
   const [keyStatus, setKeyStatus] = useState('');
   const [genCount, setGenCount] = useState('20');
   const [genTtl, setGenTtl] = useState('30');
+  const [copiedKeyId, setCopiedKeyId] = useState('');
   const [maintMsg, setMaintMsg] = useState('');
 
   // 用户管理
@@ -458,6 +460,22 @@ export default function AdminPage() {
     wrap(async () => {
       await api.revokeKey(id);
       await refreshKeys();
+    })();
+
+  const copyAccessKey = (key: AccessKeyRow) =>
+    wrap(async () => {
+      if (!navigator.clipboard) throw new Error('当前浏览器不支持剪贴板复制');
+      await navigator.clipboard.writeText(key.key);
+      setCopiedKeyId(key.id);
+      setMaintMsg(`已复制卡密 ${key.key}`);
+      window.setTimeout(() => setCopiedKeyId((id) => (id === key.id ? '' : id)), 1500);
+    })();
+
+  const toggleKeyAssignment = (key: AccessKeyRow, assigned: boolean) =>
+    wrap(async () => {
+      const updated = await api.updateKeyAssignment(key.id, assigned);
+      setKeys((list) => list.map((item) => (item.id === key.id ? updated : item)));
+      setMaintMsg(`卡密 ${updated.key} 已标记为${assigned ? '已分配' : '未分配'}`);
     })();
 
   const deleteKey = (key: AccessKeyRow) =>
@@ -1074,6 +1092,7 @@ export default function AdminPage() {
                         <th className="px-3 py-2 font-medium">有效期</th>
                         <th className="px-3 py-2 font-medium">已使用天数</th>
                         <th className="px-3 py-2 font-medium">剩余天数</th>
+                        <th className="px-3 py-2 font-medium">分配状态</th>
                         <th className="px-3 py-2 font-medium">首次登录</th>
                         <th className="px-3 py-2 font-medium">最近登录</th>
                         <th className="sticky right-0 bg-mist px-3 py-2 text-right font-medium">操作</th>
@@ -1090,15 +1109,32 @@ export default function AdminPage() {
                         const validDays = usedDays + remainingDays;
                         const expired = expiresMs < now;
                         const dead = k.status === 'revoked' || expired;
+                        const autoAssigned = Boolean(k.firstLoginAt);
+                        const assigned = k.assigned || autoAssigned;
                         return (
                           <tr key={k.id} className={dead ? 'text-ink/35' : 'text-ink/75'}>
-                            <td className={`px-3 py-2 font-mono ${dead ? 'line-through' : ''}`}>{k.key}</td>
+                            <td className={`px-3 py-2 font-mono ${dead ? 'line-through' : ''}`}>
+                              <span className="inline-flex items-center gap-2">
+                                <span>{k.key}</span>
+                                <button
+                                  onClick={() => copyAccessKey(k)}
+                                  className="rounded bg-white/80 px-2 py-1 font-sans text-[11px] text-sky hover:bg-white hover:underline"
+                                >
+                                  {copiedKeyId === k.id ? '已复制' : '复制'}
+                                </button>
+                              </span>
+                            </td>
                             <td className="px-3 py-2">
                               {k.status === 'revoked' ? '已作废' : expired ? '已过期' : '有效'}
                             </td>
                             <td className="px-3 py-2">{validDays} 天</td>
                             <td className="px-3 py-2">{usedDays} 天</td>
                             <td className="px-3 py-2">{remainingDays} 天</td>
+                            <td className="whitespace-nowrap px-3 py-2">
+                              <span className={assigned ? 'text-emerald-600' : 'text-ink/45'}>
+                                {assigned ? '已分配' : '未分配'}
+                              </span>
+                            </td>
                             <td className="whitespace-nowrap px-3 py-2">{formatDateTime(k.firstLoginAt)}</td>
                             <td className="whitespace-nowrap px-3 py-2">{formatDateTime(k.lastLoginAt)}</td>
                             <td className="sticky right-0 bg-mist px-3 py-2 text-right">
@@ -1111,6 +1147,16 @@ export default function AdminPage() {
                                     <button onClick={() => revokeKey(k.id)} className="text-red-500 hover:underline">
                                       作废
                                     </button>
+                                    {autoAssigned ? (
+                                      <span className="text-ink/40">自动分配</span>
+                                    ) : (
+                                      <button
+                                        onClick={() => toggleKeyAssignment(k, !k.assigned)}
+                                        className="text-sky hover:underline"
+                                      >
+                                        {k.assigned ? '标未分配' : '标已分配'}
+                                      </button>
+                                    )}
                                   </>
                                 )}
                                 {dead && (

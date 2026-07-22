@@ -18,7 +18,7 @@ import {
 import { InjectRepository, TypeOrmModule } from '@nestjs/typeorm';
 import { JwtService } from '@nestjs/jwt';
 import { DataSource, LessThan, Repository } from 'typeorm';
-import { IsInt, IsOptional, IsString, Length, Matches, Max, Min } from 'class-validator';
+import { IsBoolean, IsInt, IsOptional, IsString, Length, Matches, Max, Min } from 'class-validator';
 import { Throttle } from '@nestjs/throttler';
 import * as crypto from 'crypto';
 import { AccessKey, AdminOperationLog, User, Wallet, WechatBindSession } from '../entities';
@@ -50,6 +50,11 @@ class UpdateKeyDto {
   @Min(1)
   @Max(3650)
   ttlDays!: number;
+}
+
+class UpdateKeyAssignmentDto {
+  @IsBoolean()
+  assigned!: boolean;
 }
 
 class ListKeysQuery {
@@ -504,6 +509,30 @@ export class AccessKeyService {
     return { ...k, expiresAt };
   }
 
+  async updateAssignment(tenantId: string, id: string, assigned: boolean, admin?: AuthUser): Promise<AccessKey> {
+    const k = await this.dataSource.transaction(async (manager) => {
+      let keyQuery = manager
+        .createQueryBuilder(AccessKey, 'k')
+        .where('k.tenantId = :tenantId', { tenantId })
+        .andWhere('k.id = :id', { id });
+      if (this.dataSource.options.type !== 'better-sqlite3') {
+        keyQuery = keyQuery.setLock('pessimistic_write');
+      }
+      const locked = await keyQuery.getOne();
+      if (!locked) throw new NotFoundException('卡密不存在');
+      await manager.update(AccessKey, locked.id, { assigned });
+      return locked;
+    });
+    if (admin) {
+      await this.logAdminOperation(admin, 'access_key_update_assignment', 'access_key', id, {
+        key: k.key.length <= 4 ? '****' : `****${k.key.slice(-4)}`,
+        assigned,
+        firstLoginAt: k.firstLoginAt,
+      });
+    }
+    return { ...k, assigned };
+  }
+
   // 清理:删除已过期 + 已作废的卡密("删除用过/失效的")。
   async cleanup(tenantId: string, admin?: AuthUser): Promise<{ deleted: number }> {
     const r1 = await this.keys.delete({ tenantId, expiresAt: LessThan(new Date()) });
@@ -551,6 +580,11 @@ export class AccessKeyAdminController {
   @Post(':id/revoke')
   revoke(@CurrentUser() admin: AuthUser, @Param('id') id: string) {
     return this.svc.revoke(admin.tenantId, id, admin);
+  }
+
+  @Post(':id/assignment')
+  updateAssignment(@CurrentUser() admin: AuthUser, @Param('id') id: string, @Body() dto: UpdateKeyAssignmentDto) {
+    return this.svc.updateAssignment(admin.tenantId, id, dto.assigned, admin);
   }
 
   @Delete(':id')
