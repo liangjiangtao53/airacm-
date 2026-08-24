@@ -125,14 +125,14 @@ mkdir -p deploy/nginx/certs
 if [ -d "`$BASE/current/deploy/nginx/certs" ]; then
   cp -a "`$BASE/current/deploy/nginx/certs/." deploy/nginx/certs/
 fi
-if [ -L "`$BASE/current/uploads" ]; then
-  ln -s "`$(readlink "`$BASE/current/uploads")" uploads
-elif [ -d "`$BASE/current/uploads" ]; then
-  ln -s "`$BASE/current/uploads" uploads
-else
-  mkdir -p uploads/app uploads/question-images
+# 原先继承 current/uploads 会把“持久”数据继续挂在某个旧发布目录下，清理旧版本时会连带删除上传文件。
+# 统一锚定到 BASE 下的真实目录；遇到历史符号链接时拒绝部署，先人工迁移数据。
+if [ -L "`$BASE/uploads" ]; then
+  echo "Persistent upload root must be a real directory, not a symlink: `$BASE/uploads" >&2
+  exit 1
 fi
-mkdir -p uploads/app uploads/question-images uploads/question-imports
+install -d -m 775 "`$BASE/uploads/app" "`$BASE/uploads/question-images" "`$BASE/uploads/question-imports" "`$BASE/uploads/customer-service"
+ln -s "`$BASE/uploads" uploads
 if [ -f frontend/public/downloads/app/airacm-android.apk ]; then
   mkdir -p uploads/app
   cp -f frontend/public/downloads/app/airacm-android.apk uploads/app/airacm-android.apk
