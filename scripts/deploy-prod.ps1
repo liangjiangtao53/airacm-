@@ -172,8 +172,23 @@ SELECT CONCAT_WS(' ',
   (SELECT COUNT(*) FROM exam_attempt e
     JOIN JSON_TABLE(e.questionIds, '`$[*]' COLUMNS(questionId VARCHAR(36) PATH '`$')) ids
     LEFT JOIN question q ON q.tenantId = e.tenantId AND q.id = ids.questionId
-    WHERE q.id IS NULL)
-);
+    LEFT JOIN JSON_TABLE(
+      CASE WHEN JSON_VALID(e.questionSnapshots) THEN e.questionSnapshots ELSE JSON_ARRAY() END,
+      '`$[*]' COLUMNS(snapshot JSON PATH '`$', snapshotId VARCHAR(36) PATH '`$.id')
+    ) snap ON snap.snapshotId = ids.questionId
+    WHERE q.id IS NULL
+      -- 整包替换会删除旧题；有完整快照的历史考试可安全复盘，只有缺题且缺快照才阻断部署。
+      -- MySQL 会错误改写这里原先的相关 NOT EXISTS，使 424 条完整快照被误报；改用显式横向连接。
+      AND (
+        snap.snapshotId IS NULL
+        OR JSON_CONTAINS_PATH(
+          snap.snapshot,
+          'all',
+          '`$.id', '`$.stem', '`$.options', '`$.answer', '`$.analysis', '`$.imageUrls', '`$.stemImageUrls'
+        ) <> 1
+        OR COALESCE(JSON_LENGTH(JSON_EXTRACT(snap.snapshot, '`$.options')), 0) = 0
+      ))
+  );
 SQL
   )
   read -r duplicate_openids malformed_openids source_conflicts duplicate_nicknames missing_questions <<< "`$preflight"

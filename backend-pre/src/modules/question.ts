@@ -23,7 +23,7 @@ import {
 import { FileInterceptor } from '@nestjs/platform-express';
 import { Throttle } from '@nestjs/throttler';
 import { InjectRepository, TypeOrmModule } from '@nestjs/typeorm';
-import { EntityManager, In, LessThan, Repository } from 'typeorm';
+import { EntityManager, In, IsNull, LessThan, Repository } from 'typeorm';
 import { IsArray, IsIn, IsInt, IsNotEmpty, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
 import { Type } from 'class-transformer';
 import type { Response } from 'express';
@@ -1102,7 +1102,8 @@ export class QuestionService {
     ).map((row) => row.id);
     const abandoned = await manager.update(
       ExamAttempt,
-      { tenantId: admin.tenantId, category: M1_CATEGORY, status: 'in_progress', activeKey: 'active' },
+      // 历史迁移前的进行中考试可能 activeKey=NULL；整包替换必须一并放弃，避免继续引用已删除的旧题。
+      { tenantId: admin.tenantId, category: M1_CATEGORY, status: 'in_progress', abandonedAt: IsNull() },
       { abandonedAt: new Date(), activeKey: null },
     );
     if (oldIds.length > 0) {

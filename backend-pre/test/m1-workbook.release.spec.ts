@@ -14,6 +14,7 @@ import { resolve } from 'path';
 import { Test, TestingModule } from '@nestjs/testing';
 import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { DataSource } from 'typeorm';
+import * as XLSX from 'xlsx';
 import { AppModule } from '../src/app.module';
 import { AuthUser } from '../src/common';
 import {
@@ -27,6 +28,7 @@ import {
   StudyQuestionProgress,
   WrongQuestion,
 } from '../src/entities';
+import { ExamService } from '../src/modules/exam';
 import { QuestionService } from '../src/modules/question';
 
 const workbookPath = resolve(__dirname, '../../docs/M1 20260803.xlsx');
@@ -34,6 +36,7 @@ describe('M1 20260803.xlsx release validation', () => {
   let app: INestApplication;
   let ds: DataSource;
   let service: QuestionService;
+  let exam: ExamService;
   const admin: AuthUser = { tenantId: 't1', userId: 'admin-m1-release', role: 'admin' };
   const learner: AuthUser = { tenantId: 't1', userId: 'learner-m1-release', role: 'user' };
 
@@ -45,11 +48,39 @@ describe('M1 20260803.xlsx release validation', () => {
     await app.init();
     ds = moduleRef.get(DataSource);
     service = moduleRef.get(QuestionService);
+    exam = moduleRef.get(ExamService);
   });
 
   afterAll(async () => {
     await app.close();
     await rm(resolve(process.cwd(), '.tmp-m1-release'), { recursive: true, force: true });
+  });
+
+  it('rejects missing, unsupported, oversized, corrupt, and structurally invalid workbooks', async () => {
+    await expect(service.previewM1Replacement(admin, undefined)).rejects.toThrow('请上传 M1 Excel 文件');
+    await expect(
+      service.previewM1Replacement(admin, { buffer: Buffer.from('xlsx'), originalname: 'M1.xls' }),
+    ).rejects.toThrow('仅支持 .xlsx 文件');
+    await expect(
+      service.previewM1Replacement(admin, {
+        buffer: Buffer.alloc(5 * 1024 * 1024 + 1),
+        originalname: 'M1.xlsx',
+      }),
+    ).rejects.toThrow('不能超过 5MB');
+    await expect(
+      service.previewM1Replacement(admin, { buffer: Buffer.from('not-a-zip'), originalname: 'M1.xlsx' }),
+    ).rejects.toThrow('压缩结构无效');
+
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(
+      workbook,
+      XLSX.utils.aoa_to_sheet([['题干', 'A', 'B', '答案'], ['错误样例', '甲', '乙', 'A']]),
+      '错误章节',
+    );
+    const wrongSheets = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
+    await expect(
+      service.previewM1Replacement(admin, { buffer: wrongSheets, originalname: 'M1.xlsx' }),
+    ).rejects.toThrow('工作表必须按顺序');
   });
 
   it('preflights all seven sheets and atomically replaces the managed M1 scope', async () => {
@@ -104,6 +135,12 @@ describe('M1 20260803.xlsx release validation', () => {
       draftVersion: 0, draftHash: '', currentQuestionIndex: 0, activeKey: 'active', abandonedAt: null,
       submittedAt: null, deletedAt: null,
     });
+    const legacyActive = await ds.getRepository(ExamAttempt).save({
+      tenantId: 't1', userId: 'legacy-active-user', courseId: null, category: 'M1 航空概论', questionIds: [old.id],
+      questionSnapshots: snapshots, answers: {}, total: 1, correct: 0, score: 0, status: 'in_progress',
+      draftVersion: 0, draftHash: '', currentQuestionIndex: 0, activeKey: null, abandonedAt: null,
+      submittedAt: null, deletedAt: null,
+    });
 
     const preview = await service.previewM1Replacement(admin, { buffer, originalname: 'M1 20260803.xlsx' });
     expect(preview.totalRows).toBe(1698);
@@ -127,10 +164,44 @@ describe('M1 20260803.xlsx release validation', () => {
     const abandoned = await ds.getRepository(ExamAttempt).findOneByOrFail({ id: active.id });
     expect(abandoned.activeKey).toBeNull();
     expect(abandoned.abandonedAt).toBeTruthy();
+    expect((await ds.getRepository(ExamAttempt).findOneByOrFail({ id: legacyActive.id })).abandonedAt).toBeTruthy();
     const imageFiles = await readdir(resolve(process.cwd(), '.tmp-m1-release/question-images', preview.batchId));
     expect(imageFiles.some((name) => name.startsWith('preview-'))).toBe(false);
     expect(existsSync(resolve(process.cwd(), '.tmp-m1-release/question-imports', preview.batchId, 'source.xlsx'))).toBe(false);
   }, 120_000);
+
+  it('filters questions by chapter, keeps independent chapter progress, and rejects stale-generation writes', async () => {
+    const firstChapter = await service.list(learner, {
+      usage: 'study', category: 'M1 航空概论', chapter: '第1章', page: 1, pageSize: 10,
+    } as any);
+    const secondChapter = await service.list(learner, {
+      usage: 'study', category: 'M1 航空概论', chapter: '第2章', page: 1, pageSize: 10,
+    } as any);
+    expect(firstChapter.total).toBe(331);
+    expect(secondChapter.total).toBe(287);
+    expect(firstChapter.items.every((question) => question.chapterName === '第1章')).toBe(true);
+    expect(secondChapter.items.every((question) => question.chapterName === '第2章')).toBe(true);
+
+    await exam.recordStudyProgress(learner, firstChapter.items[0].id);
+    await exam.recordStudyProgress(learner, secondChapter.items[0].id);
+    const chapters = await service.listChapters(learner, 'M1 航空概论');
+    expect(chapters.find((chapter) => chapter.name === '第1章')?.resumePosition).toBe(1);
+    expect(chapters.find((chapter) => chapter.name === '第2章')?.resumePosition).toBe(1);
+    expect(await ds.getRepository(StudyQuestionProgress).count({
+      where: { tenantId: learner.tenantId, userId: learner.userId, category: 'M1 航空概论' },
+    })).toBe(2);
+
+    const generationRepo = ds.getRepository(QuestionCategoryGeneration);
+    const generation = await generationRepo.findOneByOrFail({ tenantId: learner.tenantId, category: 'M1 航空概论' });
+    await generationRepo.update(generation.id, { generation: generation.generation + 1 });
+    try {
+      await expect(exam.recordStudyProgress(learner, firstChapter.items[0].id)).rejects.toThrow(
+        '题库已更新，请重新加载当前章节',
+      );
+    } finally {
+      await generationRepo.update(generation.id, { generation: generation.generation });
+    }
+  });
 
   it('rejects M1 through ordinary mutation endpoints', async () => {
     const buffer = await readFile(workbookPath);
@@ -161,6 +232,31 @@ describe('M1 20260803.xlsx release validation', () => {
     expect(existsSync(resolve(process.cwd(), '.tmp-m1-release/question-imports', first.batchId))).toBe(false);
   }, 120_000);
 
+  it('rejects a bad confirmation and a preview whose staged source was removed', async () => {
+    const buffer = await readFile(workbookPath);
+    const preview = await service.previewM1Replacement(admin, { buffer, originalname: 'M1 20260803.xlsx' });
+    await expect(service.publishM1Replacement(admin, preview.batchId, '错误确认语')).rejects.toThrow('发布确认语不匹配');
+
+    const batch = await ds.getRepository(QuestionImportBatch).findOneByOrFail({ id: preview.batchId });
+    expect(batch.stagedFilePath).toBeTruthy();
+    await rm(resolve(batch.stagedFilePath!), { force: true });
+    await expect(service.publishM1Replacement(admin, preview.batchId, preview.confirmPhrase)).rejects.toThrow(
+      '预检源文件已清理，请重新上传校验',
+    );
+  }, 120_000);
+
+  it('expires an overdue preview and cleans its staged artifacts', async () => {
+    const buffer = await readFile(workbookPath);
+    const preview = await service.previewM1Replacement(admin, { buffer, originalname: 'M1 20260803.xlsx' });
+    await ds.getRepository(QuestionImportBatch).update(preview.batchId, { expiresAt: new Date(Date.now() - 1_000) });
+
+    await expect(service.publishM1Replacement(admin, preview.batchId, preview.confirmPhrase)).rejects.toThrow(
+      '预检批次已过期，请重新上传校验',
+    );
+    expect(existsSync(resolve(process.cwd(), '.tmp-m1-release/question-imports', preview.batchId))).toBe(false);
+    expect((await ds.getRepository(QuestionImportBatch).findOneByOrFail({ id: preview.batchId })).status).toBe('expired');
+  }, 120_000);
+
   it('rejects a preview whose base generation is stale', async () => {
     const buffer = await readFile(workbookPath);
     const stale = await service.previewM1Replacement(admin, { buffer, originalname: 'M1 20260803.xlsx' });
@@ -168,15 +264,22 @@ describe('M1 20260803.xlsx release validation', () => {
       { tenantId: 't1', category: 'M1 航空概论' },
       { generation: 3 },
     );
-    await expect(service.publishM1Replacement(admin, stale.batchId, stale.confirmPhrase)).rejects.toThrow(
-      'M1 题库已更新，请重新预检后再发布',
-    );
+    try {
+      await expect(service.publishM1Replacement(admin, stale.batchId, stale.confirmPhrase)).rejects.toThrow(
+        'M1 题库已更新，请重新预检后再发布',
+      );
 
-    const generation = await ds.getRepository(QuestionCategoryGeneration).findOneByOrFail({
-      tenantId: 't1',
-      category: 'M1 航空概论',
-    });
-    expect(generation.generation).toBe(3);
-    expect(await ds.getRepository(Question).count({ where: { tenantId: 't1', category: 'M1 航空概论' } })).toBe(1698);
+      const generation = await ds.getRepository(QuestionCategoryGeneration).findOneByOrFail({
+        tenantId: 't1',
+        category: 'M1 航空概论',
+      });
+      expect(generation.generation).toBe(3);
+      expect(await ds.getRepository(Question).count({ where: { tenantId: 't1', category: 'M1 航空概论' } })).toBe(1698);
+    } finally {
+      await ds.getRepository(QuestionCategoryGeneration).update(
+        { tenantId: 't1', category: 'M1 航空概论' },
+        { generation: 2 },
+      );
+    }
   }, 120_000);
 });
