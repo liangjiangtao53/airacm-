@@ -25,6 +25,7 @@ export default function CategoryManager({
   category: string;
   onChanged: () => void;
 }) {
+  const managedReadOnly = category === 'M1 航空概论';
   const [keyword, setKeyword] = useState('');
   const [items, setItems] = useState<AdminQuestionItem[]>([]);
   const [total, setTotal] = useState(0);
@@ -167,16 +168,24 @@ export default function CategoryManager({
         >
           搜索
         </button>
-        <button
-          onClick={() => {
-            if (sel.size && window.confirm(`删除选中的 ${sel.size} 题?不可恢复。`)) delIds([...sel]);
-          }}
-          disabled={sel.size === 0}
-          className="rounded-lg border border-red-300 px-4 py-1.5 text-sm font-medium text-red-500 hover:bg-red-50 disabled:opacity-40"
-        >
-          删除选中({sel.size})
-        </button>
+        {!managedReadOnly && (
+          <button
+            onClick={() => {
+              if (sel.size && window.confirm(`删除选中的 ${sel.size} 题?不可恢复。`)) delIds([...sel]);
+            }}
+            disabled={sel.size === 0}
+            className="rounded-lg border border-red-300 px-4 py-1.5 text-sm font-medium text-red-500 hover:bg-red-50 disabled:opacity-40"
+          >
+            删除选中({sel.size})
+          </button>
+        )}
       </div>
+
+      {managedReadOnly && (
+        <p className="mb-3 rounded-lg border border-brand/25 bg-brand-tint px-3 py-2 text-sm text-brand-deep">
+          M1 为整包管理科目。这里仅供查看；发布、替换和纠错请回到“导入题库”使用 M1 校验发布流程。
+        </p>
+      )}
 
       {err && <p className="mb-2 rounded bg-red-50 px-3 py-1.5 text-sm text-red-600">{err}</p>}
 
@@ -263,10 +272,12 @@ export default function CategoryManager({
       )}
 
       <div className="mb-2 flex items-center justify-between text-xs text-ink/50">
-        <label className="flex items-center gap-1.5">
-          <input type="checkbox" checked={allOnPage} onChange={toggleAll} />
-          本页全选
-        </label>
+        {managedReadOnly ? <span>只读题目列表</span> : (
+          <label className="flex items-center gap-1.5">
+            <input type="checkbox" checked={allOnPage} onChange={toggleAll} />
+            本页全选
+          </label>
+        )}
         <span>共 {total} 题</span>
       </div>
 
@@ -278,12 +289,14 @@ export default function CategoryManager({
         <ul className="space-y-1">
           {items.map((q) => (
             <li key={q.id} className="flex items-start gap-2 rounded-lg bg-mist px-3 py-2 text-sm">
-              <input
-                type="checkbox"
-                checked={sel.has(q.id)}
-                onChange={() => toggle(q.id)}
-                className="mt-1"
-              />
+              {!managedReadOnly && (
+                <input
+                  type="checkbox"
+                  checked={sel.has(q.id)}
+                  onChange={() => toggle(q.id)}
+                  className="mt-1"
+                />
+              )}
               <span className="min-w-0 flex-1">
                 <span className="text-ink/80">{q.stem}</span>
                 <span className="ml-2 text-xs text-ink/40">
@@ -293,18 +306,22 @@ export default function CategoryManager({
                   {q.options.map((o) => `${o.key}.${o.text}`).join('  ')}
                 </span>
               </span>
-              <button
-                onClick={() => startEdit(q)}
-                className="shrink-0 text-xs font-medium text-sky hover:underline"
-              >
-                修改
-              </button>
-              <button
-                onClick={() => window.confirm('删除该题?') && delIds([q.id])}
-                className="shrink-0 text-xs text-red-500 hover:underline"
-              >
-                删除
-              </button>
+              {!managedReadOnly && (
+                <>
+                  <button
+                    onClick={() => startEdit(q)}
+                    className="shrink-0 text-xs font-medium text-sky hover:underline"
+                  >
+                    修改
+                  </button>
+                  <button
+                    onClick={() => window.confirm('删除该题?') && delIds([q.id])}
+                    className="shrink-0 text-xs text-red-500 hover:underline"
+                  >
+                    删除
+                  </button>
+                </>
+              )}
             </li>
           ))}
         </ul>

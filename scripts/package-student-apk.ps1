@@ -34,8 +34,12 @@ if ($BuildBoth) {
   return
 }
 
-if ($AllowScreenshots -and $ApkName -eq "airacm-android.apk") {
-  $ApkName = "airacm-android-screenshot.apk"
+if ($AllowScreenshots) {
+  # Screenshot builds are local-only QA artifacts and must never be copied to public.
+  $SkipPublicCopy = $true
+  if ($ApkName -eq "airacm-android.apk") {
+    $ApkName = "airacm-android-screenshot.apk"
+  }
 }
 
 $uniDir = Join-Path $repo "apps\student-uni"

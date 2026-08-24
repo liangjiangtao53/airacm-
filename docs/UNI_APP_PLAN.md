@@ -27,7 +27,7 @@
 ## 当前功能闭环
 
 1. 登录:支持手机号密码、卡密登录和资料补全。
-2. 学习:科目筛选、题干搜索、每页 10/20/30 条、上一页/下一页、输入页码后点击 `跳转`。
+2. 学习:M1 先选章节再学习,7 章分别保存续学位置;其他科目保留分页、搜索和跳转。题库发布切换 generation 后,客户端重新加载章节和有效题目。
 3. 题目图片:支持 WPS Excel 内嵌图片,导入后学习、考试、考试回顾、错题本均展示。
 4. 评论:学习页、考试复盘、错题本按题目展示评论;App 学习页和错题本也支持查看与发表。
 5. 考试:按科目组卷、交卷判分、错题自动进入错题本。
@@ -39,7 +39,7 @@
 | 文件类型 | 示例 | 导入科目 | 说明 |
 |---|---|---|---|
 | 普通 Excel | `3257题目.xlsx` | `M9 航空英语` | 表头驱动解析,不强依赖列顺序 |
-| WPS 带图 Excel | `R3M1(2025-VERSION)顺序练习151题 20260622.xlsx` | `M1 航空概论` | 解析 `DISPIMG` 图片并保存到题目图片目录 |
+| M1 整包 Excel | `docs/M1 20260803.xlsx` | `M1 航空概论` | 管理后台预检固定 7 个工作表、1698 题和 23 个图片单元格,输入确认语后原子发布;普通导入入口拒绝 M1 |
 | PDF | `民用航空器维修人员执照英语参考试题M9.pdf` | `M9 new` | 作为新 M9 版本导入,用于和旧 M9 对比 |
 
 ## 打包与测试流程
@@ -52,14 +52,18 @@
    ```powershell
    npm --prefix apps/student-uni run build:h5 -- --base ./
    ```
-3. Android APK 打包:
+3. 微信小程序构建与禁用内容扫描:
+   ```powershell
+   npm --prefix apps/student-uni run build:mp-weixin
+   ```
+4. Android APK 打包:
    ```powershell
    powershell -ExecutionPolicy Bypass -File scripts\package-student-apk.ps1
    ```
-4. 输出位置:
+5. 输出位置:
    - `D:\AndroidLab\apk\airacm-android.apk`
    - `frontend/public/downloads/app/airacm-android.apk`
-5. 模拟器安装验证:
+6. 模拟器安装验证:
    ```powershell
    D:\AndroidLab\android-sdk\platform-tools\adb.exe -s emulator-5554 install -r D:\AndroidLab\apk\airacm-android.apk
    D:\AndroidLab\android-sdk\platform-tools\adb.exe -s emulator-5554 shell am start -n com.airacm.student/.MainActivity

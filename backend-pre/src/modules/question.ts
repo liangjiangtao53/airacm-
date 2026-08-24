@@ -15,18 +15,22 @@ import {
   UseGuards,
   UseInterceptors,
   BadRequestException,
+  ConflictException,
   ForbiddenException,
+  GoneException,
   NotFoundException,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
+import { Throttle } from '@nestjs/throttler';
 import { InjectRepository, TypeOrmModule } from '@nestjs/typeorm';
-import { In, Repository } from 'typeorm';
+import { EntityManager, In, IsNull, LessThan, Repository } from 'typeorm';
 import { IsArray, IsIn, IsInt, IsNotEmpty, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
 import { Type } from 'class-transformer';
 import type { Response } from 'express';
+import type { Dirent } from 'fs';
 import { createHash, randomUUID } from 'crypto';
-import { mkdir, writeFile } from 'fs/promises';
-import { basename, extname, join } from 'path';
+import { mkdir, readFile, readdir, rm, writeFile } from 'fs/promises';
+import { basename, extname, join, relative, resolve, sep } from 'path';
 import * as XLSX from 'xlsx';
 import {
   AdminOperationLog,
@@ -34,6 +38,7 @@ import {
   ExamAttempt,
   Question,
   QuestionCategoryEntity,
+  QuestionCategoryGeneration,
   QuestionImportBatch,
   QuestionOption,
   QuestionPractice,
@@ -62,8 +67,26 @@ const PDF_IMPORT_HEADER = ['题干', '选项A', '选项B', '选项C', '选项D',
 const OPTION_LETTERS = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'] as const;
 const STEM_HEADERS = ['题干', '题目', '问题'];
 const ANSWER_HEADERS = ['参考答案', '答案', '正确答案'];
-const ANALYSIS_HEADERS = ['解析', '答案解析', '说明', '备注'];
+const ANALYSIS_HEADERS = ['解析', '原文解析', '答案解析', '说明', '备注'];
 const OBSOLETE_QUESTION_CATEGORIES = ['M9 new'];
+const M1_CATEGORY = 'M1 航空概论';
+const M1_CONFIRM_PHRASE = '发布M1 1698题';
+const M1_PREVIEW_TTL_MS = 2 * 60 * 60 * 1000;
+const M1_POLICY = {
+  category: M1_CATEGORY,
+  usage: 'both' as QuestionUsage,
+  chapters: [
+    { name: '第1章', count: 331 },
+    { name: '第2章', count: 287 },
+    { name: '第3章', count: 245 },
+    { name: '第4章', count: 400 },
+    { name: '第5章', count: 180 },
+    { name: '第6章', count: 150 },
+    { name: '第7章', count: 105 },
+  ],
+  total: 1698,
+  imageCells: 23,
+} as const;
 
 type PdfSection = 'stem' | 'option' | 'afterAnswer' | 'analysis';
 
@@ -102,6 +125,11 @@ class ListQuery {
   @IsString()
   @MaxLength(50)
   category?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  chapter?: string;
 
   @IsOptional()
   @IsString()
@@ -171,6 +199,11 @@ class DeleteConfirmQuery {
 
   @IsOptional()
   @IsString()
+  @MaxLength(100)
+  chapter?: string;
+
+  @IsOptional()
+  @IsString()
   confirm?: string;
 }
 
@@ -231,11 +264,59 @@ interface ExtractedImage {
   colIndex?: number;
 }
 
+class M1PublishDto {
+  @IsString()
+  confirm!: string;
+}
+
 interface ParsedImportFile {
   rows: unknown[][];
   rowImages: Map<number, ExtractedImage[]>;
   fileName: string;
   fileHash: string;
+}
+
+interface ParsedM1Chapter {
+  name: string;
+  order: number;
+  rows: unknown[][];
+  rowImages: Map<number, ExtractedImage[]>;
+  plan: { toSave: ImportPlanRow[]; failed: ImportFailure[]; colMap: ImportColumnMap };
+}
+
+interface ParsedM1Workbook {
+  fileName: string;
+  fileHash: string;
+  chapters: ParsedM1Chapter[];
+  totalRows: number;
+  imageCells: number;
+  duplicateStems: number;
+}
+
+interface M1ChapterPreview {
+  name: string;
+  order: number;
+  questionCount: number;
+  imageCells: number;
+  first: { stem: string; answer: string; options: QuestionOption[]; analysis: string; stemImageUrls: string[]; imageUrls: string[] };
+  last: { stem: string; answer: string; options: QuestionOption[]; analysis: string; stemImageUrls: string[]; imageUrls: string[] };
+  imageSamples: Array<{ questionOrder: number; stem: string; stemImageUrls: string[]; imageUrls: string[] }>;
+}
+
+interface M1PreviewData {
+  batchId: string;
+  category: typeof M1_CATEGORY;
+  fileName: string;
+  fileHash: string;
+  totalRows: number;
+  imageCells: number;
+  duplicateStems: number;
+  warnings: string[];
+  chapters: M1ChapterPreview[];
+  confirmPhrase: string;
+  expiresAt: string;
+  publishedGeneration?: number;
+  publishedAt?: string;
 }
 
 interface ImportPlanRow {
@@ -276,6 +357,8 @@ export class QuestionService {
     @InjectRepository(Question) private readonly questions: Repository<Question>,
     @InjectRepository(QuestionCategoryEntity)
     private readonly categories: Repository<QuestionCategoryEntity>,
+    @InjectRepository(QuestionCategoryGeneration)
+    private readonly generations: Repository<QuestionCategoryGeneration>,
     @InjectRepository(Comment) private readonly comments: Repository<Comment>,
     @InjectRepository(User) private readonly users: Repository<User>,
     @InjectRepository(ExamAttempt) private readonly attempts: Repository<ExamAttempt>,
@@ -337,6 +420,7 @@ export class QuestionService {
   }
 
   private questionListIndex(q: ListQuery): string {
+    if (q.category !== undefined && q.chapter !== undefined) return 'IDX_question_tenant_category_chapter_order';
     if (q.category !== undefined) return 'IDX_question_tenant_category_order';
     if (q.courseId) return 'IDX_question_tenant_course_order';
     return 'IDX_question_tenant_order';
@@ -344,6 +428,26 @@ export class QuestionService {
 
   private normalizeCategoryName(name: string): string {
     return name.trim();
+  }
+
+  private assertOrdinaryMutationAllowed(category: string | undefined, action: string): void {
+    if (category?.trim() === M1_CATEGORY) {
+      throw new ConflictException(`M1 为整包管理科目，${action}请使用“校验并准备发布”流程`);
+    }
+  }
+
+  private async currentGeneration(tenantId: string, category: string): Promise<number> {
+    const row = await this.generations.findOne({ where: { tenantId, category }, select: ['generation'] });
+    return row?.generation ?? 1;
+  }
+
+  private async ensureGenerationRow(tenantId: string, category: string): Promise<void> {
+    if (await this.generations.exist({ where: { tenantId, category } })) return;
+    try {
+      await this.generations.save(this.generations.create({ tenantId, category, generation: 1 }));
+    } catch (error) {
+      if (!(await this.generations.exist({ where: { tenantId, category } }))) throw error;
+    }
   }
 
   private async ensureDefaultCategories(tenantId: string): Promise<void> {
@@ -357,10 +461,141 @@ export class QuestionService {
     );
   }
 
+  private async ensureManagedM1Category(tenantId: string): Promise<void> {
+    await this.ensureDefaultCategories(tenantId);
+    if (await this.categories.exist({ where: { tenantId, name: M1_CATEGORY } })) return;
+    const order = await this.categories.count({ where: { tenantId } });
+    try {
+      await this.categories.save(this.categories.create({ tenantId, name: M1_CATEGORY, order }));
+    } catch (error) {
+      if (!(await this.categories.exist({ where: { tenantId, name: M1_CATEGORY } }))) throw error;
+    }
+  }
+
+  private async cleanupExpiredM1Batches(tenantId: string): Promise<void> {
+    const [rows, expired, published] = await Promise.all([
+      this.importBatches.find({
+        where: { tenantId, category: M1_CATEGORY, status: 'previewed', expiresAt: LessThan(new Date()) },
+        order: { expiresAt: 'ASC' },
+        take: 50,
+      }),
+      this.importBatches.find({
+        where: { tenantId, category: M1_CATEGORY, status: 'expired' },
+        order: { expiresAt: 'DESC' },
+        take: 50,
+      }),
+      this.importBatches.find({
+        where: { tenantId, category: M1_CATEGORY, status: 'published' },
+        order: { publishedAt: 'DESC' },
+        take: 50,
+      }),
+    ]);
+    for (const row of rows) {
+      if (await this.expireM1Batch(row.id, tenantId)) await this.cleanupM1BatchArtifacts(row.id, false);
+    }
+    for (const row of expired) await this.cleanupM1BatchArtifacts(row.id, false);
+    // 发布内容图片仍可能被历史考试快照引用，保留 content-*；这里只重试清理源文件和 preview-*。
+    for (const row of published) await this.cleanupM1BatchArtifacts(row.id, true);
+  }
+
+  private async expireM1Batch(batchId: string, tenantId: string): Promise<boolean> {
+    return this.questions.manager.transaction(async (manager) => {
+      const supportsLocks = !['better-sqlite3', 'sqlite'].includes(String(manager.connection.options.type));
+      const batch = await manager.findOne(QuestionImportBatch, {
+        where: { id: batchId, tenantId, category: M1_CATEGORY },
+        ...(supportsLocks ? { lock: { mode: 'pessimistic_write' as const } } : {}),
+      });
+      if (batch?.status !== 'previewed' || !batch.expiresAt || batch.expiresAt.getTime() > Date.now()) return false;
+      batch.status = 'expired';
+      await manager.save(QuestionImportBatch, batch);
+      return true;
+    });
+  }
+
+  private async activateM1PreviewBatch(tenantId: string, batch: QuestionImportBatch): Promise<string[]> {
+    return this.questions.manager.transaction(async (manager) => {
+      const supportsLocks = !['better-sqlite3', 'sqlite'].includes(String(manager.connection.options.type));
+      await manager.findOne(QuestionCategoryGeneration, {
+        where: { tenantId, category: M1_CATEGORY },
+        ...(supportsLocks ? { lock: { mode: 'pessimistic_write' as const } } : {}),
+      });
+      const rows = await manager.find(QuestionImportBatch, {
+        where: { tenantId, category: M1_CATEGORY, status: 'previewed' },
+        select: ['id'],
+      });
+      const ids = rows.map((row) => row.id);
+      // 新批次在 generation 锁内插入，再淘汰旧批次；并发预检严格按获得锁的顺序只留下最后一个。
+      await manager.save(QuestionImportBatch, batch);
+      if (ids.length > 0) await manager.update(QuestionImportBatch, { id: In(ids) }, { status: 'expired' });
+      return ids;
+    });
+  }
+
+  private async cleanupM1BatchArtifacts(batchId: string, keepPublishedContent: boolean): Promise<void> {
+    if (!/^[0-9a-f-]{36}$/i.test(batchId)) return;
+    try {
+      await rm(join(resolve(env.questionImportDir), batchId), { recursive: true, force: true });
+      const imageDir = join(resolve(env.questionImageDir), batchId);
+      if (!keepPublishedContent) {
+        await rm(imageDir, { recursive: true, force: true });
+        return;
+      }
+      const files = await readdir(imageDir, { withFileTypes: true }).catch((): Dirent[] => []);
+      await Promise.all(
+        files
+          .filter((entry) => entry.isFile() && entry.name.startsWith('preview-'))
+          .map((entry) => rm(join(imageDir, entry.name), { force: true })),
+      );
+    } catch {
+      // 文件清理失败不回滚已提交的题库；下次预检会继续回收过期批次。
+    }
+  }
+
   async listCategoryNames(tenantId: string): Promise<string[]> {
     await this.ensureDefaultCategories(tenantId);
     const rows = await this.categories.find({ where: { tenantId }, order: { order: 'ASC', name: 'ASC' } });
     return rows.map((r) => r.name).filter((name) => !OBSOLETE_QUESTION_CATEGORIES.includes(name));
+  }
+
+  async listChapters(
+    user: AuthUser,
+    category: string,
+  ): Promise<Array<{ name: string; order: number; questionCount: number; resumeQuestionId: string | null; resumePosition: number; lastStudiedAt: Date | null }>> {
+    if (!category.trim()) throw new BadRequestException('category required');
+    const generation = await this.currentGeneration(user.tenantId, category);
+    const [questions, progressRows] = await Promise.all([
+      this.questions.find({
+        where: { tenantId: user.tenantId, category, generation },
+        select: ['id', 'chapterName', 'chapterOrder', 'chapterQuestionOrder'],
+        order: { chapterOrder: 'ASC', chapterQuestionOrder: 'ASC', order: 'ASC' },
+      }),
+      this.studyProgress.find({
+        where: { tenantId: user.tenantId, userId: user.userId, category },
+        select: ['chapterName', 'questionId', 'lastStudiedAt'],
+      }),
+    ]);
+    const progress = new Map(progressRows.map((row) => [row.chapterName, row]));
+    const grouped = new Map<string, { name: string; order: number; ids: string[] }>();
+    for (const question of questions) {
+      if (!question.chapterName) continue;
+      const row = grouped.get(question.chapterName) ?? { name: question.chapterName, order: question.chapterOrder, ids: [] };
+      row.ids.push(question.id);
+      grouped.set(question.chapterName, row);
+    }
+    return [...grouped.values()]
+      .sort((a, b) => a.order - b.order || a.name.localeCompare(b.name))
+      .map((chapter) => {
+        const saved = progress.get(chapter.name);
+        const index = saved ? chapter.ids.indexOf(saved.questionId) : -1;
+        return {
+          name: chapter.name,
+          order: chapter.order,
+          questionCount: chapter.ids.length,
+          resumeQuestionId: index >= 0 ? saved!.questionId : null,
+          resumePosition: index >= 0 ? index + 1 : 0,
+          lastStudiedAt: index >= 0 ? saved!.lastStudiedAt : null,
+        };
+      });
   }
 
   async listManagedCategories(
@@ -387,7 +622,7 @@ export class QuestionService {
   async createCategory(user: AuthUser, rawName: string): Promise<{ id: string; name: string; count: number }> {
     const name = this.normalizeCategoryName(rawName);
     if (!name) throw new BadRequestException('类别名称不能为空');
-    if (name === '(未分类)') throw new BadRequestException('该名称为系统保留名称');
+    if (name === '(未分类)' || name === M1_CATEGORY) throw new BadRequestException('该名称为系统保留名称');
     if (OBSOLETE_QUESTION_CATEGORIES.includes(name)) throw new BadRequestException('该类别已停用');
     await this.ensureDefaultCategories(user.tenantId);
     const dup = await this.categories.findOne({ where: { tenantId: user.tenantId, name } });
@@ -405,10 +640,11 @@ export class QuestionService {
   ): Promise<{ id: string; name: string; count: number }> {
     const name = this.normalizeCategoryName(rawName);
     if (!name) throw new BadRequestException('类别名称不能为空');
-    if (name === '(未分类)') throw new BadRequestException('该名称为系统保留名称');
+    if (name === '(未分类)' || name === M1_CATEGORY) throw new BadRequestException('该名称为系统保留名称');
     if (OBSOLETE_QUESTION_CATEGORIES.includes(name)) throw new BadRequestException('该类别已停用');
     const row = await this.categories.findOne({ where: { tenantId: user.tenantId, id } });
     if (!row) throw new NotFoundException('类别不存在');
+    if (row.name === M1_CATEGORY) throw new ConflictException('M1 为整包管理科目，不能改名');
     if (row.name === name) return { id: row.id, name: row.name, count: 0 };
     const count = await this.questions.count({ where: { tenantId: user.tenantId, category: row.name } });
     if (count > 0) throw new BadRequestException('该类别下还有题目，请先删除题目后再修改类别');
@@ -425,6 +661,7 @@ export class QuestionService {
   async deleteCategory(user: AuthUser, id: string): Promise<{ deleted: number }> {
     const row = await this.categories.findOne({ where: { tenantId: user.tenantId, id } });
     if (!row) throw new NotFoundException('类别不存在');
+    if (row.name === M1_CATEGORY) throw new ConflictException('M1 为整包管理科目，不能删除');
     const count = await this.questions.count({ where: { tenantId: user.tenantId, category: row.name } });
     if (count > 0) throw new BadRequestException('该类别下还有题目，请先删除题目后再删除类别');
     const r = await this.categories.delete({ tenantId: user.tenantId, id });
@@ -465,6 +702,7 @@ export class QuestionService {
     courseId: string | undefined,
   ): Promise<{ imported: number; failed: ImportFailure[]; batchId: string }> {
     if (!file?.buffer?.length) throw new BadRequestException('请上传题库文件');
+    this.assertOrdinaryMutationAllowed(category, '发布');
     await this.assertCategoryExists(admin.tenantId, category);
     const parsedFile = await this.parseImportFile(file);
     return this.importParsedRows(admin, parsedFile, usage, category, courseId);
@@ -484,6 +722,7 @@ export class QuestionService {
     duplicateInFile: number;
     duplicateInDatabase: number;
   }> {
+    this.assertOrdinaryMutationAllowed(category, '预览');
     await this.assertCategoryExists(admin.tenantId, category);
     const parsedFile = await this.parseImportFile(file);
     const plan = this.buildImportPlan(parsedFile.rows, parsedFile.rowImages);
@@ -495,6 +734,440 @@ export class QuestionService {
       duplicateInFile: this.countDuplicateStems(stems),
       duplicateInDatabase: await this.countExistingStems(admin.tenantId, category ?? '', stems),
     };
+  }
+
+  async previewM1Replacement(
+    admin: AuthUser,
+    file: UploadedQuestionFile | undefined,
+  ): Promise<M1PreviewData> {
+    if (!file?.buffer?.length) throw new BadRequestException('请上传 M1 Excel 文件');
+    if (!file.originalname.toLowerCase().endsWith('.xlsx')) {
+      throw new BadRequestException('M1 整包发布仅支持 .xlsx 文件');
+    }
+    if (file.buffer.length > 5 * 1024 * 1024) throw new BadRequestException('M1 Excel 不能超过 5MB');
+    await this.ensureManagedM1Category(admin.tenantId);
+    await this.cleanupExpiredM1Batches(admin.tenantId);
+    // 原先预检批次未记录当时的题库代际，旧预检可能覆盖后来已发布的新题库。
+    // 预检时固定代际，发布事务内再核对，确保预检结果只对当时的题库状态有效。
+    await this.ensureGenerationRow(admin.tenantId, M1_CATEGORY);
+    const generationAtPreview = await this.currentGeneration(admin.tenantId, M1_CATEGORY);
+    const parsed = this.parseM1Workbook(file);
+    const batchId = randomUUID();
+    const batchDir = join(env.questionImportDir, batchId);
+    let batchPersisted = false;
+    try {
+    await mkdir(batchDir, { recursive: true });
+    const stagedFilePath = join(batchDir, 'source.xlsx');
+    await writeFile(stagedFilePath, file.buffer);
+
+    const chapters: M1ChapterPreview[] = [];
+    for (const chapter of parsed.chapters) {
+      const firstRow = chapter.plan.toSave[0];
+      const lastRow = chapter.plan.toSave[chapter.plan.toSave.length - 1];
+      const buildSample = async (row: ImportPlanRow) => {
+        const buckets = this.splitRowImagesByUsage(chapter.rowImages.get(row.rowIndex) ?? [], chapter.plan.colMap);
+        return {
+          stem: row.parsed.stem,
+          answer: row.parsed.answer,
+          options: row.parsed.options,
+          analysis: row.parsed.analysis,
+          stemImageUrls: await this.saveQuestionImages(buckets.stem, batchId, 'preview'),
+          imageUrls: await this.saveQuestionImages(buckets.analysis, batchId, 'preview'),
+        };
+      };
+      chapters.push({
+        name: chapter.name,
+        order: chapter.order,
+        questionCount: chapter.plan.toSave.length,
+        imageCells: [...chapter.rowImages.values()].reduce((sum, images) => sum + images.length, 0),
+        first: await buildSample(firstRow),
+        last: await buildSample(lastRow),
+        imageSamples: await Promise.all(
+          chapter.plan.toSave
+            .filter((row) => (chapter.rowImages.get(row.rowIndex) ?? []).length > 0)
+            .slice(0, 4)
+            .map(async (row) => {
+              const buckets = this.splitRowImagesByUsage(chapter.rowImages.get(row.rowIndex) ?? [], chapter.plan.colMap);
+              return {
+                questionOrder: chapter.plan.toSave.indexOf(row) + 1,
+                stem: row.parsed.stem,
+                stemImageUrls: await this.saveQuestionImages(buckets.stem, batchId, 'preview'),
+                imageUrls: await this.saveQuestionImages(buckets.analysis, batchId, 'preview'),
+              };
+            }),
+        ),
+      });
+    }
+
+    const expiresAt = new Date(Date.now() + M1_PREVIEW_TTL_MS);
+    const warnings = parsed.duplicateStems > 0 ? [`检测到 ${parsed.duplicateStems} 个重复题干，按已确认规则全部保留`] : [];
+    const preview: M1PreviewData = {
+      batchId,
+      category: M1_CATEGORY,
+      fileName: basename(file.originalname),
+      fileHash: parsed.fileHash,
+      totalRows: parsed.totalRows,
+      imageCells: parsed.imageCells,
+      duplicateStems: parsed.duplicateStems,
+      warnings,
+      chapters,
+      confirmPhrase: M1_CONFIRM_PHRASE,
+      expiresAt: expiresAt.toISOString(),
+    };
+    const batch = this.importBatches.create({
+        id: batchId,
+        tenantId: admin.tenantId,
+        importedBy: admin.userId,
+        fileName: preview.fileName,
+        fileHash: preview.fileHash,
+        usage: M1_POLICY.usage,
+        category: M1_CATEGORY,
+        courseId: null,
+        totalRows: preview.totalRows,
+        imported: 0,
+        failed: 0,
+        failures: null,
+        status: 'previewed',
+        previewData: preview as unknown as Record<string, unknown>,
+        stagedFilePath,
+        expiresAt,
+        publishedAt: null,
+        generation: generationAtPreview,
+      });
+    let superseded: string[];
+    try {
+      superseded = await this.activateM1PreviewBatch(admin.tenantId, batch);
+      batchPersisted = true;
+    } catch (error) {
+      await this.cleanupM1BatchArtifacts(batchId, false);
+      throw error;
+    }
+    await Promise.all(superseded.map((id) => this.cleanupM1BatchArtifacts(id, false)));
+    await this.logAdminOperation(admin, 'question_m1_preflight', 'question_import_batch', batchId, {
+      fileName: preview.fileName,
+      fileHash: preview.fileHash,
+      totalRows: preview.totalRows,
+      imageCells: preview.imageCells,
+      duplicateStems: preview.duplicateStems,
+      chapterCounts: Object.fromEntries(preview.chapters.map((chapter) => [chapter.name, chapter.questionCount])),
+      expiresAt: preview.expiresAt,
+    });
+    return preview;
+    } catch (error) {
+      if (!batchPersisted) await this.cleanupM1BatchArtifacts(batchId, false);
+      throw error;
+    }
+  }
+
+  async publishM1Replacement(
+    admin: AuthUser,
+    batchId: string,
+    confirm: string,
+  ): Promise<{ batchId: string; category: string; imported: number; generation: number; publishedAt: string; idempotent: boolean }> {
+    if (confirm !== M1_CONFIRM_PHRASE) throw new BadRequestException('发布确认语不匹配');
+    const initial = await this.importBatches.findOne({ where: { id: batchId, tenantId: admin.tenantId, category: M1_CATEGORY } });
+    if (!initial) throw new NotFoundException('预检批次不存在');
+    if (initial.status === 'published' && initial.generation && initial.publishedAt) {
+      await this.cleanupM1BatchArtifacts(batchId, true);
+      return {
+        batchId,
+        category: M1_CATEGORY,
+        imported: initial.imported,
+        generation: initial.generation,
+        publishedAt: initial.publishedAt.toISOString(),
+        idempotent: true,
+      };
+    }
+    if (initial.status !== 'previewed') throw new ConflictException('该预检批次当前不可发布');
+    if (!initial.expiresAt || initial.expiresAt.getTime() <= Date.now()) {
+      // 原先直接 save 事务外读到的旧实体，可能把并发已发布批次覆盖回 expired。
+      if (await this.expireM1Batch(batchId, admin.tenantId)) {
+        await this.cleanupM1BatchArtifacts(batchId, false);
+        throw new GoneException('预检批次已过期，请重新上传校验');
+      }
+      const latest = await this.importBatches.findOne({ where: { id: batchId, tenantId: admin.tenantId } });
+      if (latest?.status === 'published' && latest.generation && latest.publishedAt) {
+        return {
+          batchId,
+          category: M1_CATEGORY,
+          imported: latest.imported,
+          generation: latest.generation,
+          publishedAt: latest.publishedAt.toISOString(),
+          idempotent: true,
+        };
+      }
+      throw new ConflictException('预检批次状态已变化，请刷新');
+    }
+    const stagedPath = resolve(initial.stagedFilePath ?? '');
+    const importRoot = resolve(env.questionImportDir);
+    if (!stagedPath.startsWith(`${importRoot}${sep}`)) throw new BadRequestException('预检文件路径非法');
+    let source: Buffer;
+    try {
+      source = await readFile(stagedPath);
+    } catch {
+      throw new GoneException('预检源文件已清理，请重新上传校验');
+    }
+    if (createHash('sha1').update(source).digest('hex') !== initial.fileHash) {
+      throw new ConflictException('预检源文件校验失败，请重新上传');
+    }
+    const parsed = this.parseM1Workbook({ buffer: source, originalname: initial.fileName });
+    const prepared = await this.prepareM1Questions(admin.tenantId, parsed, batchId);
+    await this.ensureGenerationRow(admin.tenantId, M1_CATEGORY);
+
+    let result:
+      | { batchId: string; category: string; imported: number; generation: number; publishedAt: string; idempotent: boolean }
+      | undefined;
+    for (let attemptNo = 0; attemptNo < 2; attemptNo += 1) {
+      try {
+        result = await this.questions.manager.transaction(async (manager) =>
+          this.publishM1Transaction(manager, admin, batchId, prepared),
+        );
+        break;
+      } catch (error) {
+        if (attemptNo === 0 && this.isDeadlock(error)) continue;
+        if (error instanceof GoneException && (await this.expireM1Batch(batchId, admin.tenantId))) {
+          await this.cleanupM1BatchArtifacts(batchId, false);
+        }
+        throw error;
+      }
+    }
+    if (!result) throw new ConflictException('M1 发布未完成，请重试');
+    await this.cleanupM1BatchArtifacts(batchId, true);
+    await this.refreshQuestionCaches(admin.tenantId);
+    return result;
+  }
+
+  private parseM1Workbook(file: UploadedQuestionFile): ParsedM1Workbook {
+    this.assertSafeXlsxArchive(file.buffer);
+    let wb: XLSX.WorkBook;
+    try {
+      wb = XLSX.read(file.buffer, { type: 'buffer', bookFiles: true, cellFormula: true, cellNF: true, cellText: true });
+    } catch {
+      throw new BadRequestException('M1 Excel 解析失败');
+    }
+    const visibleNames = wb.SheetNames.filter((_, index) => (wb.Workbook?.Sheets?.[index]?.Hidden ?? 0) === 0);
+    const expectedNames = M1_POLICY.chapters.map((chapter) => chapter.name);
+    if (visibleNames.length !== expectedNames.length || visibleNames.some((name, index) => name !== expectedNames[index])) {
+      throw new BadRequestException(`M1 工作表必须按顺序为：${expectedNames.join('、')}`);
+    }
+
+    const chapters: ParsedM1Chapter[] = [];
+    const allStems: string[] = [];
+    let totalRows = 0;
+    let imageCells = 0;
+    for (let order = 0; order < visibleNames.length; order += 1) {
+      const name = visibleNames[order];
+      const sheet = wb.Sheets[name];
+      const rows = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, blankrows: false, raw: false, defval: '' });
+      if (rows.length < 2) throw new BadRequestException(`${name} 没有题目数据`);
+      const rowImages = this.extractWpsCellImages(wb, sheet);
+      const plan = this.buildImportPlan(rows, rowImages);
+      const expected = M1_POLICY.chapters[order];
+      if (plan.failed.length > 0) {
+        const first = plan.failed[0];
+        throw new BadRequestException(`${name} 第 ${first.row} 行：${first.reason}`);
+      }
+      if (plan.toSave.length !== expected.count) {
+        throw new BadRequestException(`${name} 题量应为 ${expected.count}，实际为 ${plan.toSave.length}`);
+      }
+      totalRows += plan.toSave.length;
+      imageCells += [...rowImages.values()].reduce((sum, images) => sum + images.length, 0);
+      allStems.push(...plan.toSave.map((row) => row.parsed.stem));
+      chapters.push({ name, order, rows, rowImages, plan });
+    }
+    if (totalRows !== M1_POLICY.total) throw new BadRequestException(`M1 总题量应为 ${M1_POLICY.total}，实际为 ${totalRows}`);
+    if (imageCells !== M1_POLICY.imageCells) {
+      throw new BadRequestException(`M1 图片单元格应为 ${M1_POLICY.imageCells}，实际识别 ${imageCells}`);
+    }
+    return {
+      fileName: basename(file.originalname),
+      fileHash: createHash('sha1').update(file.buffer).digest('hex'),
+      chapters,
+      totalRows,
+      imageCells,
+      duplicateStems: this.countDuplicateStems(allStems),
+    };
+  }
+
+  private assertSafeXlsxArchive(buffer: Buffer): void {
+    const eocdSignature = 0x06054b50;
+    const centralSignature = 0x02014b50;
+    const minOffset = Math.max(0, buffer.length - 65_557);
+    let eocd = -1;
+    for (let offset = buffer.length - 22; offset >= minOffset; offset -= 1) {
+      if (buffer.readUInt32LE(offset) === eocdSignature) {
+        eocd = offset;
+        break;
+      }
+    }
+    if (eocd < 0) throw new BadRequestException('M1 Excel 压缩结构无效');
+    const entries = buffer.readUInt16LE(eocd + 10);
+    const centralSize = buffer.readUInt32LE(eocd + 12);
+    const centralOffset = buffer.readUInt32LE(eocd + 16);
+    if (entries === 0xffff || centralSize === 0xffffffff || centralOffset === 0xffffffff) {
+      throw new BadRequestException('M1 Excel 不支持 ZIP64 格式');
+    }
+    if (entries > 500 || centralOffset + centralSize > buffer.length) {
+      throw new BadRequestException('M1 Excel 压缩内容过大');
+    }
+    let cursor = centralOffset;
+    let totalUncompressed = 0;
+    for (let index = 0; index < entries; index += 1) {
+      if (cursor + 46 > buffer.length || buffer.readUInt32LE(cursor) !== centralSignature) {
+        throw new BadRequestException('M1 Excel 压缩目录无效');
+      }
+      const uncompressed = buffer.readUInt32LE(cursor + 24);
+      const nameLength = buffer.readUInt16LE(cursor + 28);
+      const extraLength = buffer.readUInt16LE(cursor + 30);
+      const commentLength = buffer.readUInt16LE(cursor + 32);
+      if (uncompressed === 0xffffffff || uncompressed > 10 * 1024 * 1024) {
+        throw new BadRequestException('M1 Excel 单项内容过大');
+      }
+      totalUncompressed += uncompressed;
+      if (totalUncompressed > 25 * 1024 * 1024) throw new BadRequestException('M1 Excel 解压后不能超过 25MB');
+      cursor += 46 + nameLength + extraLength + commentLength;
+    }
+    if (cursor > centralOffset + centralSize) throw new BadRequestException('M1 Excel 压缩目录越界');
+  }
+
+  private async prepareM1Questions(tenantId: string, parsed: ParsedM1Workbook, batchId: string): Promise<Question[]> {
+    const rows: Question[] = [];
+    let globalOrder = 0;
+    for (const chapter of parsed.chapters) {
+      for (let index = 0; index < chapter.plan.toSave.length; index += 1) {
+        const row = chapter.plan.toSave[index];
+        const buckets = this.splitRowImagesByUsage(chapter.rowImages.get(row.rowIndex) ?? [], chapter.plan.colMap);
+        globalOrder += 1;
+        rows.push(
+          this.questions.create({
+            tenantId,
+            category: M1_CATEGORY,
+            generation: 0,
+            chapterName: chapter.name,
+            chapterOrder: chapter.order,
+            chapterQuestionOrder: index + 1,
+            courseId: null,
+            type: row.parsed.answer.length > 1 ? 'multiple' : 'single',
+            stem: row.parsed.stem,
+            stemImageUrls: await this.saveQuestionImages(buckets.stem, batchId),
+            options: row.parsed.options,
+            answer: row.parsed.answer,
+            analysis: row.parsed.analysis,
+            imageUrls: await this.saveQuestionImages(buckets.analysis, batchId),
+            usage: M1_POLICY.usage,
+            order: globalOrder,
+            importBatchId: batchId,
+          }),
+        );
+      }
+    }
+    return rows;
+  }
+
+  private async publishM1Transaction(
+    manager: EntityManager,
+    admin: AuthUser,
+    batchId: string,
+    prepared: Question[],
+  ): Promise<{ batchId: string; category: string; imported: number; generation: number; publishedAt: string; idempotent: boolean }> {
+    const supportsLocks = !['better-sqlite3', 'sqlite'].includes(String(manager.connection.options.type));
+    const generation = await manager.findOne(QuestionCategoryGeneration, {
+      where: { tenantId: admin.tenantId, category: M1_CATEGORY },
+      ...(supportsLocks ? { lock: { mode: 'pessimistic_write' as const } } : {}),
+    });
+    if (!generation) throw new ConflictException('M1 发布代际未初始化，请重试');
+    const batch = await manager.findOne(QuestionImportBatch, {
+      where: { id: batchId, tenantId: admin.tenantId, category: M1_CATEGORY },
+      ...(supportsLocks ? { lock: { mode: 'pessimistic_write' as const } } : {}),
+    });
+    if (!batch) throw new NotFoundException('预检批次不存在');
+    if (batch.status === 'published' && batch.generation && batch.publishedAt) {
+      return {
+        batchId,
+        category: M1_CATEGORY,
+        imported: batch.imported,
+        generation: batch.generation,
+        publishedAt: batch.publishedAt.toISOString(),
+        idempotent: true,
+      };
+    }
+    if (batch.status !== 'previewed') throw new ConflictException('预检批次状态已变化，请刷新');
+    if (!batch.expiresAt || batch.expiresAt.getTime() <= Date.now()) throw new GoneException('预检批次已过期，请重新上传校验');
+    if (batch.generation !== generation.generation) {
+      throw new ConflictException('M1 题库已更新，请重新预检后再发布');
+    }
+
+    const oldIds = (
+      await manager.find(Question, { where: { tenantId: admin.tenantId, category: M1_CATEGORY }, select: ['id'] })
+    ).map((row) => row.id);
+    const abandoned = await manager.update(
+      ExamAttempt,
+      // 历史迁移前的进行中考试可能 activeKey=NULL；整包替换必须一并放弃，避免继续引用已删除的旧题。
+      { tenantId: admin.tenantId, category: M1_CATEGORY, status: 'in_progress', abandonedAt: IsNull() },
+      { abandonedAt: new Date(), activeKey: null },
+    );
+    if (oldIds.length > 0) {
+      await manager.delete(Comment, { tenantId: admin.tenantId, questionId: In(oldIds) });
+      await manager.delete(QuestionPractice, { tenantId: admin.tenantId, questionId: In(oldIds) });
+      await manager.delete(WrongQuestion, { tenantId: admin.tenantId, questionId: In(oldIds) });
+    }
+    await manager.delete(StudyQuestionProgress, { tenantId: admin.tenantId, category: M1_CATEGORY });
+    await manager.delete(Question, { tenantId: admin.tenantId, category: M1_CATEGORY });
+
+    const nextGeneration = generation.generation + 1;
+    prepared.forEach((question) => {
+      question.generation = nextGeneration;
+    });
+    await manager.save(Question, prepared, { chunk: 250 });
+    generation.generation = nextGeneration;
+    await manager.save(QuestionCategoryGeneration, generation);
+    const publishedAt = new Date();
+    batch.status = 'published';
+    batch.imported = prepared.length;
+    batch.failed = 0;
+    batch.generation = nextGeneration;
+    batch.publishedAt = publishedAt;
+    batch.previewData = {
+      ...(batch.previewData ?? {}),
+      publishedGeneration: nextGeneration,
+      publishedAt: publishedAt.toISOString(),
+    };
+    await manager.save(QuestionImportBatch, batch);
+    await manager.save(
+      AdminOperationLog,
+      this.operationLogs.create({
+        tenantId: admin.tenantId,
+        adminId: admin.userId,
+        action: 'question_m1_publish',
+        targetType: 'question_import_batch',
+        targetId: batchId,
+        detail: {
+          oldQuestions: oldIds.length,
+          imported: prepared.length,
+          abandonedAttempts: abandoned.affected ?? 0,
+          generation: nextGeneration,
+          chapterCounts: Object.fromEntries(M1_POLICY.chapters.map((chapter) => [chapter.name, chapter.count])),
+        },
+      }),
+    );
+    return {
+      batchId,
+      category: M1_CATEGORY,
+      imported: prepared.length,
+      generation: nextGeneration,
+      publishedAt: publishedAt.toISOString(),
+      idempotent: false,
+    };
+  }
+
+  private isDeadlock(error: unknown): boolean {
+    const value = error as { code?: string; errno?: number; driverError?: { code?: string; errno?: number } };
+    return (
+      value.code === 'ER_LOCK_DEADLOCK' ||
+      value.errno === 1213 ||
+      value.driverError?.code === 'ER_LOCK_DEADLOCK' ||
+      value.driverError?.errno === 1213
+    );
   }
 
   private async parseImportFile(file: UploadedQuestionFile | undefined): Promise<ParsedImportFile> {
@@ -847,16 +1520,18 @@ export class QuestionService {
     return value.replace(/=?\s*DISP(?:IMG|MIG)\("([^"]+)"(?:\s*,\s*\d+)?\)/gi, '').trim();
   }
 
-  private async saveQuestionImages(images: ExtractedImage[]): Promise<string[]> {
+  private async saveQuestionImages(images: ExtractedImage[], batchId?: string, namespace = 'content'): Promise<string[]> {
     if (!images.length) return [];
-    await mkdir(env.questionImageDir, { recursive: true });
+    const targetDir = batchId ? join(env.questionImageDir, batchId) : env.questionImageDir;
+    await mkdir(targetDir, { recursive: true });
     const urls: string[] = [];
     for (const image of images) {
-      const hash = createHash('sha1').update(image.buffer).digest('hex').slice(0, 16);
+      const hash = createHash('sha256').update(image.buffer).digest('hex');
       const safeExt = ['.png', '.jpg', '.jpeg', '.gif', '.webp'].includes(image.ext) ? image.ext : '.png';
-      const filename = `${Date.now()}-${hash}${safeExt}`;
-      await writeFile(join(env.questionImageDir, filename), image.buffer);
-      urls.push(`/question-images/${filename}`);
+      // 批次图片使用内容确定性命名，并发发布同一批次只会覆盖同一文件，不制造孤儿副本。
+      const filename = batchId ? `${namespace}-${hash}${safeExt}` : `${namespace}-${randomUUID()}-${hash.slice(0, 16)}${safeExt}`;
+      await writeFile(join(targetDir, filename), image.buffer);
+      urls.push(batchId ? `/question-images/${batchId}/${filename}` : `/question-images/${filename}`);
     }
     return urls;
   }
@@ -869,7 +1544,7 @@ export class QuestionService {
       const h = norm(cell);
       if (!h) return;
       // 选项列:「选项A」或单字母「A」。
-      const m = h.match(/^选项([A-H])$/) ?? h.match(/^([A-H])$/);
+      const m = h.match(/^选项([A-H])$/) ?? h.match(/^([A-H])选项$/) ?? h.match(/^([A-H])$/);
       if (m && OPTION_LETTERS.includes(m[1] as (typeof OPTION_LETTERS)[number])) {
         map.options.push({ key: m[1], idx });
         return;
@@ -928,6 +1603,7 @@ export class QuestionService {
   }> {
     const page = q.page ?? 1;
     const pageSize = q.pageSize ?? 20;
+    if (q.chapter !== undefined && !q.category) throw new BadRequestException('chapter requires category');
     {
       const baseQb = this.questions.createQueryBuilder('q').where('q.tenantId = :tenantId', {
         tenantId: user.tenantId,
@@ -938,6 +1614,12 @@ export class QuestionService {
         baseQb.andWhere('q.usage IN (:...usages)', { usages });
       }
       if (q.category) baseQb.andWhere('q.category = :category', { category: q.category });
+      if (q.category) {
+        baseQb.andWhere('q.generation = :generation', {
+          generation: await this.currentGeneration(user.tenantId, q.category),
+        });
+      }
+      if (q.chapter !== undefined) baseQb.andWhere('q.chapterName = :chapter', { chapter: q.chapter });
       if (q.courseId) baseQb.andWhere('q.courseId = :courseId', { courseId: q.courseId });
       if (q.keyword?.trim()) baseQb.andWhere('q.stem LIKE :keyword', { keyword: `%${q.keyword.trim()}%` });
 
@@ -945,6 +1627,10 @@ export class QuestionService {
         'q.id',
         'q.tenantId',
         'q.category',
+        'q.generation',
+        'q.chapterName',
+        'q.chapterOrder',
+        'q.chapterQuestionOrder',
         'q.courseId',
         'q.type',
         'q.stem',
@@ -959,6 +1645,7 @@ export class QuestionService {
         const allRows = await this.questionPool.getQuestions(user.tenantId, {
           usage: 'study',
           category: q.category,
+          ...(q.chapter !== undefined ? { chapter: q.chapter } : {}),
           ...(q.courseId ? { courseId: q.courseId } : {}),
           reloadIfEmpty: true,
         });
@@ -967,6 +1654,7 @@ export class QuestionService {
           allRows,
           q.category,
           q.courseId ?? '',
+          q.chapter ?? '',
           pageSize,
           q.page,
         );
@@ -987,6 +1675,7 @@ export class QuestionService {
         user.tenantId,
         q.usage ?? '',
         q.category ?? '',
+        q.chapter ?? '',
         q.courseId ?? '',
         q.keyword?.trim() ?? '',
       ].join('|');
@@ -996,7 +1685,9 @@ export class QuestionService {
         .clone()
         // 列表页不下发 answer/analysis,也不从数据库读取这两个大字段,降低 App 高并发刷题列表压力。
         .select(publicSelect)
-        .orderBy('q.order', 'ASC')
+        .orderBy('q.chapterOrder', 'ASC')
+        .addOrderBy('q.chapterQuestionOrder', 'ASC')
+        .addOrderBy('q.order', 'ASC')
         .skip((page - 1) * pageSize)
         .take(pageSize);
       const dbType = this.questions.manager.connection.options.type;
@@ -1081,13 +1772,14 @@ export class QuestionService {
     allRows: T[],
     category: string,
     courseId: string,
+    chapterName: string,
     pageSize: number,
     requestedPage?: number,
   ): Promise<{ rows: T[]; page: number; startIndex: number }> {
     if (allRows.length === 0) return { rows: [], page: 1, startIndex: 0 };
     const questionIndex = new Map(allRows.map((q, i) => [q.id, i]));
     const progress = await this.studyProgress.findOne({
-      where: { tenantId: user.tenantId, userId: user.userId, category, courseId },
+      where: { tenantId: user.tenantId, userId: user.userId, category, courseId, chapterName },
       select: ['questionId'],
     });
     const lastIndex = progress ? questionIndex.get(progress.questionId) : undefined;
@@ -1146,14 +1838,25 @@ export class QuestionService {
       contentType: 'question_comment',
       clientPlatform,
     });
-    const c = await this.comments.save(
-      this.comments.create({
-        tenantId: user.tenantId,
-        questionId,
-        userId: user.userId,
-        content: trimmed,
-      }),
-    );
+    await this.ensureGenerationRow(user.tenantId, q.category);
+    const c = await this.questions.manager.transaction(async (manager) => {
+      const supportsLocks = !['better-sqlite3', 'sqlite'].includes(String(manager.connection.options.type));
+      await manager.findOne(QuestionCategoryGeneration, {
+        where: { tenantId: user.tenantId, category: q.category },
+        ...(supportsLocks ? { lock: { mode: 'pessimistic_read' as const } } : {}),
+      });
+      const current = await manager.findOne(Question, { where: { tenantId: user.tenantId, id: questionId } });
+      if (!current) throw new ConflictException('题库已更新，请刷新后再评论');
+      return manager.save(
+        Comment,
+        this.comments.create({
+          tenantId: user.tenantId,
+          questionId,
+          userId: user.userId,
+          content: trimmed,
+        }),
+      );
+    });
     const nick = await this.resolveNicknames(user.tenantId, [user.userId]);
     return {
       id: c.id,
@@ -1215,6 +1918,7 @@ export class QuestionService {
   }
 
   async purgeByCategory(user: AuthUser, category: string, confirm?: string): Promise<{ deleted: number }> {
+    this.assertOrdinaryMutationAllowed(category, '清空');
     const requiredConfirm = category || '__EMPTY__';
     if (confirm !== requiredConfirm) throw new BadRequestException('delete confirmation mismatch');
     const ids = (
@@ -1233,6 +1937,9 @@ export class QuestionService {
 
   // 删除单题(连带评论)。
   async deleteOne(user: AuthUser, id: string): Promise<{ deleted: number }> {
+    const question = await this.questions.findOne({ where: { tenantId: user.tenantId, id }, select: ['category'] });
+    if (!question) return { deleted: 0 };
+    this.assertOrdinaryMutationAllowed(question.category, '删除单题');
     await this.comments.delete({ tenantId: user.tenantId, questionId: id });
     const r = await this.questions.delete({ tenantId: user.tenantId, id });
     if ((r.affected ?? 0) > 0) await this.refreshQuestionCaches(user.tenantId);
@@ -1246,6 +1953,8 @@ export class QuestionService {
   async updateOne(user: AuthUser, id: string, dto: UpdateQuestionDto): Promise<Question> {
     const q = await this.questions.findOne({ where: { tenantId: user.tenantId, id } });
     if (!q) throw new NotFoundException('题目不存在');
+    this.assertOrdinaryMutationAllowed(q.category, '编辑单题');
+    this.assertOrdinaryMutationAllowed(dto.category, '移动题目');
 
     const patch: Partial<Question> = {};
     if (dto.category !== undefined) {
@@ -1346,6 +2055,8 @@ export class QuestionService {
   // 批量删题(连带评论)。
   async deleteMany(user: AuthUser, ids: string[]): Promise<{ deleted: number }> {
     if (!ids.length) return { deleted: 0 };
+    const managedCount = await this.questions.count({ where: { tenantId: user.tenantId, id: In(ids), category: M1_CATEGORY } });
+    if (managedCount > 0) this.assertOrdinaryMutationAllowed(M1_CATEGORY, '批量删除');
     await this.comments.delete({ tenantId: user.tenantId, questionId: In(ids) });
     const r = await this.questions.delete({ tenantId: user.tenantId, id: In(ids) });
     if ((r.affected ?? 0) > 0) await this.refreshQuestionCaches(user.tenantId);
@@ -1374,6 +2085,22 @@ export class QuestionService {
 @Controller('admin/questions')
 export class QuestionAdminController {
   constructor(private readonly svc: QuestionService) {}
+
+  @Post('m1/preflight')
+  @Throttle({ default: { ttl: 60_000, limit: 3 } })
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 5 * 1024 * 1024 } }))
+  previewM1(@CurrentUser() admin: AuthUser, @UploadedFile() file: UploadedQuestionFile) {
+    return this.svc.previewM1Replacement(admin, file);
+  }
+
+  @Post('m1/:batchId/publish')
+  publishM1(
+    @CurrentUser() admin: AuthUser,
+    @Param('batchId') batchId: string,
+    @Body() dto: M1PublishDto,
+  ) {
+    return this.svc.publishM1Replacement(admin, batchId, dto.confirm);
+  }
 
   @Post('import')
   // 题库文件可能包含大量图片,与 nginx 的导入上传上限保持一致。
@@ -1481,6 +2208,12 @@ export class QuestionController {
     return this.svc.listCategoryNames(user.tenantId);
   }
 
+  @Get('chapters')
+  chapters(@CurrentUser() user: AuthUser, @Query('category') category?: string) {
+    if (category === undefined) throw new BadRequestException('category required');
+    return this.svc.listChapters(user, category);
+  }
+
   @Get()
   list(@CurrentUser() user: AuthUser, @Query() q: ListQuery) {
     return this.svc.list(user, q);
@@ -1514,14 +2247,32 @@ export class QuestionController {
 
 @Controller('question-images')
 export class QuestionImageController {
+  @Get(':batchId/:file')
+  batchImage(@Param('batchId') batchId: string, @Param('file') file: string, @Res() res: Response): void {
+    if (!/^[0-9a-f-]{36}$/i.test(batchId)) throw new BadRequestException('图片批次非法');
+    const safeName = basename(file);
+    if (safeName !== file || !/^[a-zA-Z0-9._-]+\.(png|jpe?g|gif|webp)$/i.test(safeName)) {
+      throw new BadRequestException('图片路径非法');
+    }
+    const root = resolve(env.questionImageDir);
+    const target = resolve(root, batchId, safeName);
+    const rel = relative(root, target);
+    if (!rel || rel.startsWith('..') || rel.includes(`..${sep}`)) throw new BadRequestException('图片路径非法');
+    this.sendImage(target, res);
+  }
+
   @Get(':file')
   image(@Param('file') file: string, @Res() res: Response): void {
     const safeName = basename(file);
     if (safeName !== file || !/^[a-zA-Z0-9._-]+\.(png|jpe?g|gif|webp)$/i.test(safeName)) {
       throw new BadRequestException('图片路径非法');
     }
+    this.sendImage(join(env.questionImageDir, safeName), res);
+  }
+
+  private sendImage(path: string, res: Response): void {
     res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
-    res.sendFile(join(env.questionImageDir, safeName), (err) => {
+    res.sendFile(path, (err) => {
       if (err && !res.headersSent) res.status(404).send('Not found');
     });
   }
@@ -1532,6 +2283,7 @@ export class QuestionImageController {
     TypeOrmModule.forFeature([
       Question,
       QuestionCategoryEntity,
+      QuestionCategoryGeneration,
       Comment,
       User,
       ExamAttempt,

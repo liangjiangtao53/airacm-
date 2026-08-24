@@ -1,9 +1,10 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   api,
+  assetUrl,
   getToken,
   type AccessKeyItem,
   type AdminOperationLogItem,
@@ -13,6 +14,8 @@ import {
   type ForumTopic,
   type ImportPreview,
   type ImportResult,
+  type M1ReplacementPreview,
+  type M1ReplacementResult,
   type ManagedQuestionCategory,
   type QuestionUsage,
   type UserActivityLogItem,
@@ -53,6 +56,7 @@ const operationActionOptions = [
   { value: 'app_apk_upload', label: '上传 App' },
   { value: 'access_key_generate', label: '生成卡密' },
   { value: 'access_key_update_ttl', label: '改有效期' },
+  { value: 'access_key_update_assignment', label: '标记卡密分配' },
   { value: 'access_key_revoke', label: '作废卡密' },
   { value: 'access_key_cleanup', label: '清理卡密' },
   { value: 'access_key_delete', label: '删除卡密' },
@@ -134,6 +138,15 @@ export default function AdminPage() {
   const [importCategory, setImportCategory] = useState('');
   const [importResult, setImportResult] = useState<ImportResult | null>(null);
   const [importPreview, setImportPreview] = useState<ImportPreview | null>(null);
+  const [m1Preview, setM1Preview] = useState<M1ReplacementPreview | null>(null);
+  const [m1Result, setM1Result] = useState<M1ReplacementResult | null>(null);
+  const [m1Confirm, setM1Confirm] = useState('');
+  const [m1Publishing, setM1Publishing] = useState(false);
+  const [importPreviewing, setImportPreviewing] = useState(false);
+  const importPreviewRequest = useRef(0);
+  const previewDialogRef = useRef<HTMLDialogElement>(null);
+  const [previewImage, setPreviewImage] = useState<{ url: string; alt: string } | null>(null);
+  const [clock, setClock] = useState(Date.now());
   const [categories, setCategories] = useState<string[]>([]);
   const [managedCategories, setManagedCategories] = useState<ManagedQuestionCategory[]>([]);
   const [newCategory, setNewCategory] = useState('');
@@ -158,6 +171,7 @@ export default function AdminPage() {
   const [keyStatus, setKeyStatus] = useState('');
   const [genCount, setGenCount] = useState('20');
   const [genTtl, setGenTtl] = useState('30');
+  const [copiedKeyId, setCopiedKeyId] = useState('');
   const [maintMsg, setMaintMsg] = useState('');
 
   // 用户管理
@@ -194,6 +208,25 @@ export default function AdminPage() {
   const [passwordErr, setPasswordErr] = useState('');
 
   const isSuper = meRole === 'super';
+  const isM1Import = importCategory === 'M1 航空概论';
+  const m1SecondsLeft = m1Preview
+    ? Math.max(0, Math.floor((new Date(m1Preview.expiresAt).getTime() - clock) / 1000))
+    : 0;
+
+  useEffect(() => {
+    if (!m1Preview) return;
+    const timer = window.setInterval(() => setClock(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [m1Preview]);
+
+  useEffect(() => {
+    if (!previewImage) return;
+    const dialog = previewDialogRef.current;
+    if (dialog && !dialog.open) dialog.showModal();
+    return () => {
+      if (dialog?.open) dialog.close();
+    };
+  }, [previewImage]);
 
   useEffect(() => {
     api
@@ -317,6 +350,7 @@ export default function AdminPage() {
 
   const doImport = wrap(async () => {
     if (!importFile) throw new Error('请先选择 Excel 或 PDF 文件');
+    if (isM1Import) throw new Error('M1 必须先校验，再使用精确确认发布');
     setImportResult(null);
     setImportPreview(null);
     const r = await api.importQuestions(
@@ -331,8 +365,43 @@ export default function AdminPage() {
 
   const previewImport = wrap(async () => {
     if (!importFile) throw new Error('请先选择 Excel 或 PDF 文件');
+    const requestId = ++importPreviewRequest.current;
+    const selectedFile = importFile;
+    const selectedCategory = importCategory;
+    const selectedUsage = importUsage;
+    setImportPreviewing(true);
     setImportResult(null);
-    setImportPreview(await api.previewImportQuestions(importFile, importUsage, importCategory || undefined));
+    setM1Result(null);
+    setM1Preview(null);
+    setM1Confirm('');
+    try {
+      if (isM1Import) {
+        setImportPreview(null);
+        const result = await api.previewM1Replacement(selectedFile);
+        if (requestId !== importPreviewRequest.current) return;
+        setM1Preview(result);
+        setClock(Date.now());
+        return;
+      }
+      const result = await api.previewImportQuestions(selectedFile, selectedUsage, selectedCategory || undefined);
+      if (requestId === importPreviewRequest.current) setImportPreview(result);
+    } finally {
+      if (requestId === importPreviewRequest.current) setImportPreviewing(false);
+    }
+  });
+
+  const publishM1 = wrap(async () => {
+    if (!m1Preview) throw new Error('请先校验 M1 文件');
+    if (m1SecondsLeft <= 0) throw new Error('预检已过期，请重新上传校验');
+    setM1Publishing(true);
+    try {
+      const result = await api.publishM1Replacement(m1Preview.batchId, m1Confirm);
+      setM1Result(result);
+      await refreshStats();
+      await refreshCategories();
+    } finally {
+      setM1Publishing(false);
+    }
   });
 
   const addQuestionCategory = wrap(async () => {
@@ -364,16 +433,21 @@ export default function AdminPage() {
 
   function inferImportCategory(file: File): string {
     const name = file.name.toLowerCase();
-    if (name.includes('r3m1')) return 'M1 航空概论';
+    if (name.includes('r3m1') || /(^|[^a-z0-9])m1([^a-z0-9]|$)/.test(name)) return 'M1 航空概论';
     if (name.includes('3257')) return 'M9 航空英语';
     if (name.includes('民用航空器维修人员执照英语参考试题m9')) return 'M9 航空英语';
     return '';
   }
 
   function chooseImportFile(file: File | null) {
+    importPreviewRequest.current += 1;
+    setImportPreviewing(false);
     setImportFile(file);
     setImportPreview(null);
     setImportResult(null);
+    setM1Preview(null);
+    setM1Result(null);
+    setM1Confirm('');
     if (!file) return;
     const inferred = inferImportCategory(file);
     if (inferred) setImportCategory(inferred);
@@ -458,6 +532,22 @@ export default function AdminPage() {
     wrap(async () => {
       await api.revokeKey(id);
       await refreshKeys();
+    })();
+
+  const copyAccessKey = (key: AccessKeyRow) =>
+    wrap(async () => {
+      if (!navigator.clipboard) throw new Error('当前浏览器不支持剪贴板复制');
+      await navigator.clipboard.writeText(key.key);
+      setCopiedKeyId(key.id);
+      setMaintMsg(`已复制卡密 ${key.key}`);
+      window.setTimeout(() => setCopiedKeyId((id) => (id === key.id ? '' : id)), 1500);
+    })();
+
+  const toggleKeyAssignment = (key: AccessKeyRow, assigned: boolean) =>
+    wrap(async () => {
+      const updated = await api.updateKeyAssignment(key.id, assigned);
+      setKeys((list) => list.map((item) => (item.id === key.id ? updated : item)));
+      setMaintMsg(`卡密 ${updated.key} 已标记为${assigned ? '已分配' : '未分配'}`);
     })();
 
   const deleteKey = (key: AccessKeyRow) =>
@@ -855,7 +945,17 @@ export default function AdminPage() {
                 <select
                   className={input + ' w-44'}
                   value={importCategory}
-                  onChange={(e) => setImportCategory(e.target.value)}
+                  disabled={importPreviewing || m1Publishing}
+                  onChange={(e) => {
+                    importPreviewRequest.current += 1;
+                    setImportPreviewing(false);
+                    setImportCategory(e.target.value);
+                    setImportPreview(null);
+                    setImportResult(null);
+                    setM1Preview(null);
+                    setM1Result(null);
+                    setM1Confirm('');
+                  }}
                 >
                   <option value="">未分类</option>
                   {categories.map((c) => (
@@ -870,7 +970,13 @@ export default function AdminPage() {
                 <select
                   className={input + ' w-36'}
                   value={importUsage}
-                  onChange={(e) => setImportUsage(e.target.value as QuestionUsage)}
+                  disabled={isM1Import || importPreviewing || m1Publishing}
+                  onChange={(e) => {
+                    importPreviewRequest.current += 1;
+                    setImportPreviewing(false);
+                    setImportUsage(e.target.value as QuestionUsage);
+                    setImportPreview(null);
+                  }}
                 >
                   <option value="both">考试+学习</option>
                   <option value="exam">仅考试</option>
@@ -879,17 +985,16 @@ export default function AdminPage() {
             </div>
             <input
               type="file"
-              accept=".xlsx,.xls,.pdf"
+              accept={isM1Import ? '.xlsx' : '.xlsx,.xls,.pdf'}
+              disabled={importPreviewing || m1Publishing}
               onChange={(e) => chooseImportFile(e.target.files?.[0] ?? null)}
               className="block w-full text-sm text-ink/70 file:mr-3 file:rounded-lg file:border-0 file:bg-steel file:px-4 file:py-2 file:text-white"
             />
             <div className="flex items-center gap-3">
-              <button className={btn} onClick={previewImport}>
-                预览
+              <button className={btn} onClick={previewImport} disabled={importPreviewing || m1Publishing || !importFile}>
+                {importPreviewing ? '正在校验…' : isM1Import ? '校验并准备发布' : '预览'}
               </button>
-              <button className={btn} onClick={doImport}>
-                导入
-              </button>
+              {!isM1Import && <button className={btn} onClick={doImport} disabled={importPreviewing || !importFile}>导入</button>}
               <button onClick={downloadTemplate} className="text-sm text-sky hover:underline">
                 下载导入模板
               </button>
@@ -909,6 +1014,113 @@ export default function AdminPage() {
                     ))}
                   </ul>
                 )}
+              </div>
+            )}
+            {m1Preview && (
+              <div className="space-y-4 rounded-lg border border-design-border bg-white p-4 text-base text-ink">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <h3 className="font-semibold">M1 整包发布预检</h3>
+                    <p className="mt-1 text-sm text-ink/65">{m1Preview.fileName} · {m1Preview.totalRows} 题 · {m1Preview.imageCells} 个图片单元格</p>
+                  </div>
+                  <p className={m1SecondsLeft > 0 ? 'text-sm text-ink/65' : 'text-sm font-semibold text-red-700'}>
+                    {m1SecondsLeft > 0 ? `有效期剩余 ${Math.floor(m1SecondsLeft / 60)}:${String(m1SecondsLeft % 60).padStart(2, '0')}` : '预检已过期'}
+                  </p>
+                </div>
+                {m1Preview.warnings.map((warning) => (
+                  <p key={warning} className="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800">{warning}</p>
+                ))}
+                <div className="overflow-x-auto">
+                  <table className="w-full min-w-[620px] border-collapse text-left text-sm">
+                    <thead>
+                      <tr className="border-b border-design-border text-ink/65">
+                        <th className="px-2 py-2">章节</th>
+                        <th className="px-2 py-2">题量</th>
+                        <th className="px-2 py-2">图片</th>
+                        <th className="px-2 py-2">内容抽检</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {m1Preview.chapters.map((chapter) => (
+                        <tr key={chapter.name} className="border-b border-design-border align-top">
+                          <td className="px-2 py-3 font-medium">{chapter.name}</td>
+                          <td className="px-2 py-3">{chapter.questionCount}</td>
+                          <td className="px-2 py-3">{chapter.imageCells}</td>
+                          <td className="px-2 py-3">
+                            <details>
+                              <summary className="min-h-11 cursor-pointer font-medium text-brand-deep">查看首尾题样本</summary>
+                              <div className="space-y-3 pt-2">
+                                {([['首题', chapter.first], ['末题', chapter.last]] as const).map(([label, sample]) => (
+                                  <section key={label} className="rounded-lg border border-design-border p-3">
+                                    <h4 className="font-semibold">{label} · 答案 {sample.answer}</h4>
+                                    <p className="mt-1 whitespace-pre-wrap">{sample.stem || '（图片题干）'}</p>
+                                    <p className="mt-1 text-ink/65">{sample.options.map((option) => `${option.key}. ${option.text}`).join('；')}</p>
+                                    {sample.analysis && <p className="mt-1 text-ink/65">解析：{sample.analysis}</p>}
+                                    <div className="mt-2 flex flex-wrap gap-2">
+                                      {[...sample.stemImageUrls, ...sample.imageUrls].map((url, imageIndex) => (
+                                        <button
+                                          key={url}
+                                          type="button"
+                                          onClick={() => setPreviewImage({ url, alt: `${chapter.name}${label}图片 ${imageIndex + 1}` })}
+                                          className="min-h-11 rounded-lg border border-brand px-3 text-brand-deep"
+                                        >
+                                          查看图片 {imageIndex + 1}
+                                        </button>
+                                      ))}
+                                    </div>
+                                  </section>
+                                ))}
+                                {chapter.imageSamples.map((sample) => (
+                                  <section key={`image-${sample.questionOrder}`} className="rounded-lg border border-design-border p-3">
+                                    <h4 className="font-semibold">图片抽检 · 第 {sample.questionOrder} 题</h4>
+                                    <p className="mt-1 line-clamp-2 text-ink/65">{sample.stem || '（图片题干）'}</p>
+                                    <div className="mt-2 flex flex-wrap gap-2">
+                                      {[...sample.stemImageUrls, ...sample.imageUrls].map((url, imageIndex) => (
+                                        <button
+                                          key={url}
+                                          type="button"
+                                          onClick={() => setPreviewImage({ url, alt: `${chapter.name}第 ${sample.questionOrder} 题图片 ${imageIndex + 1}` })}
+                                          className="min-h-11 rounded-lg border border-brand px-3 text-brand-deep"
+                                        >
+                                          查看图片 {imageIndex + 1}
+                                        </button>
+                                      ))}
+                                    </div>
+                                  </section>
+                                ))}
+                              </div>
+                            </details>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="rounded-lg border border-amber-300 bg-amber-50 p-4">
+                  <label className="block font-medium text-ink">
+                    输入 <span className="select-all font-semibold">{m1Preview.confirmPhrase}</span> 确认替换旧 M1
+                    <input
+                      value={m1Confirm}
+                      onChange={(event) => setM1Confirm(event.target.value)}
+                      className="mt-2 min-h-11 w-full rounded-lg border border-amber-400 bg-white px-3 outline-none focus:ring-2 focus:ring-brand/25"
+                      autoComplete="off"
+                    />
+                  </label>
+                  <p className="mt-2 text-sm text-ink/65">发布会保留已交卷历史，放弃旧进行中考试，并清除旧 M1 学习进度、练习、错题和评论。</p>
+                  <button
+                    type="button"
+                    onClick={publishM1}
+                    disabled={m1Publishing || m1SecondsLeft <= 0 || m1Confirm !== m1Preview.confirmPhrase || Boolean(m1Result)}
+                    className="mt-3 min-h-11 rounded-lg bg-brand px-5 font-semibold text-white hover:bg-brand-deep disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {m1Publishing ? '正在发布…' : m1Result ? '已发布' : '确认发布 M1'}
+                  </button>
+                </div>
+              </div>
+            )}
+            {m1Result && (
+              <div className="rounded-lg border border-brand/30 bg-brand-tint p-4 text-base text-brand-deep" role="status">
+                发布成功：{m1Result.imported} 题，代际 {m1Result.generation}，批次 {m1Result.batchId}
               </div>
             )}
             {importResult && (
@@ -962,17 +1174,23 @@ export default function AdminPage() {
                         {c.name} · {c.count} 题
                       </span>
                       <span className="flex items-center gap-3">
-                        <button onClick={() => renameQuestionCategory(c)} className="text-xs font-medium text-sky hover:underline">
-                          改名
-                        </button>
-                        <button
-                          onClick={() => deleteQuestionCategory(c)}
-                          className="text-xs text-red-500 hover:underline disabled:text-ink/30 disabled:no-underline"
-                          disabled={c.count > 0}
-                          title={c.count > 0 ? '该类别下还有题目，请先删除题目' : undefined}
-                        >
-                          删除
-                        </button>
+                        {c.name === 'M1 航空概论' ? (
+                          <span className="rounded-full bg-brand-tint px-2 py-1 text-xs text-brand-deep">整包管理</span>
+                        ) : (
+                          <button onClick={() => renameQuestionCategory(c)} className="text-xs font-medium text-sky hover:underline">
+                            改名
+                          </button>
+                        )}
+                        {c.name !== 'M1 航空概论' && (
+                          <button
+                            onClick={() => deleteQuestionCategory(c)}
+                            className="text-xs text-red-500 hover:underline disabled:text-ink/30 disabled:no-underline"
+                            disabled={c.count > 0}
+                            title={c.count > 0 ? '该类别下还有题目，请先删除题目' : undefined}
+                          >
+                            删除
+                          </button>
+                        )}
                       </span>
                     </li>
                   ))}
@@ -993,6 +1211,7 @@ export default function AdminPage() {
                         <div className="flex items-center justify-between px-3 py-2 text-sm">
                           <span className="text-ink/75">
                             {s.category} · {s.count} 题
+                            {s.category === 'M1 航空概论' && <span className="ml-2 rounded-full bg-brand-tint px-2 py-1 text-xs text-brand-deep">整包管理</span>}
                           </span>
                           <span className="flex items-center gap-3">
                             <a
@@ -1003,12 +1222,14 @@ export default function AdminPage() {
                             >
                               打开
                             </a>
-                            <button
-                              onClick={() => purgeCategory(realCat)}
-                              className="text-xs text-red-500 hover:underline"
-                            >
-                              删除该科目
-                            </button>
+                            {s.category !== 'M1 航空概论' && (
+                              <button
+                                onClick={() => purgeCategory(realCat)}
+                                className="text-xs text-red-500 hover:underline"
+                              >
+                                删除该科目
+                              </button>
+                            )}
                           </span>
                         </div>
                       </li>
@@ -1074,6 +1295,7 @@ export default function AdminPage() {
                         <th className="px-3 py-2 font-medium">有效期</th>
                         <th className="px-3 py-2 font-medium">已使用天数</th>
                         <th className="px-3 py-2 font-medium">剩余天数</th>
+                        <th className="px-3 py-2 font-medium">分配状态</th>
                         <th className="px-3 py-2 font-medium">首次登录</th>
                         <th className="px-3 py-2 font-medium">最近登录</th>
                         <th className="sticky right-0 bg-mist px-3 py-2 text-right font-medium">操作</th>
@@ -1090,15 +1312,32 @@ export default function AdminPage() {
                         const validDays = usedDays + remainingDays;
                         const expired = expiresMs < now;
                         const dead = k.status === 'revoked' || expired;
+                        const autoAssigned = Boolean(k.firstLoginAt);
+                        const assigned = k.assigned || autoAssigned;
                         return (
                           <tr key={k.id} className={dead ? 'text-ink/35' : 'text-ink/75'}>
-                            <td className={`px-3 py-2 font-mono ${dead ? 'line-through' : ''}`}>{k.key}</td>
+                            <td className={`px-3 py-2 font-mono ${dead ? 'line-through' : ''}`}>
+                              <span className="inline-flex items-center gap-2">
+                                <span>{k.key}</span>
+                                <button
+                                  onClick={() => copyAccessKey(k)}
+                                  className="rounded bg-white/80 px-2 py-1 font-sans text-[11px] text-sky hover:bg-white hover:underline"
+                                >
+                                  {copiedKeyId === k.id ? '已复制' : '复制'}
+                                </button>
+                              </span>
+                            </td>
                             <td className="px-3 py-2">
                               {k.status === 'revoked' ? '已作废' : expired ? '已过期' : '有效'}
                             </td>
                             <td className="px-3 py-2">{validDays} 天</td>
                             <td className="px-3 py-2">{usedDays} 天</td>
                             <td className="px-3 py-2">{remainingDays} 天</td>
+                            <td className="whitespace-nowrap px-3 py-2">
+                              <span className={assigned ? 'text-emerald-600' : 'text-ink/45'}>
+                                {assigned ? '已分配' : '未分配'}
+                              </span>
+                            </td>
                             <td className="whitespace-nowrap px-3 py-2">{formatDateTime(k.firstLoginAt)}</td>
                             <td className="whitespace-nowrap px-3 py-2">{formatDateTime(k.lastLoginAt)}</td>
                             <td className="sticky right-0 bg-mist px-3 py-2 text-right">
@@ -1111,6 +1350,16 @@ export default function AdminPage() {
                                     <button onClick={() => revokeKey(k.id)} className="text-red-500 hover:underline">
                                       作废
                                     </button>
+                                    {autoAssigned ? (
+                                      <span className="text-ink/40">自动分配</span>
+                                    ) : (
+                                      <button
+                                        onClick={() => toggleKeyAssignment(k, !k.assigned)}
+                                        className="text-sky hover:underline"
+                                      >
+                                        {k.assigned ? '标未分配' : '标已分配'}
+                                      </button>
+                                    )}
                                   </>
                                 )}
                                 {dead && (
@@ -1566,6 +1815,29 @@ export default function AdminPage() {
           </>
         )}
       </div>
+      {previewImage && (
+        <dialog
+          ref={previewDialogRef}
+          className="m-auto max-h-none max-w-none bg-transparent p-4 backdrop:bg-black/65"
+          aria-label={previewImage.alt}
+          onCancel={(event) => {
+            event.preventDefault();
+            setPreviewImage(null);
+          }}
+          onMouseDown={(event) => event.target === event.currentTarget && setPreviewImage(null)}
+        >
+          <div className="max-h-[90vh] max-w-5xl overflow-auto rounded-lg bg-white p-4">
+            <div className="mb-3 flex items-center justify-between gap-4">
+              <p className="font-medium text-ink">{previewImage.alt}</p>
+              <button type="button" autoFocus onClick={() => setPreviewImage(null)} className="min-h-11 rounded-lg border border-design-border px-4 text-ink">
+                关闭
+              </button>
+            </div>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src={assetUrl(previewImage.url)} alt={previewImage.alt} className="max-h-[75vh] w-auto max-w-full" />
+          </div>
+        </dialog>
+      )}
     </main>
   );
 }

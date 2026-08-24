@@ -1,14 +1,15 @@
 # airacm 学员端 uni-app
 
-这是学员端的新工程,目标是同一套 Vue/uni-app 代码逐步覆盖 H5、Android App,后续也能扩展到小程序。
+这是学员端工程,同一套 Vue 3/uni-app 代码覆盖 H5、Android App 和微信小程序。
 
 当前范围:
 
-- 登录: 卡密登录、手机号密码登录、补全手机号和昵称。
-- 首页: 只保留交流、下载 App、学历提升三个入口。
-- 交流: 主题筛选、发帖、帖子列表。
-- 下载 App: 指向 Next 前端静态 APK 地址。
-- 学历提升: 展示客服二维码。
+- 登录:卡密、手机号密码、微信快捷登录与账号绑定,未使用卡密可补全手机号和昵称。
+- 学习:M1 按章节展示并独立续学;其他科目保留分页学习,题库发布更新时自动恢复到有效范围。
+- 考试:单科组卷、草稿恢复、交卷、回顾和错题本。
+- H5 / Android:保留交流、评论、下载 App(H5)和学历提升。
+- 微信小程序:保留学习、考试、回顾、错题本和学历提升;个人主体提审包不编译论坛、评论和下载 App 入口。
+- 学历提升:从后端读取可热替换的客服二维码。
 
 ## 本地运行
 
@@ -28,9 +29,18 @@ npm --prefix apps/student-uni run dev:h5
 ```bash
 npm --prefix apps/student-uni run build:h5
 npm --prefix apps/student-uni run build:app
+npm --prefix apps/student-uni run build:mp-weixin
 ```
 
-`build:app` 生成 App 端资源。Android APK 建议先用 HBuilderX 云打包或本地 App 打包,输出文件固定放到:
+生产构建必须显式配置 API 地址;小程序构建还必须提供 AppID,构建脚本会检查产物不包含 localhost、AppSecret 或禁用的 UGC 标记。
+
+Android APK 使用仓库脚本打包:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\package-student-apk.ps1
+```
+
+正式 APK 输出文件固定放到:
 
 ```text
 frontend/public/downloads/app/airacm-android.apk

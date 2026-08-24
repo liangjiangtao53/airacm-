@@ -5,7 +5,7 @@
     "helmet": "^8.2.0"
   },
   "name": "airacm",
-  "version": "1.0.0",
+  "version": "1.1.0.0",
   "description": "航空机务培训学习平台。顺序学习 · 专题学习(M1-M9 题库) · 在线考试 · 错题本 · 交流。",
   "main": "index.js",
   "directories": {

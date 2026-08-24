@@ -6,12 +6,14 @@
         "navigationBarTitleText": "维修之翼"
       }
     },
+    // #ifndef MP-WEIXIN
     {
       "path": "pages/forum/index",
       "style": {
         "navigationBarTitleText": "交流"
       }
     },
+    // #endif
     {
       "path": "pages/study/index",
       "style": {
@@ -73,10 +75,12 @@
         "pagePath": "pages/index/index",
         "text": "首页"
       },
+      // #ifndef MP-WEIXIN
       {
         "pagePath": "pages/forum/index",
         "text": "交流"
       },
+      // #endif
       {
         "pagePath": "pages/study/index",
         "text": "学习"

@@ -47,6 +47,12 @@ export const env = {
   jwtExpiresIn: process.env.JWT_EXPIRES_IN || '7d',
   defaultTenantId: process.env.DEFAULT_TENANT_ID || 't1',
   questionImageDir: process.env.QUESTION_IMAGE_DIR || resolve(process.cwd(), 'uploads', 'question-images'),
+  questionImportDir: process.env.QUESTION_IMPORT_DIR || resolve(process.cwd(), 'uploads', 'question-imports'),
+  customerServiceQrPath: resolve(
+    process.env.CUSTOMER_SERVICE_QR_PATH ||
+      resolve(backendRoot, 'uploads', 'customer-service', 'customer-service-qr.png'),
+  ),
+  customerServiceQrFallbackPath: resolve(backendRoot, 'assets', 'mock-customer-service-qr.png'),
 
   // 短信:dev 走万能码;生产接阿里云短信(Dysmsapi)。
   sms: {

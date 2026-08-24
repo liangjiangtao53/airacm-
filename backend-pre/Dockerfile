@@ -16,6 +16,7 @@ ENV NODE_ENV=production
 COPY package*.json ./
 RUN npm config set registry https://registry.npmmirror.com && npm ci --omit=dev --omit=optional && npm cache clean --force
 COPY --from=builder /app/dist ./dist
+COPY assets ./assets
 # 以非 root 运行(node 镜像内置 node 用户)。
 USER node
 EXPOSE 8770

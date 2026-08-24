@@ -11,7 +11,8 @@
                    ├ /downloads/app/ → uploads/app/airacm-android.apk
                    └ /api/  → api:8770        (内网,去 /api 前缀)
                                 ├ question-images/ → uploads/question-images/
-                                └ db:5432      (内网)
+                                ├ question-imports/ → uploads/question-imports/
+                                └ db:3306      (内网)
 ```
 
 ---
@@ -32,7 +33,7 @@
    | 80 | TCP | 0.0.0.0/0 | HTTP(跳转 HTTPS) |
    | 443 | TCP | 0.0.0.0/0 | HTTPS |
 
-   > 不要放行 3000/8770/5432,它们只在容器内网。
+   > 不要放行 3000/8770/3306,它们只在容器内网。
 
 3. 域名(可选但强烈建议):在阿里云域名控制台把 **A 记录解析到 ECS 公网 IP**。签 TLS 证书必需。
 
@@ -132,8 +133,13 @@ cat .env
 | `JWT_EXPIRES_IN` | 登录有效期,默认 `30d` |
 | `APP_UPLOAD_DIR` | App 安装包共享目录,默认 `./uploads/app` |
 | `QUESTION_IMAGE_DIR` | 题库图片共享目录,默认 `./uploads/question-images` |
+| `QUESTION_IMPORT_DIR` | M1 预检源文件临时目录,默认 `./uploads/question-imports` |
+| `CUSTOMER_SERVICE_QR_DIR` | Docker 宿主机上的客服二维码目录，放置文件 `customer-service-qr.png`，默认 `./uploads/customer-service` |
+| `CUSTOMER_SERVICE_QR_PATH` | 直接运行后端时的二维码完整路径，默认 `backend-pre/uploads/customer-service/customer-service-qr.png` |
 | `DB_MIGRATIONS_RUN` | 启动时自动执行数据库 migration,默认 `true` |
 | `SMS_DEV_MODE` / `ALI_SMS_*` | 要发注册短信则关 dev 模式并填阿里云短信密钥 |
+
+真实二维码文件尚未放置时，接口会返回后端内置的不可识别模拟图；替换 `customer-service-qr.png` 后立即生效，无需重新发布小程序或重启后端。
 
 服务器上重新生成密钥(可选,更安全):
 
@@ -189,8 +195,8 @@ sed -i 's/your-domain.com/你的真实域名/g' deploy/nginx/airacm.conf
 ## 7. 构建、初始化、启动
 
 ```bash
-# App 安装包、题库图片共享目录:api 写入,nginx/frontend 读取。
-mkdir -p uploads/app uploads/question-images
+# App 安装包、题库图片和 M1 预检临时目录:api 写入,nginx/frontend 读取。
+mkdir -p uploads/app uploads/question-images uploads/question-imports uploads/customer-service
 # 首次部署如本地包里已有测试 APK,先复制一份到共享目录;后续由后台上传覆盖。
 cp -n frontend/public/downloads/app/airacm-android.apk uploads/app/airacm-android.apk 2>/dev/null || true
 # api 容器以 node 用户(UID 1000)运行,需要写权限。
@@ -294,7 +300,7 @@ docker compose build
 docker compose up -d
 ```
 
-> 数据库数据在 `pgdata` 卷里,App 安装包在 `uploads/app` 目录里,题目图片在 `uploads/question-images` 目录里,重新部署不丢。
+> 数据库数据在 `mysql_data` 卷里,App 安装包在 `uploads/app` 目录里,题目图片在 `uploads/question-images` 目录里；M1 预检源文件暂存在 `uploads/question-imports` 并会自动清理。
 
 ---
 
@@ -378,7 +384,9 @@ docker compose restart
 
 ### 导入题库 / 生成卡密
 
-- 题库 Excel:登录后台 → 数据维护 → 上传 Excel,选科目与"考试+学习"
+- 普通题库 Excel:登录后台 → 数据维护 → 上传 Excel,选科目与"考试+学习"。`M1 航空概论` 不走该入口。
+- M1 整包:登录后台 → 数据维护 → 上传 `.xlsx` 并执行“校验并准备发布” → 核对第1章至第7章共 1698 题 → 在 2 小时内输入页面给出的确认语发布。压缩文件不得超过 5MB,解压总量不得超过 25MB。
+- 发布会原子替换 M1、清空旧章节续学位置并放弃尚未完成的 M1 考试;已提交考试历史保留。客户端遇到题库更新会重新加载章节。
 - 生成卡密:
   ```bash
   docker compose exec api node dist/gen-keys.js          # 默认 20 个 / 30 天
@@ -402,6 +410,7 @@ docker compose restart
 | 后台上传 APK 成功但下载仍是旧包 | 确认 `APP_UPLOAD_DIR` 指向同一目录,并执行 `docker compose up -d` 重建挂载 |
 | `/downloads/app/airacm-android.apk` 返回 404 | 确认 `/opt/airacm/uploads/app/airacm-android.apk` 存在 |
 | 导入题库后题目图片不显示 | 确认 `/opt/airacm/uploads/question-images` 存在且 api 容器有写权限 |
+| M1 预检提示无法写入文件 | 确认 `/opt/airacm/uploads/question-imports` 存在，并归 UID 1000 所有 |
 | 上传 APK 直接 413 | APK 超过 nginx `/api/admin/app/apk` 的 `client_max_body_size` |
 
 ---
@@ -415,7 +424,7 @@ docker compose restart
 - [ ] TLS 证书有效,续期 cron 已配
 - [ ] 数据库每日备份,验证过能恢复
 - [ ] `DB_SYNC` 保持 `false`
-- [ ] `uploads/app`、`uploads/question-images` 已创建,后台上传 APK 后下载地址返回 200
+- [ ] `uploads/app`、`uploads/question-images`、`uploads/question-imports`、`uploads/customer-service` 已创建并归 UID 1000 所有，后台上传 APK 后下载地址返回 200
 
 ---
 
@@ -430,3 +439,5 @@ docker compose restart
 | `deploy/nginx/certs/` | TLS 证书(服务器签,不打包) |
 | `uploads/app/` | App 安装包共享目录(服务器持久化,不进镜像) |
 | `uploads/question-images/` | 题库图片共享目录(服务器持久化,不进镜像) |
+| `uploads/question-imports/` | M1 预检临时目录(服务器持久化,自动清理,不进镜像) |
+| `uploads/customer-service/` | 客服二维码目录,放置 `customer-service-qr.png` 后无需重新构建客户端 |

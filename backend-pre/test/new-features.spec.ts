@@ -830,10 +830,11 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
           userId: user.user.userId,
           category,
           courseId: '',
+          chapterName: '',
           questionId: rows[24].id,
           lastStudiedAt: new Date(now.getTime() + 1000),
         },
-        ['tenantId', 'userId', 'category', 'courseId'],
+        ['tenantId', 'userId', 'category', 'courseId', 'chapterName'],
       );
 
       const done = await request(app.getHttpServer())
@@ -852,7 +853,7 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
     it('question pool cache refreshes after import and delete', async () => {
       const admin = await makeUser('admin');
       const user = await makeUser('user');
-      const category = 'M1 航空概论';
+      const category = 'M2 航空器维修';
       const courseId = `cache-course-${phoneSeq++}`;
       const stem = `CACHE-EXAM-${phoneSeq++}`;
 
@@ -1008,6 +1009,15 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
           order: 0,
         });
       await repo.save([mk('W1', 'A'), mk('W2', 'B')]);
+      const current = await ds.getRepository(ExamPaperRule).findOne({ where: { tenantId: TENANT } });
+      await ds.getRepository(ExamPaperRule).upsert(
+        {
+          tenantId: TENANT,
+          totalCount: current?.totalCount ?? 100,
+          categoryCounts: { ...(current?.categoryCounts ?? {}), [CATEGORY]: 2 },
+        },
+        ['tenantId'],
+      );
     });
 
     async function startCourseExam(token: string) {
@@ -1385,6 +1395,44 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
       const remainingDays = Math.round((new Date(updated.body.data.expiresAt).getTime() - Date.now()) / 86_400_000);
       expect(remainingDays).toBeGreaterThanOrEqual(89);
       expect(remainingDays).toBeLessThanOrEqual(90);
+    });
+
+    it('超级管理员可以手动标记卡密分配状态,普通管理员不可修改', async () => {
+      const sup = await makeUser('super');
+      const biz = await makeUser('admin');
+      const gen = await request(app.getHttpServer())
+        .post('/admin/access-keys')
+        .set('Authorization', `Bearer ${sup.token}`)
+        .send({ count: 1, ttlDays: 30 });
+      const list = await request(app.getHttpServer())
+        .get('/admin/access-keys')
+        .set('Authorization', `Bearer ${sup.token}`);
+      const target = list.body.data.items.find((k: { key: string }) => k.key === gen.body.data.keys[0]);
+      expect(target.assigned).toBe(false);
+
+      const denied = await request(app.getHttpServer())
+        .post(`/admin/access-keys/${target.id}/assignment`)
+        .set('Authorization', `Bearer ${biz.token}`)
+        .send({ assigned: true });
+      expect(denied.status).toBe(401);
+
+      const marked = await request(app.getHttpServer())
+        .post(`/admin/access-keys/${target.id}/assignment`)
+        .set('Authorization', `Bearer ${sup.token}`)
+        .send({ assigned: true });
+      expect(marked.status).toBe(201);
+      expect(marked.body.data.assigned).toBe(true);
+      const saved = await ds.getRepository(AccessKey).findOneOrFail({ where: { tenantId: TENANT, id: target.id } });
+      expect(saved.assigned).toBe(true);
+
+      const assignmentLog = await ds.getRepository(AdminOperationLog).findOne({
+        where: { tenantId: TENANT, action: 'access_key_update_assignment', targetId: target.id },
+      });
+      expect(assignmentLog).toBeTruthy();
+      const detail = assignmentLog?.detail as { key?: string; assigned?: boolean };
+      expect(detail.key).toBe(`****${target.key.slice(-4)}`);
+      expect(detail.key).not.toBe(target.key);
+      expect(detail.assigned).toBe(true);
     });
 
     it('卡密列表支持分页搜索状态筛选,作废后可单条删除', async () => {

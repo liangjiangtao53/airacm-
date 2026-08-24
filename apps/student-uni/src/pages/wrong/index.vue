@@ -1,16 +1,21 @@
 <script setup lang="ts">
 import { onShow, onUnload } from '@dcloudio/uni-app';
 import { computed, ref } from 'vue';
-import { api, assetUrl, requireLogin, type CommentItem, type WrongBookItem, type WrongQuestionSource } from '@/utils/api';
+import { api, assetUrl, requireLogin, type WrongBookItem, type WrongQuestionSource } from '@/utils/api';
+// #ifndef MP-WEIXIN
+import type { CommentItem } from '@/utils/api';
+// #endif
 import { disableCaptureProtection, enableCaptureProtection } from '@/utils/capture';
 
 const items = ref<WrongBookItem[]>([]);
 const revealed = ref<Record<string, boolean>>({});
 const category = ref('');
 const loading = ref(false);
+// #ifndef MP-WEIXIN
 const commentOpen = ref<Record<string, boolean>>({});
 const commentInputs = ref<Record<string, string>>({});
 const commentLists = ref<Record<string, CommentItem[]>>({});
+// #endif
 
 function toast(message: string) {
   uni.showToast({ title: message, icon: 'none' });
@@ -58,6 +63,7 @@ async function master(questionId: string, source: WrongQuestionSource) {
   }
 }
 
+// #ifndef MP-WEIXIN
 async function toggleComments(questionId: string) {
   commentOpen.value[questionId] = !commentOpen.value[questionId];
   if (!commentOpen.value[questionId] || commentLists.value[questionId]) return;
@@ -95,6 +101,7 @@ async function removeComment(questionId: string, commentId: string) {
     },
   });
 }
+// #endif
 
 onShow(() => {
   enableCaptureProtection();
@@ -149,9 +156,11 @@ onUnload(disableCaptureProtection);
             <text class="answer">正确答案: {{ q.answer }}</text>
             <button class="btn secondary master" @tap="master(q.questionId, q.source)">已掌握</button>
           </template>
+          <!-- #ifndef MP-WEIXIN -->
           <button class="btn secondary master" @tap="toggleComments(q.questionId)">
             {{ commentOpen[q.questionId] ? '收起评论' : '评论' }}
           </button>
+          <!-- #endif -->
         </view>
         <text v-if="revealed[itemKey(q)] && q.analysis" class="analysis">解析: {{ q.analysis }}</text>
         <image
@@ -161,6 +170,7 @@ onUnload(disableCaptureProtection);
           mode="widthFix"
           class="question-image"
         />
+        <!-- #ifndef MP-WEIXIN -->
         <view v-if="commentOpen[q.questionId]" class="comment-box">
           <view class="comment-form">
             <input v-model="commentInputs[q.questionId]" class="comment-input" placeholder="写下你的想法..." />
@@ -175,6 +185,7 @@ onUnload(disableCaptureProtection);
             <text class="comment-content">{{ c.content }}</text>
           </view>
         </view>
+        <!-- #endif -->
       </view>
     </view>
   </view>
@@ -185,8 +196,7 @@ onUnload(disableCaptureProtection);
 .wrong-list,
 .wrong-card,
 .options,
-.filter,
-.comment-box {
+.filter {
   display: flex;
   flex-direction: column;
 }
@@ -311,6 +321,7 @@ onUnload(disableCaptureProtection);
   min-height: 72rpx;
 }
 
+/* #ifndef MP-WEIXIN */
 .comment-box {
   border-top: 2rpx solid rgba(17, 24, 39, 0.06);
   gap: 12rpx;
@@ -374,4 +385,5 @@ onUnload(disableCaptureProtection);
 .comment-content {
   color: rgba(17, 24, 39, 0.76);
 }
+/* #endif */
 </style>

@@ -1,4 +1,4 @@
-const qrUrl = '/images/customer-service-qr.svg';
+const qrUrl = '/images/customer-service-qr.png';
 const advisorUrl = '/images/customer-service-advisor.png';
 
 // 仅展示当前主推院校，其他学校统一引导用户咨询客服确认。
@@ -148,11 +148,12 @@ export default function UpgradePage() {
             <p className="text-base font-semibold text-white/85">当前最重要操作</p>
             <h2 className="mt-5 text-3xl font-semibold">扫码添加客服</h2>
             <div className="mx-auto mt-8 w-full max-w-[280px] rounded-[1.75rem] bg-white p-4 shadow-lg shadow-ink/20">
-              <img src={qrUrl} alt="客服二维码" className="aspect-square w-full rounded-2xl bg-white" />
+              <img
+                src={qrUrl}
+                alt="客服二维码"
+                className="aspect-square w-full rounded-2xl bg-white object-contain"
+              />
             </div>
-            <p className="mx-auto mt-8 max-w-xs text-base font-medium leading-8 text-white/90">
-              当前二维码为占位图,替换静态资源后页面自动显示真实二维码。
-            </p>
           </aside>
         </div>
       </section>

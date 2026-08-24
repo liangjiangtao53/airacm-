@@ -27,12 +27,17 @@ interface Envelope<T> {
   success: boolean;
   data: T | null;
   error: string | null;
+  code?: string | null;
+  requestId?: string;
 }
 
 export class ApiError extends Error {
   constructor(
     message: string,
     public readonly statusCode: number,
+    public readonly code?: string,
+    public readonly requestId?: string,
+    public readonly retryAfterSeconds?: number,
   ) {
     super(message);
     this.name = 'ApiError';
@@ -80,6 +85,11 @@ export interface QuestionPracticeSummary {
 
 export interface QuestionItem {
   id: string;
+  category: string;
+  generation: number;
+  chapterName: string;
+  chapterOrder: number;
+  chapterQuestionOrder: number;
   courseId: string | null;
   type: 'single' | 'multiple';
   stem: string;
@@ -89,6 +99,15 @@ export interface QuestionItem {
   usage: QuestionUsage;
   order: number;
   practice?: QuestionPracticeSummary;
+}
+
+export interface QuestionChapter {
+  name: string;
+  order: number;
+  questionCount: number;
+  resumeQuestionId: string | null;
+  resumePosition: number;
+  lastStudiedAt: string | null;
 }
 
 export interface PaperQuestion {
@@ -228,7 +247,16 @@ function request<T>(
         const env = res.data as Envelope<T> | undefined;
         if (res.statusCode === 401) clearToken();
         if (res.statusCode < 200 || res.statusCode >= 300 || !env || env.success === false) {
-          reject(new ApiError(env?.error || `${res.statusCode} 请求失败`, res.statusCode));
+          const retryAfter = Number((res.header as Record<string, string>)?.['Retry-After'] ?? (res.header as Record<string, string>)?.['retry-after']);
+          reject(
+            new ApiError(
+              env?.error || `${res.statusCode} 请求失败`,
+              res.statusCode,
+              env?.code ?? undefined,
+              env?.requestId ?? String((res.header as Record<string, string>)?.['X-Request-Id'] ?? ''),
+              Number.isFinite(retryAfter) ? retryAfter : undefined,
+            ),
+          );
           return;
         }
         resolve(env.data as T);
@@ -264,9 +292,11 @@ export const api = {
     }),
   me: () => request<Me>('/auth/me'),
   categories: () => request<string[]>('/questions/categories'),
+  chapters: (category: string) => request<QuestionChapter[]>(`/questions/chapters${stringifyQuery({ category })}`),
   questions: (params: {
     usage?: QuestionUsage;
     category?: string;
+    chapter?: string;
     courseId?: string;
     keyword?: string;
     page?: number;
@@ -306,6 +336,8 @@ export const api = {
     request<{ ok: true; recorded: boolean; practice: QuestionPracticeSummary }>('/exams/wrong-book/study', { method: 'POST', data: { questionId, answer } }),
   masterWrong: (questionId: string, source: WrongQuestionSource = 'study') =>
     request<{ ok: boolean }>(`/exams/wrong-book/${questionId}/master`, { method: 'POST', data: { source } }),
+  // 微信个人主体版本不提供公开 UGC；条件编译确保相关路由不会进入提审包。
+  // #ifndef MP-WEIXIN
   comments: (questionId: string) => request<CommentItem[]>(`/questions/${questionId}/comments`),
   addComment: (questionId: string, content: string) =>
     request<CommentItem>(`/questions/${questionId}/comments`, { method: 'POST', data: { content } }),
@@ -325,4 +357,5 @@ export const api = {
   deletePostReply: (id: string) => request<{ deleted: boolean }>(`/posts/replies/${id}`, { method: 'DELETE' }),
   togglePostReplyLike: (id: string) =>
     request<{ liked: boolean; likeCount: number }>(`/posts/replies/${id}/like`, { method: 'POST' }),
+  // #endif
 };

@@ -13,10 +13,14 @@
 ```
 backend-pre/        NestJS 后端(含自有 Dockerfile / dev compose)
 frontend/           Next.js 前端(standalone 容器化)
+apps/student-uni/   Vue 3 + uni-app 学员端(H5 / Android / 微信小程序)
 deploy/nginx/       Nginx 反代配置 + 证书目录
+docs/               产品、系统、部署和测试文档
 docker-compose.yml  整套编排(db + api + frontend + nginx)
 .env.example        部署环境变量模板
 ```
+
+详细说明从 [文档索引](docs/README.md) 进入；生产操作请先阅读 [部署手册](docs/DEPLOY.md)，回归范围见 [测试文档](docs/TESTING.md)。
 
 ---
 
@@ -44,7 +48,7 @@ cd frontend && npm install && npm run dev               # :3000
 公网 ──80/443──> nginx(TLS 终止,唯一出口)
                    ├ /      → frontend:3000  (内网)
                    └ /api/  → api:8770        (内网,去 /api 前缀)
-                                └ db:5432      (内网)
+                                └ db:3306      (内网)
 ```
 
 ### 步骤
@@ -78,7 +82,7 @@ docker compose run --rm -e SEED_DEMO=false api node dist/seed.js
 # 6. 启动全栈
 docker compose up -d
 
-# 7. 防火墙: 仅放行 80/443,关闭 3000/8770/5432 公网入站
+# 7. 防火墙: 仅放行 80/443,关闭 3000/8770/3306 公网入站
 
 # 默认管理员(手机号见 .env): 超管 13259858973 / 业务管理员 13772066855
 # 密码 = .env 里的 ADMIN_PASSWORD / BIZ_ADMIN_PASSWORD
@@ -92,7 +96,7 @@ docker compose up -d
 docker compose ps                 # 状态
 docker compose logs -f api        # 后端日志
 docker compose up -d --build api  # 仅重建后端
-docker compose down               # 停止服务(数据库使用外部 MySQL)
+docker compose down               # 停止服务(MySQL 数据保留在 mysql_data 卷)
 ```
 
 ---
@@ -103,9 +107,9 @@ docker compose down               # 停止服务(数据库使用外部 MySQL)
 
 - Nginx TLS(TLSv1.2/1.3)、HSTS、X-Frame-Options、X-Content-Type-Options、Referrer-Policy、Permissions-Policy、CSP
 - 限流:普通 30 r/s;登录/发码/注册/卡密登录 1 r/s(叠加后端 `@Throttle` 双层)
-- body 上限:全局 2m,Excel 导入路径 25m
+- body 上限:全局 2m,APK 上传路径 150m;M1 整包只接受不超过 5MB 的 `.xlsx`,解压总量不超过 25MB
 - 后端 `helmet()`、`ValidationPipe`(白名单)、CORS 白名单、JWT 强校验(缺失启动失败)
-- 数据库仅容器内网,不暴露 5432;容器非 root 运行
+- 数据库仅容器内网,不暴露 3306;容器非 root 运行
 - 短信防刷:同号 60s 不重发
 
 部署前务必确认:
@@ -118,12 +122,13 @@ docker compose down               # 停止服务(数据库使用外部 MySQL)
 - [ ] 生产关闭短信 dev 模式(`SMS_DEV_MODE=false`)
 - [ ] MySQL 定时备份(`mysqldump` 或云数据库快照)
 
-### 当前上线状态(2026-07-03)
+### 当前上线状态(2026-08-24)
 
 - 生产已改为 TypeORM migration 流程,`DB_SYNC` 保持 `false`。
 - 生产数据库每日 03:20 自动备份到 `/home/ubuntu/airacm/db-backups`。
 - 部署脚本会在 migration 前自动执行 `predeploy` 数据库备份。
 - 2026-07-03 已完成一次备份恢复演练:临时 MySQL 恢复成功,题库表和新增审计表可恢复。
+- M1 改为按 7 个工作表整包预检、确认和原子发布;Web 与 Android 学习端按章节展示并分别续学。
 
 ### 待办(P1)
 
