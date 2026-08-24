@@ -59,10 +59,17 @@ if ! flock -n 9; then
   exit 1
 fi
 OLD_RELEASE="`$(readlink -f "`$BASE/current" || true)"
-OLD_API_IMAGE="`$(sudo -n docker inspect -f '{{.Image}}' airacm-api-1 2>/dev/null || true)"
-OLD_FRONTEND_IMAGE="`$(sudo -n docker inspect -f '{{.Image}}' airacm-frontend-1 2>/dev/null || true)"
-if [ -z "`$OLD_RELEASE" ] || [ ! -d "`$OLD_RELEASE" ] || [ -z "`$OLD_API_IMAGE" ] || [ -z "`$OLD_FRONTEND_IMAGE" ]; then
+ROLLBACK_API_IMAGE="airacm-api:rollback-`$REL"
+ROLLBACK_FRONTEND_IMAGE="airacm-frontend:rollback-`$REL"
+if [ -z "`$OLD_RELEASE" ] || [ ! -d "`$OLD_RELEASE" ]; then
   echo "previous release or image metadata is unavailable; refusing a deployment that cannot roll back" >&2
+  exit 1
+fi
+# 原先保存容器的镜像摘要；启用 containerd 镜像存储时，该摘要可能无法再被 docker image tag 引用。
+# 构建覆盖 latest 之前先创建明确的回滚标签，保证维护窗口内始终有可启动的旧镜像。
+sudo -n docker image tag airacm-api:latest "`$ROLLBACK_API_IMAGE"
+if ! sudo -n docker image tag airacm-frontend:latest "`$ROLLBACK_FRONTEND_IMAGE"; then
+  sudo -n docker image rm "`$ROLLBACK_API_IMAGE" >/dev/null 2>&1 || true
   exit 1
 fi
 DEPLOY_OK=0
@@ -70,17 +77,17 @@ MAINTENANCE_STARTED=0
 rollback() {
   status=`$?
   trap - EXIT
-  if [ "`$DEPLOY_OK" != "1" ] && [ "`$MAINTENANCE_STARTED" = "1" ] && [ -n "`$OLD_RELEASE" ] && [ -d "`$OLD_RELEASE" ]; then
-    echo "deployment failed; restoring previous release..." >&2
+  if [ "`$DEPLOY_OK" != "1" ]; then
+    echo "deployment failed; restoring previous image tags..." >&2
     rollback_ok=1
-    sudo -n docker image tag "`$OLD_API_IMAGE" airacm-api:latest || rollback_ok=0
-    sudo -n docker image tag "`$OLD_FRONTEND_IMAGE" airacm-frontend:latest || rollback_ok=0
-    if [ "`$rollback_ok" = "1" ]; then
+    sudo -n docker image tag "`$ROLLBACK_API_IMAGE" airacm-api:latest || rollback_ok=0
+    sudo -n docker image tag "`$ROLLBACK_FRONTEND_IMAGE" airacm-frontend:latest || rollback_ok=0
+    if [ "`$rollback_ok" = "1" ] && [ "`$MAINTENANCE_STARTED" = "1" ] && [ -n "`$OLD_RELEASE" ] && [ -d "`$OLD_RELEASE" ]; then
       cd "`$OLD_RELEASE"
       sudo -n env DB_MIGRATIONS_RUN=false docker compose up -d --no-build --force-recreate api frontend nginx || rollback_ok=0
     fi
     rollback_health=""
-    if [ "`$rollback_ok" = "1" ]; then
+    if [ "`$rollback_ok" = "1" ] && [ "`$MAINTENANCE_STARTED" = "1" ]; then
       for i in `$(seq 1 20); do
         rollback_health=`$(curl -k -sS -o /tmp/airacm_rollback_health.out -w "%{http_code}" https://weixiuzhiyi.com.cn/api/health || true)
         [ "`$rollback_health" = "200" ] && break
@@ -89,8 +96,13 @@ rollback() {
       [ "`$rollback_health" = "200" ] || rollback_ok=0
     fi
     if [ "`$rollback_ok" = "1" ]; then
-      ln -sfn "`$OLD_RELEASE" "`$BASE/current"
-      echo "rollback health check passed; restored `$OLD_RELEASE" >&2
+      if [ "`$MAINTENANCE_STARTED" = "1" ]; then
+        ln -sfn "`$OLD_RELEASE" "`$BASE/current"
+        echo "rollback health check passed; restored `$OLD_RELEASE" >&2
+      else
+        echo "restored previous image tags; running containers were not changed" >&2
+      fi
+      sudo -n docker image rm "`$ROLLBACK_API_IMAGE" "`$ROLLBACK_FRONTEND_IMAGE" >/dev/null 2>&1 || true
     else
       echo "ROLLBACK FAILED; current symlink was not changed. Manual recovery is required." >&2
     fi
@@ -120,6 +132,7 @@ elif [ -d "`$BASE/current/uploads" ]; then
 else
   mkdir -p uploads/app uploads/question-images
 fi
+mkdir -p uploads/app uploads/question-images uploads/question-imports
 if [ -f frontend/public/downloads/app/airacm-android.apk ]; then
   mkdir -p uploads/app
   cp -f frontend/public/downloads/app/airacm-android.apk uploads/app/airacm-android.apk
@@ -215,6 +228,7 @@ fi
 ln -sfn "`$PWD" "`$BASE/current"
 echo "current -> `$(readlink "`$BASE/current")"
 DEPLOY_OK=1
+sudo -n docker image rm "`$ROLLBACK_API_IMAGE" "`$ROLLBACK_FRONTEND_IMAGE" >/dev/null 2>&1 || true
 trap - EXIT
 
 "@
