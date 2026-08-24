@@ -16,6 +16,18 @@
 
 ## M1 Chapter Learning
 
+### Complete M1 release hardening
+
+**What:** Finish the remaining managed-release safeguards: scoped recovery package and restore rehearsal, MySQL concurrency/failure tests, Web/admin E2E coverage, stale-question tombstones, batch history/details, worker-isolated workbook parsing, and code-driven 409/410/422/503 recovery UI.
+
+**Why:** The current release has atomic replacement, generation locks, snapshots and production backups, but these remaining controls reduce recovery time and make rare concurrency or damaged-workbook failures reproducible before the next question-set replacement.
+
+**Context:** Deferred from the 2026-08-24 M1 chapter-learning plan after the production M1 data replacement. Before the next managed M1 workbook publish, validate the scoped recovery artifact in MySQL 8, add concurrent publish/study/exam cases, cover Web/admin flows with browser automation, move XLSX parsing off the request event loop, and complete the remaining batch/history and stable-error UX.
+
+**Effort:** XL
+**Priority:** P1
+**Depends on:** Current M1 chapter release deployed and production usage observed
+
 ### Chapter mastery statistics
 
 **What:** Show per-chapter answered count, accuracy, and mastery after chapter learning is stable.
