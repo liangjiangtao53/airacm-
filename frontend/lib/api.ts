@@ -42,6 +42,11 @@ export interface QuestionOption {
 // 学习列表项:后端默认不下发 answer/analysis/imageUrls。
 export interface QuestionItem {
   id: string;
+  category: string;
+  generation: number;
+  chapterName: string;
+  chapterOrder: number;
+  chapterQuestionOrder: number;
   courseId: string | null;
   type: 'single' | 'multiple';
   stem: string;
@@ -50,6 +55,15 @@ export interface QuestionItem {
   imageUrls?: string[];
   usage: QuestionUsage;
   order: number;
+}
+
+export interface QuestionChapter {
+  name: string;
+  order: number;
+  questionCount: number;
+  resumeQuestionId: string | null;
+  resumePosition: number;
+  lastStudiedAt: string | null;
 }
 
 export interface CommentItem {
@@ -73,6 +87,46 @@ export interface ImportPreview {
   failed: Array<{ row: number; reason: string }>;
   duplicateInFile: number;
   duplicateInDatabase: number;
+}
+
+export interface M1QuestionSample {
+  stem: string;
+  answer: string;
+  options: QuestionOption[];
+  analysis: string;
+  stemImageUrls: string[];
+  imageUrls: string[];
+}
+
+export interface M1ReplacementPreview {
+  batchId: string;
+  category: 'M1 航空概论';
+  fileName: string;
+  fileHash: string;
+  totalRows: number;
+  imageCells: number;
+  duplicateStems: number;
+  warnings: string[];
+  chapters: Array<{
+    name: string;
+    order: number;
+    questionCount: number;
+    imageCells: number;
+    first: M1QuestionSample;
+    last: M1QuestionSample;
+    imageSamples: Array<{ questionOrder: number; stem: string; stemImageUrls: string[]; imageUrls: string[] }>;
+  }>;
+  confirmPhrase: string;
+  expiresAt: string;
+}
+
+export interface M1ReplacementResult {
+  batchId: string;
+  category: string;
+  imported: number;
+  generation: number;
+  publishedAt: string;
+  idempotent: boolean;
 }
 
 export interface DeleteImpact {
@@ -278,6 +332,21 @@ interface Envelope<T> {
   success: boolean;
   data: T | null;
   error: string | null;
+  code?: string | null;
+  requestId?: string;
+}
+
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    public readonly status: number,
+    public readonly code?: string,
+    public readonly requestId?: string,
+    public readonly retryAfterSeconds?: number,
+  ) {
+    super(message);
+    this.name = 'ApiError';
+  }
 }
 
 async function req<T>(
@@ -309,7 +378,14 @@ async function unwrap<T>(res: Response): Promise<T> {
     // 单点登录被踢 / token 失效:清本地 token,下次进入受保护页会跳登录。
     if (res.status === 401) clearToken();
     const msg = env?.error || `${res.status} 请求失败`;
-    throw new Error(msg);
+    const retryAfter = Number(res.headers.get('Retry-After'));
+    throw new ApiError(
+      msg,
+      res.status,
+      env?.code ?? undefined,
+      env?.requestId ?? res.headers.get('X-Request-Id') ?? undefined,
+      Number.isFinite(retryAfter) ? retryAfter : undefined,
+    );
   }
   return env.data as T;
 }
@@ -370,8 +446,9 @@ export const api = {
   // ---- 题库刷题 / 评论 ----
   // 科目列表(后端固定枚举)。
   categories: () => req<string[]>('/questions/categories'),
+  chapters: (category: string) => req<QuestionChapter[]>(`/questions/chapters?category=${encodeURIComponent(category)}`),
 
-  questions: (params: { usage?: QuestionUsage; category?: string; courseId?: string; keyword?: string; page?: number; pageSize?: number } = {}) => {
+  questions: (params: { usage?: QuestionUsage; category?: string; chapter?: string; courseId?: string; keyword?: string; page?: number; pageSize?: number } = {}) => {
     const qs = new URLSearchParams();
     Object.entries(params).forEach(([k, v]) => v !== undefined && qs.set(k, String(v)));
     const suffix = qs.toString() ? `?${qs}` : '';
@@ -490,6 +567,12 @@ export const api = {
     if (category) qs.set('category', category);
     return upload<ImportPreview>(`/admin/questions/import/preview?${qs}`, file);
   },
+  previewM1Replacement: (file: File) => upload<M1ReplacementPreview>('/admin/questions/m1/preflight', file),
+  publishM1Replacement: (batchId: string, confirm: string) =>
+    req<M1ReplacementResult>(`/admin/questions/m1/${encodeURIComponent(batchId)}/publish`, {
+      method: 'POST',
+      body: { confirm },
+    }),
   // 模板下载地址(GET,浏览器直接打开)。
   questionTemplateUrl: () => `${BASE}/admin/questions/template`,
 
