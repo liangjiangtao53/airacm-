@@ -830,10 +830,11 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
           userId: user.user.userId,
           category,
           courseId: '',
+          chapterName: '',
           questionId: rows[24].id,
           lastStudiedAt: new Date(now.getTime() + 1000),
         },
-        ['tenantId', 'userId', 'category', 'courseId'],
+        ['tenantId', 'userId', 'category', 'courseId', 'chapterName'],
       );
 
       const done = await request(app.getHttpServer())
@@ -852,7 +853,7 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
     it('question pool cache refreshes after import and delete', async () => {
       const admin = await makeUser('admin');
       const user = await makeUser('user');
-      const category = 'M1 航空概论';
+      const category = 'M2 航空器维修';
       const courseId = `cache-course-${phoneSeq++}`;
       const stem = `CACHE-EXAM-${phoneSeq++}`;
 
@@ -1008,6 +1009,15 @@ describe('新功能:短信注册 / 题库导入 / 越权修复', () => {
           order: 0,
         });
       await repo.save([mk('W1', 'A'), mk('W2', 'B')]);
+      const current = await ds.getRepository(ExamPaperRule).findOne({ where: { tenantId: TENANT } });
+      await ds.getRepository(ExamPaperRule).upsert(
+        {
+          tenantId: TENANT,
+          totalCount: current?.totalCount ?? 100,
+          categoryCounts: { ...(current?.categoryCounts ?? {}), [CATEGORY]: 2 },
+        },
+        ['tenantId'],
+      );
     });
 
     async function startCourseExam(token: string) {

@@ -15,7 +15,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository, TypeOrmModule } from '@nestjs/typeorm';
-import { DataSource, In, IsNull, QueryFailedError, Repository } from 'typeorm';
+import { DataSource, EntityManager, In, IsNull, QueryFailedError, Repository } from 'typeorm';
 import { IsInt, IsObject, IsOptional, IsString, Max, Min } from 'class-validator';
 import * as crypto from 'crypto';
 import {
@@ -24,6 +24,7 @@ import {
   ExamQuestionSnapshot,
   ExamPaperRule,
   Question,
+  QuestionCategoryGeneration,
   QuestionOption,
   QuestionPractice,
   StudyQuestionProgress,
@@ -195,6 +196,8 @@ function normalize(raw: string): string {
 export class ExamService {
   constructor(
     @InjectRepository(Question) private readonly questions: Repository<Question>,
+    @InjectRepository(QuestionCategoryGeneration)
+    private readonly generations: Repository<QuestionCategoryGeneration>,
     @InjectRepository(ExamAttempt) private readonly attempts: Repository<ExamAttempt>,
     @InjectRepository(WrongQuestion) private readonly wrongBookRepo: Repository<WrongQuestion>,
     @InjectRepository(QuestionPractice) private readonly practices: Repository<QuestionPractice>,
@@ -249,6 +252,10 @@ export class ExamService {
     if (!category) throw new BadRequestException('请选择考试科目');
     const count = rule.categoryCounts[category];
     if (!count) throw new BadRequestException('该科目暂未配置考试题数');
+    const startingGeneration = await this.generations.findOne({
+      where: { tenantId: user.tenantId, category },
+      select: ['generation'],
+    });
     const picked = await this.pickExamQuestions(user, { courseId: dto.courseId, category }, count);
     if (picked.length < count) {
       throw new BadRequestException(`题库不足,当前仅 ${picked.length} 题,本模块考试需要 ${count} 题`);
@@ -263,26 +270,47 @@ export class ExamService {
       if (!row) throw new ConflictException('题库刚刚发生变化，请重新开始考试');
       return this.snapshotQuestion(row);
     });
+    const latestGeneration = await this.generations.findOne({
+      where: { tenantId: user.tenantId, category },
+      select: ['generation'],
+    });
+    if ((latestGeneration?.generation ?? 1) !== (startingGeneration?.generation ?? 1)) {
+      throw new ConflictException('题库刚刚完成更新，请重新开始考试');
+    }
     let attempt: ExamAttempt;
     try {
-      attempt = await this.attempts.save(
-        this.attempts.create({
-          tenantId: user.tenantId,
-          userId: user.userId,
-          courseId: dto.courseId ?? null,
-          category,
-          questionIds: picked.map((q) => q.id),
-          questionSnapshots: snapshots,
-          answers: {},
-          total: picked.length,
-          status: 'in_progress',
-          activeKey: 'active',
-          draftVersion: 0,
-          draftHash: '',
-          currentQuestionIndex: 0,
-          abandonedAt: null,
-        }),
-      );
+      // 原先“代际复核”和“考试记录落库”之间仍有窗口，题库替换可能漏掉刚创建的旧卷。
+      // 与题库发布共用代际行写锁，把最终复核和落库串行化。
+      attempt = await this.dataSource.transaction(async (manager) => {
+        const supportsLocks = !['better-sqlite3', 'sqlite'].includes(String(manager.connection.options.type));
+        const lockedGeneration = await manager.findOne(QuestionCategoryGeneration, {
+          where: { tenantId: user.tenantId, category },
+          select: ['generation'],
+          ...(supportsLocks ? { lock: { mode: 'pessimistic_read' as const } } : {}),
+        });
+        if ((lockedGeneration?.generation ?? 1) !== (startingGeneration?.generation ?? 1)) {
+          throw new ConflictException('题库刚刚完成更新，请重新开始考试');
+        }
+        return manager.save(
+          ExamAttempt,
+          manager.create(ExamAttempt, {
+            tenantId: user.tenantId,
+            userId: user.userId,
+            courseId: dto.courseId ?? null,
+            category,
+            questionIds: picked.map((q) => q.id),
+            questionSnapshots: snapshots,
+            answers: {},
+            total: picked.length,
+            status: 'in_progress',
+            activeKey: 'active',
+            draftVersion: 0,
+            draftHash: '',
+            currentQuestionIndex: 0,
+            abandonedAt: null,
+          }),
+        );
+      });
     } catch (error) {
       if (!(error instanceof QueryFailedError)) throw error;
       const raced = await this.findActiveAttempt(user);
@@ -768,13 +796,14 @@ export class ExamService {
     questionId: string,
     source: WrongQuestionSource,
     now: Date,
+    wrongBookRepo: Repository<WrongQuestion> = this.wrongBookRepo,
   ): Promise<void> {
     const bump = async (): Promise<boolean> => {
-      const row = await this.wrongBookRepo.findOne({
+      const row = await wrongBookRepo.findOne({
         where: { tenantId: user.tenantId, userId: user.userId, questionId, source },
       });
       if (!row) return false;
-      await this.wrongBookRepo.update(row.id, {
+      await wrongBookRepo.update(row.id, {
         wrongCount: row.wrongCount + 1,
         status: 'open',
         lastWrongAt: now,
@@ -783,8 +812,8 @@ export class ExamService {
     };
     if (await bump()) return;
     try {
-      await this.wrongBookRepo.save(
-        this.wrongBookRepo.create({
+      await wrongBookRepo.save(
+        wrongBookRepo.create({
           tenantId: user.tenantId,
           userId: user.userId,
           questionId,
@@ -810,23 +839,27 @@ export class ExamService {
     questionId: string,
     answer: string,
   ): Promise<{ ok: true; recorded: boolean; practice: QuestionPracticeSummary }> {
-    const q = await this.questions.findOne({ where: { tenantId: user.tenantId, id: questionId } });
-    if (!q) throw new NotFoundException('题目不存在');
-    const now = new Date();
-    const isCorrect = normalize(answer) === q.answer;
-    await this.saveStudyProgress(user, q, now);
-    await this.recordQuestionPractice(user, questionId, isCorrect, now);
-    const practice = await this.loadQuestionPracticeSummary(user, questionId);
-    if (isCorrect) return { ok: true, recorded: false, practice };
-    await this.recordWrong(user, questionId, 'study', now);
-    return { ok: true, recorded: true, practice };
+    return this.withLockedStudyQuestion(user, questionId, async (manager, q) => {
+      const now = new Date();
+      const isCorrect = normalize(answer) === q.answer;
+      const progressRepo = manager.getRepository(StudyQuestionProgress);
+      const practices = manager.getRepository(QuestionPractice);
+      const wrongBookRepo = manager.getRepository(WrongQuestion);
+      await this.saveStudyProgress(user, q, now, progressRepo);
+      await this.recordQuestionPractice(user, questionId, isCorrect, now, practices);
+      const practice = await this.loadQuestionPracticeSummary(user, questionId, practices);
+      if (isCorrect) return { ok: true, recorded: false, practice };
+      await this.recordWrong(user, questionId, 'study', now, wrongBookRepo);
+      return { ok: true, recorded: true, practice };
+    });
   }
 
   private async loadQuestionPracticeSummary(
     user: AuthUser,
     questionId: string,
+    practices: Repository<QuestionPractice> = this.practices,
   ): Promise<QuestionPracticeSummary> {
-    const row = await this.practices.findOne({
+    const row = await practices.findOne({
       where: { tenantId: user.tenantId, userId: user.userId, questionId },
       select: ['seenCount', 'correctCount', 'wrongCount'],
     });
@@ -838,10 +871,35 @@ export class ExamService {
   }
 
   async recordStudyProgress(user: AuthUser, questionId: string): Promise<{ ok: true }> {
-    const q = await this.questions.findOne({ where: { tenantId: user.tenantId, id: questionId } });
-    if (!q) throw new NotFoundException('题目不存在');
-    await this.saveStudyProgress(user, q, new Date());
-    return { ok: true };
+    return this.withLockedStudyQuestion(user, questionId, async (manager, q) => {
+      await this.saveStudyProgress(user, q, new Date(), manager.getRepository(StudyQuestionProgress));
+      return { ok: true };
+    });
+  }
+
+  private async withLockedStudyQuestion<T>(
+    user: AuthUser,
+    questionId: string,
+    work: (manager: EntityManager, question: Question) => Promise<T>,
+  ): Promise<T> {
+    const snapshot = await this.questions.findOne({ where: { tenantId: user.tenantId, id: questionId } });
+    if (!snapshot) throw new ConflictException('题库已更新，请重新加载当前章节');
+    return this.dataSource.transaction(async (manager) => {
+      const supportsLocks = !['better-sqlite3', 'sqlite'].includes(String(manager.connection.options.type));
+      const generation = await manager.findOne(QuestionCategoryGeneration, {
+        where: { tenantId: user.tenantId, category: snapshot.category },
+        select: ['generation'],
+        ...(supportsLocks ? { lock: { mode: 'pessimistic_read' as const } } : {}),
+      });
+      if ((generation?.generation ?? 1) !== snapshot.generation) {
+        throw new ConflictException('题库已更新，请重新加载当前章节');
+      }
+      const current = await manager.findOne(Question, {
+        where: { tenantId: user.tenantId, id: questionId, generation: snapshot.generation },
+      });
+      if (!current) throw new ConflictException('题库已更新，请重新加载当前章节');
+      return work(manager, current);
+    });
   }
 
   async recordStudyStart(user: AuthUser, dto: StudyStartDto): Promise<{ ok: true }> {
@@ -853,17 +911,23 @@ export class ExamService {
   }
 
   // 顺序学习进度只更新游标,不写错题和行为日志。
-  private async saveStudyProgress(user: AuthUser, q: Question, now: Date): Promise<void> {
-    await this.studyProgress.upsert(
+  private async saveStudyProgress(
+    user: AuthUser,
+    q: Question,
+    now: Date,
+    studyProgress: Repository<StudyQuestionProgress> = this.studyProgress,
+  ): Promise<void> {
+    await studyProgress.upsert(
       {
         tenantId: user.tenantId,
         userId: user.userId,
         category: q.category,
         courseId: q.courseId ?? '',
+        chapterName: q.chapterName ?? '',
         questionId: q.id,
         lastStudiedAt: now,
       },
-      ['tenantId', 'userId', 'category', 'courseId'],
+      ['tenantId', 'userId', 'category', 'courseId', 'chapterName'],
     );
   }
 
@@ -1120,7 +1184,7 @@ export class ExamRuleAdminController {
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Question, ExamAttempt, WrongQuestion, QuestionPractice, ExamPaperRule, StudyQuestionProgress, AdminOperationLog]),
+    TypeOrmModule.forFeature([Question, QuestionCategoryGeneration, ExamAttempt, WrongQuestion, QuestionPractice, ExamPaperRule, StudyQuestionProgress, AdminOperationLog]),
     QuestionPoolCacheModule,
     UserActivityModule,
   ],

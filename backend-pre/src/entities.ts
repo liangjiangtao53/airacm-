@@ -40,7 +40,7 @@ export type QuestionType = 'single' | 'multiple';
 export type QuestionUsage = 'study' | 'exam' | 'both';
 export type WrongQuestionSource = 'study' | 'exam';
 export type RegistrationSource = 'key' | 'register' | 'wechat';
-export type QuestionImportStatus = 'completed' | 'failed';
+export type QuestionImportStatus = 'previewed' | 'publishing' | 'published' | 'completed' | 'failed' | 'expired';
 export type UserActivityAction =
   | 'login_password'
   | 'login_access_key'
@@ -168,8 +168,42 @@ export class QuestionImportBatch {
   @Column({ type: 'varchar', default: 'completed' })
   status!: QuestionImportStatus;
 
+  @Column({ type: 'simple-json', nullable: true })
+  previewData!: Record<string, unknown> | null;
+
+  @Column({ type: 'text', nullable: true })
+  stagedFilePath!: string | null;
+
+  @Column({ type: TS_TYPE, nullable: true })
+  expiresAt!: Date | null;
+
+  @Column({ type: TS_TYPE, nullable: true })
+  publishedAt!: Date | null;
+
+  @Column({ type: 'integer', nullable: true })
+  generation!: number | null;
+
   @CreateDateColumn()
   createdAt!: Date;
+}
+
+@Entity('question_category_generation')
+@Index(['tenantId', 'category'], { unique: true })
+export class QuestionCategoryGeneration {
+  @PrimaryGeneratedColumn('uuid')
+  id!: string;
+
+  @Column({ length: 64 })
+  tenantId!: string;
+
+  @Column({ length: 50 })
+  category!: string;
+
+  @Column({ type: 'integer', default: 1 })
+  generation!: number;
+
+  @UpdateDateColumn()
+  updatedAt!: Date;
 }
 
 @Entity('admin_operation_log')
@@ -573,6 +607,7 @@ export class Progress {
 @Index('IDX_question_tenant_course_order', ['tenantId', 'courseId', 'order'])
 @Index(['tenantId', 'category'])
 @Index('IDX_question_tenant_category_order', ['tenantId', 'category', 'order'])
+@Index('IDX_question_tenant_category_chapter_order', ['tenantId', 'category', 'generation', 'chapterOrder', 'chapterQuestionOrder'])
 export class Question {
   @PrimaryGeneratedColumn('uuid')
   id!: string;
@@ -583,6 +618,20 @@ export class Question {
   // 科目分类(QUESTION_CATEGORIES 之一)。空串表示未分类。
   @Column({ default: '' })
   category!: string;
+
+  // 受管题库发布代际。普通题库保持 1；M1 整包发布时整体递增。
+  @Column({ type: 'integer', default: 1 })
+  generation!: number;
+
+  // Excel 工作表即学习章节；无章节的旧题保持空串。
+  @Column({ length: 100, default: '' })
+  chapterName!: string;
+
+  @Column({ type: 'integer', default: 0 })
+  chapterOrder!: number;
+
+  @Column({ type: 'integer', default: 0 })
+  chapterQuestionOrder!: number;
 
   // 可挂课程,也可建独立题库(null)。
   @Column({ type: 'varchar', nullable: true })
@@ -739,7 +788,7 @@ export class QuestionPractice {
 
 // 顺序学习进度:只由专题学习查看答案推进,避免模拟考试记录污染学习游标。
 @Entity('study_question_progress')
-@Index(['tenantId', 'userId', 'category', 'courseId'], { unique: true })
+@Index(['tenantId', 'userId', 'category', 'courseId', 'chapterName'], { unique: true })
 export class StudyQuestionProgress {
   @PrimaryGeneratedColumn('uuid')
   id!: string;
@@ -755,6 +804,9 @@ export class StudyQuestionProgress {
 
   @Column({ length: 64, default: '' })
   courseId!: string;
+
+  @Column({ length: 100, default: '' })
+  chapterName!: string;
 
   @Column({ length: 64 })
   questionId!: string;
@@ -1014,6 +1066,7 @@ export const ALL_ENTITIES = [
   Progress,
   Question,
   QuestionImportBatch,
+  QuestionCategoryGeneration,
   AdminOperationLog,
   ExamPaperRule,
   QuestionCategoryEntity,

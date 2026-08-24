@@ -18,6 +18,7 @@ import { Observable } from 'rxjs';
 import { map } from 'rxjs/operators';
 import { env } from './config';
 import { SessionService } from './session';
+import { randomUUID } from 'crypto';
 
 // user 普通学员 / admin 业务管理员 / super 超级管理员(全权,自动满足任意 @Roles)。
 export type UserRole = 'user' | 'admin' | 'super';
@@ -47,13 +48,22 @@ export interface ApiResponse<T> {
   success: boolean;
   data: T | null;
   error: string | null;
+  code: string | null;
+  requestId: string;
 }
 
 @Injectable()
 export class ApiResponseInterceptor implements NestInterceptor {
-  intercept(_ctx: ExecutionContext, next: CallHandler): Observable<unknown> {
+  intercept(ctx: ExecutionContext, next: CallHandler): Observable<unknown> {
+    const http = ctx.switchToHttp();
+    const req = http.getRequest();
+    const res = http.getResponse();
+    const supplied = String(req?.headers?.['x-request-id'] ?? '');
+    const requestId = /^[a-zA-Z0-9._:-]{1,100}$/.test(supplied) ? supplied : randomUUID();
+    req.requestId = requestId;
+    res.setHeader('X-Request-Id', requestId);
     return next.handle().pipe(
-      map((data): ApiResponse<unknown> => ({ success: true, data: data ?? null, error: null })),
+      map((data): ApiResponse<unknown> => ({ success: true, data: data ?? null, error: null, code: null, requestId })),
     );
   }
 }
@@ -150,6 +160,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
 
     let status = HttpStatus.INTERNAL_SERVER_ERROR;
     let message = '服务器内部错误';
+    let explicitCode = '';
 
     if (exception instanceof HttpException) {
       status = exception.getStatus();
@@ -157,7 +168,8 @@ export class AllExceptionsFilter implements ExceptionFilter {
       if (typeof body === 'string') {
         message = body;
       } else if (body && typeof body === 'object') {
-        const m = (body as { message?: string | string[] }).message;
+        const m = (body as { message?: string | string[]; code?: string }).message;
+        explicitCode = (body as { code?: string }).code ?? '';
         message = Array.isArray(m) ? m.join('; ') : m ?? exception.message;
       }
     }
@@ -171,6 +183,24 @@ export class AllExceptionsFilter implements ExceptionFilter {
       if (env.isProd) message = '服务器内部错误';
     }
 
-    res.status(status).json({ success: false, data: null, error: message });
+    const supplied = String(req?.requestId ?? req?.headers?.['x-request-id'] ?? '');
+    const requestId = /^[a-zA-Z0-9._:-]{1,100}$/.test(supplied) ? supplied : randomUUID();
+    const code = explicitCode || this.errorCode(status, message);
+    res.setHeader('X-Request-Id', requestId);
+    if (status === HttpStatus.SERVICE_UNAVAILABLE && !res.getHeader('Retry-After')) res.setHeader('Retry-After', '2');
+    res.status(status).json({ success: false, data: null, error: message, code, requestId });
+  }
+
+  private errorCode(status: number, message: string): string {
+    if (message.includes('预检批次已过期') || message.includes('预检源文件已清理')) return 'PREVIEW_EXPIRED';
+    if (message.includes('题库已更新') || message.includes('题库刚刚')) return 'QUESTION_SET_UPDATED';
+    if (status === HttpStatus.BAD_REQUEST || status === HttpStatus.UNPROCESSABLE_ENTITY) return 'VALIDATION_ERROR';
+    if (status === HttpStatus.UNAUTHORIZED) return 'UNAUTHORIZED';
+    if (status === HttpStatus.FORBIDDEN) return 'FORBIDDEN';
+    if (status === HttpStatus.NOT_FOUND) return 'NOT_FOUND';
+    if (status === HttpStatus.CONFLICT) return 'CONFLICT';
+    if (status === HttpStatus.GONE) return 'GONE';
+    if (status === HttpStatus.SERVICE_UNAVAILABLE) return 'SERVICE_BUSY';
+    return status >= 500 ? 'INTERNAL_ERROR' : 'REQUEST_FAILED';
   }
 }

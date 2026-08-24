@@ -43,6 +43,7 @@ services:
       CORS_ORIGINS: ${CORS_ORIGINS:-}
       APP_APK_PATH: /app/uploads/app/airacm-android.apk
       QUESTION_IMAGE_DIR: /app/uploads/question-images
+      QUESTION_IMPORT_DIR: /app/uploads/question-imports
       CUSTOMER_SERVICE_QR_PATH: /app/uploads/customer-service/customer-service-qr.png
       SMS_DEV_MODE: ${SMS_DEV_MODE:-false}
       ALI_SMS_AK_ID: ${ALI_SMS_AK_ID:-}
@@ -61,6 +62,7 @@ services:
     volumes:
       - ${APP_UPLOAD_DIR:-./uploads/app}:/app/uploads/app
       - ${QUESTION_IMAGE_DIR:-./uploads/question-images}:/app/uploads/question-images
+      - ${QUESTION_IMPORT_DIR:-./uploads/question-imports}:/app/uploads/question-imports
       - ${CUSTOMER_SERVICE_QR_DIR:-./uploads/customer-service}:/app/uploads/customer-service:ro
     expose:
       - '8770'
