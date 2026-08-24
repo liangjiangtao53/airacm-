@@ -12,7 +12,7 @@
                    └ /api/  → api:8770        (内网,去 /api 前缀)
                                 ├ question-images/ → uploads/question-images/
                                 ├ question-imports/ → uploads/question-imports/
-                                └ db:5432      (内网)
+                                └ db:3306      (内网)
 ```
 
 ---
@@ -33,7 +33,7 @@
    | 80 | TCP | 0.0.0.0/0 | HTTP(跳转 HTTPS) |
    | 443 | TCP | 0.0.0.0/0 | HTTPS |
 
-   > 不要放行 3000/8770/5432,它们只在容器内网。
+   > 不要放行 3000/8770/3306,它们只在容器内网。
 
 3. 域名(可选但强烈建议):在阿里云域名控制台把 **A 记录解析到 ECS 公网 IP**。签 TLS 证书必需。
 
@@ -196,7 +196,7 @@ sed -i 's/your-domain.com/你的真实域名/g' deploy/nginx/airacm.conf
 
 ```bash
 # App 安装包、题库图片和 M1 预检临时目录:api 写入,nginx/frontend 读取。
-mkdir -p uploads/app uploads/question-images uploads/question-imports
+mkdir -p uploads/app uploads/question-images uploads/question-imports uploads/customer-service
 # 首次部署如本地包里已有测试 APK,先复制一份到共享目录;后续由后台上传覆盖。
 cp -n frontend/public/downloads/app/airacm-android.apk uploads/app/airacm-android.apk 2>/dev/null || true
 # api 容器以 node 用户(UID 1000)运行,需要写权限。
@@ -300,7 +300,7 @@ docker compose build
 docker compose up -d
 ```
 
-> 数据库数据在 `pgdata` 卷里,App 安装包在 `uploads/app` 目录里,题目图片在 `uploads/question-images` 目录里；M1 预检源文件暂存在 `uploads/question-imports` 并会自动清理。
+> 数据库数据在 `mysql_data` 卷里,App 安装包在 `uploads/app` 目录里,题目图片在 `uploads/question-images` 目录里；M1 预检源文件暂存在 `uploads/question-imports` 并会自动清理。
 
 ---
 
@@ -384,7 +384,9 @@ docker compose restart
 
 ### 导入题库 / 生成卡密
 
-- 题库 Excel:登录后台 → 数据维护 → 上传 Excel,选科目与"考试+学习"
+- 普通题库 Excel:登录后台 → 数据维护 → 上传 Excel,选科目与"考试+学习"。`M1 航空概论` 不走该入口。
+- M1 整包:登录后台 → 数据维护 → 上传 `.xlsx` 并执行“校验并准备发布” → 核对第1章至第7章共 1698 题 → 在 2 小时内输入页面给出的确认语发布。压缩文件不得超过 5MB,解压总量不得超过 25MB。
+- 发布会原子替换 M1、清空旧章节续学位置并放弃尚未完成的 M1 考试;已提交考试历史保留。客户端遇到题库更新会重新加载章节。
 - 生成卡密:
   ```bash
   docker compose exec api node dist/gen-keys.js          # 默认 20 个 / 30 天
@@ -422,7 +424,7 @@ docker compose restart
 - [ ] TLS 证书有效,续期 cron 已配
 - [ ] 数据库每日备份,验证过能恢复
 - [ ] `DB_SYNC` 保持 `false`
-- [ ] `uploads/app`、`uploads/question-images`、`uploads/question-imports` 已创建并归 UID 1000 所有，后台上传 APK 后下载地址返回 200
+- [ ] `uploads/app`、`uploads/question-images`、`uploads/question-imports`、`uploads/customer-service` 已创建并归 UID 1000 所有，后台上传 APK 后下载地址返回 200
 
 ---
 
@@ -438,3 +440,4 @@ docker compose restart
 | `uploads/app/` | App 安装包共享目录(服务器持久化,不进镜像) |
 | `uploads/question-images/` | 题库图片共享目录(服务器持久化,不进镜像) |
 | `uploads/question-imports/` | M1 预检临时目录(服务器持久化,自动清理,不进镜像) |
+| `uploads/customer-service/` | 客服二维码目录,放置 `customer-service-qr.png` 后无需重新构建客户端 |

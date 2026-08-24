@@ -24,6 +24,8 @@ npm test                                  # 跑测试(自动用内存 sqlite)
 npm run build                             # 编译
 ```
 
+`M1 航空概论` 是整包管理科目,不能使用普通导入、删除或改名入口。请由管理后台上传 `.xlsx` 完成预检,核对 7 章共 1698 题后输入确认语发布；预检文件 2 小时过期,发布会原子切换题库代际。
+
 ## 默认管理员(seed 写入,生产务必改)
 
 | 角色 | 手机号 | 密码 | 配置项 |
@@ -35,8 +37,7 @@ npm run build                             # 编译
 
 ## 生产部署 (MySQL)
 
-> 本项目暂未提供 TypeORM 迁移文件。首次部署用 `DB_SYNC=true` 让 TypeORM 按实体自动建表,
-> 建完**立即改回 false**,避免后续实体变更被自动同步误改生产表结构。
+生产表结构使用 `src/migrations/*` 中的 TypeORM migration 更新,`DB_SYNC` 必须保持 `false`。首次建库和后续升级都先备份,再运行 migration；不要在生产用实体自动同步替代 migration。
 
 ```bash
 # .env(生产)示例
@@ -45,7 +46,7 @@ DB_TYPE=mysql
 DB_HOST=192.168.22.10
 DB_PORT=3306
 DB_USER=root
-DB_PASSWORD=123456
+DB_PASSWORD=<强随机密码>
 DB_DATABASE=airacm
 JWT_SECRET=<openssl rand -hex 32 生成的强随机串>   # 缺失则拒绝启动
 CORS_ORIGINS=https://你的前端域名                    # 生产必填,否则前端跨域被拦
@@ -62,7 +63,7 @@ npm run build && npm run start:prod
 
 ## 模块
 
-auth(注册/登录/卡密) · wallet · course · order · payment · progress ·
-question(题库/导入/评论) · exam(组卷判分/错题本) · access-key(卡密) · admin(发码/充值/建课/用户管理)
+auth(注册/登录/微信绑定/卡密) · wallet · course · order · payment · progress ·
+question(题库/分章整包发布/评论) · exam(组卷判分/错题本/章节续学) · access-key(卡密及分配标记) · forum · app-release · admin
 
 金额一律以「分」存储;钱包扣减乐观锁+原子 UPDATE 防双花;支付/充值码唯一索引幂等。

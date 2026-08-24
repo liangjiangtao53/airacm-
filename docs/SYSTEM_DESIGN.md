@@ -27,12 +27,13 @@ Client(Next.js / uni-app / Android WebView) --/api/*--> NestJS
 - **Controller**: 路由、JwtAuthGuard/RolesGuard 鉴权、DTO 校验
 - **Service**: 业务逻辑、事务、缓存
 - **Repository**: TypeORM 数据访问
-- **统一响应信封** `{success, data, error}` + 全局异常过滤器
+- **统一响应信封** `{success, data, error, code, requestId}` + 全局异常过滤器;`X-Request-Id` 同步返回便于定位
 
-## 3. 数据模型(12 表)
+## 3. 核心数据模型
 tenant, user, wallet, wallet_txn, recharge_code, access_key, course, chapter, lesson,
 order, recharge_order, entitlement, progress, question, comment, exam_attempt,
-exam_answer, wrong_book, forum_topic, post
+exam_answer, wrong_book, forum_topic, post, study_question_progress, question_import_batch,
+question_category_generation, admin_operation_log, wechat_bind_session
 
 设计要点:
 - uuid 主键,所有表带 `tenantId`(多租户隔离)
@@ -51,6 +52,8 @@ exam_answer, wrong_book, forum_topic, post
 | 微信回调幂等 | transaction_id 唯一 + 预单金额对账 |
 | 越权 | JwtAuthGuard(验 token) + RolesGuard(验 role) + tenantId 隔离 |
 | 题目图片持久化 | Excel 图片保存到 `QUESTION_IMAGE_DIR`,URL 存入 `question.imageUrls` |
+| M1 整包发布 | 预检批次 + 题库 generation 行锁;事务内放弃旧 M1 未完成考试、清理旧进度、替换 1698 题并切换代际 |
+| 发布中的读写竞态 | 学习、考试开始和进度上报校验 generation;题库已切换时返回稳定错误码 `QUESTION_SET_UPDATED` |
 
 ## 5. 性能优化设计(支撑 2000 人学习)
 | 优化 | 设计 |
@@ -63,7 +66,7 @@ exam_answer, wrong_book, forum_topic, post
 | 连接池 | MySQL connectionLimit 20(可配)+ 连接超时 + 慢查询日志(>1s) |
 | 限流 | login 5/分、send-code 3/分、全局 120/分,均可配 |
 | 缓存可降级 | REDIS_URL 配置则多实例共享,否则内存;接口 async,业务无感 |
-| 学习分页 | 学习端支持 10/20/30 每页,默认 10;后端分页返回 total/page/pageSize |
+| 学习分页 | 普通科目按 20 题分页;M1 先读取章节列表,按章分页并保存每章独立续学位置 |
 | APK 分发 | 固定下载路径 `/downloads/app/airacm-android.apk`,后台上传覆盖共享目录 |
 
 ## 6. 关键 API
@@ -80,15 +83,21 @@ exam_answer, wrong_book, forum_topic, post
 | POST | /progress、GET /progress/:lessonId | 进度上报/查询 |
 | POST | /admin/recharge-codes、/admin/wallet/recharge、/admin/courses、/admin/chapters、/admin/lessons | 管理(需 admin) |
 | GET | /questions/categories | 题库科目 |
+| GET | /questions/chapters?category= | 章节及各章题量/续学位置;当前 M1 返回 7 章 |
 | GET | /questions?usage=&category=&page=&pageSize= | 学习题列表(默认不下发答案) |
 | GET | /questions/:id/answer | 学习题答案/解析 |
 | GET/POST | /questions/:id/comments | 题目评论读取/发表 |
 | POST | /admin/questions/import | 管理员导入 Excel/PDF 题库 |
+| POST | /admin/questions/m1/preflight | M1 `.xlsx` 整包校验并生成 2 小时预检批次 |
+| POST | /admin/questions/m1/:batchId/publish | 输入确认语后原子发布 M1 新代际 |
+| POST | /exams/study/progress | 保存当前题目的章节续学位置 |
 | POST | /exams/start、/exams/:id/submit | 开始考试/交卷判分 |
 | GET | /exams/history、/exams/:id/review | 考试历史/复盘 |
 | GET/POST | /exams/wrong-book、/exams/wrong-book/:questionId/master | 错题本/标记掌握 |
 | GET/POST | /forum/topics、/posts | 交流版块和帖子 |
 | GET/POST | /admin/app/apk | APK 状态与上传 |
+| GET | /app/customer-service-qr | 客服二维码,真实文件缺失时返回内置回退资源 |
+| POST | /admin/access-keys/:id/assignment | 标记卡密人工分配状态并写审计日志 |
 
 ## 7. 学员端信息架构
 
@@ -110,8 +119,9 @@ exam_answer, wrong_book, forum_topic, post
 | 普通 Excel | 表头驱动解析,兼容列顺序变化 | 题目、选项、答案、解析 |
 | WPS 带图 Excel | 解析 `DISPIMG` 与 workbook 内图片关系 | 图片文件 + `question.imageUrls` |
 | PDF | 针对 M9 参考试题解析 | `M9 new` 科目,用于版本对比 |
+| M1 整包 `.xlsx` | 固定第1章至第7章,校验各章题数、1698 总题量和 23 个图片单元格 | 预检摘要;确认后原子替换为新的 generation |
 
-导入后同一题目数据被学习、考试、考试回顾、错题本复用;图片 URL 通过 `/question-images/:file` 输出,并设置跨源资源策略供 Web 前端加载。
+普通导入后同一题目数据被学习、考试、考试回顾、错题本复用;图片 URL 通过 `/question-images/:file` 输出,并设置跨源资源策略供 Web 前端加载。M1 是保留科目,普通导入、改名、删除和批量删除入口都会拒绝,只能使用整包预检/发布流程。
 
 ## 9. 部署与扩展路径
 - 单实例:当前配置,2000 人学习余量充足

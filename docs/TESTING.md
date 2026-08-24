@@ -3,7 +3,7 @@
 ## 1. 测试策略
 | 层级 | 工具 | 覆盖 |
 |---|---|---|
-| 集成测试 | Jest + supertest | 架构关键不变量(并发/幂等/权限/题库/App 上传) |
+| 集成测试 | Jest + supertest | 架构关键不变量(并发/幂等/权限/M1 原子发布/App 上传) |
 | 单元覆盖 | Jest --coverage(v8) | 行覆盖率约 85% |
 | 压力测试 | 自研 Node 脚本(bench.js/benchpost.js) | QPS/p99 承载 |
 | 前端构建 | Next.js build / uni build | Web 页面和 App H5 产物 |
@@ -53,10 +53,17 @@
 - 卡密登录、单点登录、资料补全
 - 管理员用户维护和角色分层
 
+### 2.7 M1 整包发布与公共协议
+- `m1-workbook.release.spec.ts`:仅接受 `.xlsx`,限制压缩/解压大小,校验工作表顺序、各章题数、总题量和图片数量;覆盖预检过期、确认语错误、源文件缺失/篡改、重复发布和并发代际冲突。
+- 发布后只保留新 generation,清理章节学习进度,放弃所有尚未完成的 M1 考试(含历史 `activeKey=NULL` 记录),保留已提交历史。
+- `m1-migration.spec.ts`:M1 字段、generation 表和索引可幂等创建,兼容既有数据库。
+- `common-protocol.spec.ts`:成功/失败响应都带 `code`、`requestId` 和 `X-Request-Id`;题库切换使用稳定码 `QUESTION_SET_UPDATED`。
+- `access-key-assigned-migration.spec.ts`:卡密人工分配字段迁移可重复执行。
+
 ## 3. 测试命令
 ```bash
 cd backend-pre
-npx jest --runInBand            # 全部测试(32/32)
+npx jest --runInBand            # 当前全部测试(11 suites / 110 tests)
 npx jest --clearCache           # ts-jest 缓存假失败时先清
 npm run test:cov                # 覆盖率(约 85%)
 ```
@@ -87,6 +94,8 @@ powershell -ExecutionPolicy Bypass -File scripts\package-student-apk.ps1 -BuildB
 
 ### 3.2 最近验证结果
 
+- 后端全量 Jest:11 个测试套件、110 项测试通过。
+- 后端 `npm run build`:通过。
 - `new-features.spec.ts`:36/36 通过。
 - `frontend run build`:通过。
 - `apps/student-uni run build:h5 -- --base ./`:通过。
@@ -100,7 +109,9 @@ powershell -ExecutionPolicy Bypass -File scripts\package-student-apk.ps1 -BuildB
 - Web 普通用户首页:只显示交流、下载 App、专升本。
 - Web 业务管理员/超级管理员首页:显示学习、考试、回顾、错题本、交流、下载 App、专升本、管理后台。
 - App 首页:显示学习、考试、回顾、错题本、交流、专升本。
-- App 学习页:10/20/30 每页、输入页码后点击跳转、查看答案旁评论。
+- Web / App M1 学习页:显示第1章至第7章及各章题量,切换章节后从该章独立续学位置恢复;快速切章不能显示上一章的迟到响应。
+- Web / App 发布恢复:学习中发布新 M1 后,页面能识别 `QUESTION_SET_UPDATED`,重新加载章节并落到有效题目。
+- App 其他科目学习页:20 题分页、输入页码后点击跳转、查看答案旁评论。
 - App 错题本:查看答案/已掌握旁评论。
 - App 防截图:真机或模拟器截图不应露出 App 内容。
 - 双包截图验证:先安装 `D:\AndroidLab\apk\airacm-android-screenshot.apk`，截图应显示 App；再安装 `D:\AndroidLab\apk\airacm-android.apk`，截图应隐藏 App 内容。允许截图包不得复制到 `frontend/public` 或提交。
