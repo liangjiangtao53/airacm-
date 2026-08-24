@@ -1,14 +1,20 @@
 <script setup lang="ts">
 import { onShow, onUnload } from '@dcloudio/uni-app';
 import { computed, ref, watch } from 'vue';
-import { api, assetUrl, requireLogin, type QuestionItem } from '@/utils/api';
+import { ApiError, api, assetUrl, requireLogin, type QuestionChapter, type QuestionItem } from '@/utils/api';
 // #ifndef MP-WEIXIN
 import type { CommentItem } from '@/utils/api';
 // #endif
 import { disableCaptureProtection, enableCaptureProtection } from '@/utils/capture';
+import { buildStudyScope, resolveStudyChapter, shouldReloadStudyScope } from '@/utils/study-scope';
 
 const categories = ref<string[]>([]);
 const category = ref('');
+const chapters = ref<QuestionChapter[]>([]);
+const chapter = ref('');
+const chapterReady = ref(false);
+const chapterLoading = ref(false);
+const loadError = ref('');
 const keyword = ref('');
 const questions = ref<QuestionItem[]>([]);
 const picked = ref<Record<string, string[]>>({});
@@ -30,7 +36,13 @@ const commentLists = ref<Record<string, CommentItem[]>>({});
 // #endif
 const startedStudyCategories = ref(new Set<string>());
 const progressRecorded = ref<Record<string, boolean>>({});
-const loadedCategory = ref('');
+const loadedScope = ref('');
+const requestSequence = ref(0);
+const chapterRequestSequence = ref(0);
+const chapterByCategory = ref<Record<string, string>>({});
+const chapterLabels = computed(() => chapters.value.map((item) => `${item.name}（${item.questionCount}题）`));
+const selectedChapter = computed(() => chapters.value.find((item) => item.name === chapter.value) || null);
+const currentScope = computed(() => buildStudyScope(category.value, chapter.value));
 const currentQuestion = computed(() => questions.value[currentIndex.value] || null);
 const currentNumber = computed(() => (page.value - 1) * pageSize.value + currentIndex.value + 1);
 const canPrev = computed(() => page.value > 1 || currentIndex.value > 0);
@@ -55,33 +67,89 @@ async function loadCategories() {
   }
 }
 
+async function loadChapters() {
+  if (!category.value) return;
+  const targetCategory = category.value;
+  const sequence = ++chapterRequestSequence.value;
+  chapterLoading.value = true;
+  chapterReady.value = false;
+  loadError.value = '';
+  try {
+    const rows = await api.chapters(targetCategory);
+    if (sequence !== chapterRequestSequence.value || targetCategory !== category.value) return;
+    chapters.value = rows;
+    if (!rows.length) {
+      chapter.value = '';
+      if (targetCategory === 'M1 航空概论') {
+        loadError.value = 'M1 章节暂不可用，请重新加载';
+        return;
+      }
+      chapterReady.value = true;
+      return;
+    }
+    const saved = chapterByCategory.value[targetCategory];
+    chapter.value = resolveStudyChapter(rows, saved)?.name ?? '';
+    chapterByCategory.value[targetCategory] = chapter.value;
+    chapterReady.value = true;
+  } catch (e) {
+    if (sequence !== chapterRequestSequence.value || targetCategory !== category.value) return;
+    chapters.value = [];
+    chapter.value = '';
+    loadError.value = (e as Error).message;
+  } finally {
+    if (sequence === chapterRequestSequence.value) chapterLoading.value = false;
+  }
+}
+
+function resetScopeState() {
+  requestSequence.value += 1;
+  picked.value = {};
+  answers.value = {};
+  autoRevealed.value = {};
+  explanationOpen.value = {};
+  progressRecorded.value = {};
+  questions.value = [];
+  total.value = 0;
+  currentIndex.value = 0;
+}
+
 async function loadQuestions(reset = false, targetIndex = 0) {
   if (!requireLogin()) return;
   if (reset) {
     page.value = 1;
   }
-  if (!category.value) return;
+  if (!category.value || !chapterReady.value || (chapters.value.length > 0 && !chapter.value)) return;
   loading.value = true;
+  loadError.value = '';
+  const sequence = ++requestSequence.value;
   try {
     const keywordText = keyword.value.trim();
     const res = await api.questions({
       usage: 'study',
       category: category.value,
+      chapter: chapter.value || undefined,
       keyword: keywordText || undefined,
       page: reset && !keywordText ? undefined : page.value,
       pageSize: pageSize.value,
     });
+    if (sequence !== requestSequence.value) return;
     questions.value = res.items;
     total.value = res.total;
     page.value = res.page;
     pageSize.value = res.pageSize;
     const nextIndex = reset ? (res.startIndex ?? targetIndex) : targetIndex;
     currentIndex.value = Math.min(Math.max(0, nextIndex), Math.max(0, res.items.length - 1));
-    loadedCategory.value = category.value;
+    loadedScope.value = currentScope.value;
   } catch (e) {
-    toast((e as Error).message);
+    if (sequence !== requestSequence.value) return;
+    const error = e as Error;
+    loadError.value = error.message;
+    toast(error.message);
+    if (error instanceof ApiError && error.code === 'QUESTION_SET_UPDATED') {
+      await loadChapters();
+    }
   } finally {
-    loading.value = false;
+    if (sequence === requestSequence.value) loading.value = false;
   }
 }
 
@@ -96,13 +164,27 @@ async function recordStudyStart() {
   }
 }
 
-async function recordStudyProgress(id?: string) {
-  if (!id || progressRecorded.value[id]) return;
+async function recoverUpdatedQuestionSet() {
+  resetScopeState();
+  await loadChapters();
+  await loadQuestions(true);
+}
+
+async function recordStudyProgress(id?: string): Promise<boolean> {
+  if (!id || progressRecorded.value[id]) return false;
   progressRecorded.value[id] = true;
   try {
     await api.recordStudyProgress(id);
-  } catch {
+    return false;
+  } catch (e) {
     delete progressRecorded.value[id];
+    const error = e as Error;
+    if (error instanceof ApiError && (error.code === 'QUESTION_SET_UPDATED' || error.code === 'NOT_FOUND')) {
+      toast('题库已更新，正在重新加载');
+      await recoverUpdatedQuestionSet();
+      return true;
+    }
+    return false;
   }
 }
 
@@ -149,7 +231,13 @@ async function reveal(id: string, recordPractice = true, autoDisplay = false, op
       await recordStudyProgress(id);
     }
   } catch (e) {
-    toast((e as Error).message);
+    const error = e as Error;
+    if (error instanceof ApiError && (error.code === 'QUESTION_SET_UPDATED' || error.code === 'NOT_FOUND')) {
+      toast('题库已更新，正在重新加载');
+      await recoverUpdatedQuestionSet();
+      return;
+    }
+    toast(error.message);
   }
 }
 
@@ -200,21 +288,34 @@ function openExam() {
   uni.switchTab({ url: '/pages/exam/index' });
 }
 
-function changeCategory(e: { detail: { value: number } }) {
+async function changeCategory(e: { detail: { value: number } }) {
+  chapterRequestSequence.value += 1;
   category.value = categories.value[Number(e.detail.value)] || '';
-  picked.value = {};
-  answers.value = {};
-  explanationOpen.value = {};
-  progressRecorded.value = {};
-  recordStudyStart();
-  loadQuestions(true);
+  resetScopeState();
+  await loadChapters();
+  await recordStudyStart();
+  await loadQuestions(true);
+}
+
+async function changeChapter(e: { detail: { value: number } }) {
+  const selected = chapters.value[Number(e.detail.value)];
+  if (!selected || selected.name === chapter.value) return;
+  chapter.value = selected.name;
+  chapterByCategory.value[category.value] = chapter.value;
+  resetScopeState();
+  await loadQuestions(true);
+}
+
+async function retryLoad() {
+  await loadChapters();
+  await loadQuestions(true);
 }
 
 async function nextQuestion(delta: number) {
   const maxPage = Math.max(1, Math.ceil(total.value / pageSize.value));
   const nextIndex = currentIndex.value + delta;
   if (delta > 0) {
-    await recordStudyProgress(currentQuestion.value?.id);
+    if (await recordStudyProgress(currentQuestion.value?.id)) return;
   }
   if (nextIndex >= 0 && nextIndex < questions.value.length) {
     currentIndex.value = nextIndex;
@@ -235,7 +336,7 @@ async function jumpToQuestion() {
   if (!total.value) return;
   const target = Math.min(total.value, Math.max(1, Number(jumpNumber.value) || 1));
   if (target > currentNumber.value) {
-    await recordStudyProgress(currentQuestion.value?.id);
+    if (await recordStudyProgress(currentQuestion.value?.id)) return;
   }
   const targetPage = Math.max(1, Math.ceil(target / pageSize.value));
   const targetIndex = (target - 1) % pageSize.value;
@@ -300,9 +401,10 @@ onShow(async () => {
   enableCaptureProtection();
   try {
     await loadCategories();
+    await loadChapters();
     await recordStudyStart();
     // Tab 页面切到模拟考试后仍会保留实例；返回时保持顺序学习当前题和作答状态。
-    if (loadedCategory.value !== category.value) {
+    if (shouldReloadStudyScope(loadedScope.value, category.value, chapter.value)) {
       await loadQuestions(true);
     }
   } catch (e) {
@@ -353,9 +455,28 @@ watch(currentNumber, (n) => {
     </view>
 
     <view class="card filters category-filter">
-      <picker mode="selector" :range="categories" @change="changeCategory($event)">
-        <view class="select">{{ category || '选择科目' }}</view>
-      </picker>
+      <view class="picker-field">
+        <text class="picker-label">科目</text>
+        <picker mode="selector" :range="categories" @change="changeCategory($event)">
+          <view class="select">{{ category || '选择科目' }}</view>
+        </picker>
+      </view>
+      <view v-if="chapters.length > 0" class="picker-field">
+        <text class="picker-label">章节</text>
+        <picker mode="selector" :range="chapterLabels" @change="changeChapter($event)">
+          <view class="select">{{ selectedChapter ? `${selectedChapter.name}（${selectedChapter.questionCount}题）` : '选择章节' }}</view>
+        </picker>
+      </view>
+    </view>
+
+    <view v-if="chapterLoading" class="state-message">正在加载章节…</view>
+    <view v-else-if="loadError" class="state-message error-state">
+      <text>{{ loadError }}</text>
+      <button class="btn secondary retry-btn" @tap="retryLoad()">重新加载</button>
+    </view>
+
+    <view v-if="selectedChapter && selectedChapter.resumePosition > 0" class="chapter-resume">
+      上次学到第 {{ selectedChapter.resumePosition }} / 共 {{ selectedChapter.questionCount }} 题
     </view>
 
     <view class="study-summary">
@@ -380,7 +501,7 @@ watch(currentNumber, (n) => {
     </view>
 
     <view v-if="loading" class="empty">加载中...</view>
-    <view v-else-if="questions.length === 0" class="empty">当前科目暂无题目。</view>
+    <view v-else-if="questions.length === 0 && !loadError" class="empty">{{ chapter ? '本章暂无题目。' : '当前科目暂无题目。' }}</view>
 
     <view class="question-list" @touchstart="onTouchStart($event)" @touchend="onTouchEnd($event)">
       <view v-if="currentQuestion" class="card question-card">
@@ -572,7 +693,20 @@ watch(currentNumber, (n) => {
 }
 
 .category-filter {
+  gap: 18rpx;
   padding: 18rpx 24rpx;
+}
+
+.picker-field {
+  display: flex;
+  flex-direction: column;
+  gap: 8rpx;
+}
+
+.picker-label {
+  color: #1a1a1a;
+  font-size: 28rpx;
+  font-weight: 700;
 }
 
 .select {
@@ -581,8 +715,36 @@ watch(currentNumber, (n) => {
   border-radius: 18rpx;
   color: #111827;
   font-size: 28rpx;
-  min-height: 68rpx;
-  padding: 16rpx 20rpx;
+  min-height: 88rpx;
+  padding: 22rpx 20rpx;
+}
+
+.chapter-resume,
+.state-message {
+  background: #fff;
+  border: 2rpx solid #e2e8e4;
+  border-radius: 18rpx;
+  color: #5b6b62;
+  font-size: 28rpx;
+  padding: 20rpx 24rpx;
+}
+
+.chapter-resume {
+  background: #e8f3ec;
+  border-color: rgba(31, 122, 82, 0.3);
+  color: #145c3c;
+}
+
+.error-state {
+  align-items: flex-start;
+  color: #c0392b;
+  display: flex;
+  flex-direction: column;
+  gap: 14rpx;
+}
+
+.retry-btn {
+  min-height: 88rpx;
 }
 
 .study-summary {
