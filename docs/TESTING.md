@@ -54,7 +54,7 @@
 - 管理员用户维护和角色分层
 
 ### 2.7 M1 整包发布与公共协议
-- `m1-workbook.release.spec.ts`:仅接受 `.xlsx`,限制压缩/解压大小,校验工作表顺序、各章题数、总题量和图片数量;覆盖预检过期、确认语错误、源文件缺失/篡改、重复发布和并发代际冲突。
+- `m1-workbook.release.spec.ts`:仅接受 `.xlsx`,限制压缩/解压大小,校验旧版 7 工作表和当前 23 章节汇总表的章节顺序、各章题数、总题量和图片数量；覆盖标准 Drawing 图片提取、预检过期、确认语错误、源文件缺失/篡改、重复发布和并发代际冲突。
 - 发布后只保留新 generation,清理章节学习进度,放弃所有尚未完成的 M1 考试(含历史 `activeKey=NULL` 记录),保留已提交历史。
 - `m1-migration.spec.ts`:M1 字段、generation 表和索引可幂等创建,兼容既有数据库。
 - `common-protocol.spec.ts`:成功/失败响应都带 `code`、`requestId` 和 `X-Request-Id`;题库切换使用稳定码 `QUESTION_SET_UPDATED`。
@@ -109,7 +109,7 @@ powershell -ExecutionPolicy Bypass -File scripts\package-student-apk.ps1 -BuildB
 - Web 普通用户首页:只显示交流、下载 App、专升本。
 - Web 业务管理员/超级管理员首页:显示学习、考试、回顾、错题本、交流、下载 App、专升本、管理后台。
 - App 首页:显示学习、考试、回顾、错题本、交流、专升本。
-- Web / App M1 学习页:显示第1章至第7章及各章题量,切换章节后从该章独立续学位置恢复;快速切章不能显示上一章的迟到响应。
+- Web / App M1 学习页:显示当前题库返回的全部章节及各章题量,切换章节后从该章独立续学位置恢复;快速切章不能显示上一章的迟到响应。
 - Web / App 发布恢复:学习中发布新 M1 后,页面能识别 `QUESTION_SET_UPDATED`,重新加载章节并落到有效题目。
 - App 其他科目学习页:20 题分页、输入页码后点击跳转、查看答案旁评论。
 - App 错题本:查看答案/已掌握旁评论。

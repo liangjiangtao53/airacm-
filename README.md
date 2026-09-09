@@ -107,7 +107,7 @@ docker compose down               # 停止服务(MySQL 数据保留在 mysql_dat
 
 - Nginx TLS(TLSv1.2/1.3)、HSTS、X-Frame-Options、X-Content-Type-Options、Referrer-Policy、Permissions-Policy、CSP
 - 限流:普通 30 r/s;登录/发码/注册/卡密登录 1 r/s(叠加后端 `@Throttle` 双层)
-- body 上限:全局 2m,APK 上传路径 150m;M1 整包只接受不超过 5MB 的 `.xlsx`,解压总量不超过 25MB
+- body 上限:全局 2m,APK/普通题库上传路径 150m,M1 预检入口 6m;M1 整包只接受不超过 5MiB 的 `.xlsx`,解压总量不超过 25MiB
 - 后端 `helmet()`、`ValidationPipe`(白名单)、CORS 白名单、JWT 强校验(缺失启动失败)
 - 数据库仅容器内网,不暴露 3306;容器非 root 运行
 - 短信防刷:同号 60s 不重发
