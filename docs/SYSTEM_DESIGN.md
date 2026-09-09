@@ -52,7 +52,7 @@ question_category_generation, admin_operation_log, wechat_bind_session
 | 微信回调幂等 | transaction_id 唯一 + 预单金额对账 |
 | 越权 | JwtAuthGuard(验 token) + RolesGuard(验 role) + tenantId 隔离 |
 | 题目图片持久化 | Excel 图片保存到 `QUESTION_IMAGE_DIR`,URL 存入 `question.imageUrls` |
-| M1 整包发布 | 预检批次 + 题库 generation 行锁;事务内放弃旧 M1 未完成考试、清理旧进度、替换 1698 题并切换代际 |
+| M1 整包发布 | 预检批次 + 题库 generation 行锁;事务内放弃旧 M1 未完成考试、清理旧进度、替换完整受管题库并切换代际 |
 | 发布中的读写竞态 | 学习、考试开始和进度上报校验 generation;题库已切换时返回稳定错误码 `QUESTION_SET_UPDATED` |
 
 ## 5. 性能优化设计(支撑 2000 人学习)
@@ -117,9 +117,9 @@ question_category_generation, admin_operation_log, wechat_bind_session
 | 类型 | 支持点 | 输出 |
 |---|---|---|
 | 普通 Excel | 表头驱动解析,兼容列顺序变化 | 题目、选项、答案、解析 |
-| WPS 带图 Excel | 解析 `DISPIMG` 与 workbook 内图片关系 | 图片文件 + `question.imageUrls` |
+| WPS / 标准带图 Excel | 解析 `DISPIMG` 或 Drawing 锚点与 workbook 内图片关系 | 图片文件 + `question.imageUrls` |
 | PDF | 针对 M9 参考试题解析 | `M9 new` 科目,用于版本对比 |
-| M1 整包 `.xlsx` | 固定第1章至第7章,校验各章题数、1698 总题量和 23 个图片单元格 | 预检摘要;确认后原子替换为新的 generation |
+| M1 整包 `.xlsx` | 当前版校验“题库”工作表 1.1–7.2 的各章题数、2370 总题量和 51 个图片引用；兼容旧版 7 工作表 | 预检摘要;确认后原子替换为新的 generation |
 
 普通导入后同一题目数据被学习、考试、考试回顾、错题本复用;图片 URL 通过 `/question-images/:file` 输出,并设置跨源资源策略供 Web 前端加载。M1 是保留科目,普通导入、改名、删除和批量删除入口都会拒绝,只能使用整包预检/发布流程。
 

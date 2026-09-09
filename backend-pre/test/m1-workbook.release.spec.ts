@@ -83,6 +83,79 @@ describe('M1 20260803.xlsx release validation', () => {
     ).rejects.toThrow('工作表必须按顺序');
   });
 
+  it('extracts standard Excel drawing images at their anchored row and column', () => {
+    const sheet = {} as XLSX.WorkSheet;
+    const image = Buffer.from('standard-drawing-image');
+    const wb = {
+      SheetNames: ['题库'],
+      Sheets: { 题库: sheet },
+      files: {
+        'xl/worksheets/_rels/sheet1.xml.rels': { content: Buffer.from(
+          '<Relationships><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing" Target="../drawings/drawing1.xml" /></Relationships>',
+        ) },
+        'xl/drawings/drawing1.xml': { content: Buffer.from(
+          '<xdr:wsDr><xdr:twoCellAnchor><xdr:from><xdr:col>12</xdr:col><xdr:row>4</xdr:row></xdr:from><xdr:pic><xdr:blipFill><a:blip r:embed="rImg1" /></xdr:blipFill></xdr:pic></xdr:twoCellAnchor></xdr:wsDr>',
+        ) },
+        'xl/drawings/_rels/drawing1.xml.rels': { content: Buffer.from(
+          '<Relationships><Relationship Target="../media/image1.jpg" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Id="rImg1" /></Relationships>',
+        ) },
+        'xl/media/image1.jpg': { content: image },
+      },
+    } as unknown as XLSX.WorkBook;
+
+    const extracted = (service as any).extractWorkbookImages(wb, sheet) as Map<number, Array<{ colIndex: number; buffer: Buffer }>>;
+    expect(extracted.get(4)).toHaveLength(1);
+    expect(extracted.get(4)?.[0].colIndex).toBe(12);
+    expect(extracted.get(4)?.[0].buffer.equals(image)).toBe(true);
+  });
+
+  it('parses the 2370-question consolidated M1 layout into 23 ordered chapters', () => {
+    const policy = [
+      ['1.1', 10], ['1.2', 14], ['1.3', 13], ['2.1', 11], ['2.2', 8], ['2.3', 26], ['2.4', 4],
+      ['3.1', 96], ['3.2', 156], ['3.3', 309], ['3.4', 105], ['4.1', 367], ['4.2', 207],
+      ['4.3', 214], ['4.4', 122], ['4.5', 3], ['5.1', 96], ['5.2', 106], ['6.1', 118],
+      ['6.2', 157], ['6.3', 135], ['7.1', 58], ['7.2', 35],
+    ] as const;
+    const rows: unknown[][] = [['章节', '题目', '选项A', '选项B', '选项C', '选项D', '答案', '解析', '解析图片']];
+    let sequence = 0;
+    for (const [chapter, count] of policy) {
+      for (let index = 0; index < count; index += 1) {
+        sequence += 1;
+        const singleOption = sequence <= 2;
+        rows.push([
+          chapter,
+          `题目-${sequence}`,
+          singleOption ? '' : 'A',
+          singleOption ? '' : 'B',
+          singleOption ? '' : 'C',
+          'D',
+          singleOption ? 'D' : 'A',
+          `解析-${sequence}`,
+          '',
+        ]);
+      }
+    }
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([['统计']]), '章节统计');
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet(rows), '题库');
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([['图片查看']]), '图片查看');
+    const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
+    const images = new Map<number, Array<{ ext: string; buffer: Buffer; colIndex: number }>>();
+    for (let rowIndex = 1; rowIndex <= 51; rowIndex += 1) {
+      images.set(rowIndex, [{ ext: '.jpg', buffer: Buffer.from(`image-${rowIndex}`), colIndex: 8 }]);
+    }
+    const extractor = jest.spyOn(service as any, 'extractWorkbookImages').mockReturnValue(images);
+    try {
+      const parsed = (service as any).parseM1Workbook({ buffer, originalname: 'M1-2025.xlsx' });
+      expect(parsed.totalRows).toBe(2370);
+      expect(parsed.imageCells).toBe(51);
+      expect(parsed.singleOptionQuestions).toBe(2);
+      expect(parsed.chapters.map((chapter: any) => [chapter.name, chapter.plan.toSave.length])).toEqual(policy);
+    } finally {
+      extractor.mockRestore();
+    }
+  });
+
   it('preflights all seven sheets and atomically replaces the managed M1 scope', async () => {
     const buffer = await readFile(workbookPath);
     const old = await ds.getRepository(Question).save(

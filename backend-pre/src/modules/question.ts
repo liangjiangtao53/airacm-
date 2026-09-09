@@ -70,11 +70,12 @@ const ANSWER_HEADERS = ['参考答案', '答案', '正确答案'];
 const ANALYSIS_HEADERS = ['解析', '原文解析', '答案解析', '说明', '备注'];
 const OBSOLETE_QUESTION_CATEGORIES = ['M9 new'];
 const M1_CATEGORY = 'M1 航空概论';
-const M1_CONFIRM_PHRASE = '发布M1 1698题';
 const M1_PREVIEW_TTL_MS = 2 * 60 * 60 * 1000;
 const M1_POLICY = {
   category: M1_CATEGORY,
   usage: 'both' as QuestionUsage,
+} as const;
+const M1_LEGACY_POLICY = {
   chapters: [
     { name: '第1章', count: 331 },
     { name: '第2章', count: 287 },
@@ -86,6 +87,37 @@ const M1_POLICY = {
   ],
   total: 1698,
   imageCells: 23,
+} as const;
+const M1_CONSOLIDATED_POLICY = {
+  dataSheet: '题库',
+  chapterHeader: '章节',
+  chapters: [
+    { name: '1.1', count: 10 },
+    { name: '1.2', count: 14 },
+    { name: '1.3', count: 13 },
+    { name: '2.1', count: 11 },
+    { name: '2.2', count: 8 },
+    { name: '2.3', count: 26 },
+    { name: '2.4', count: 4 },
+    { name: '3.1', count: 96 },
+    { name: '3.2', count: 156 },
+    { name: '3.3', count: 309 },
+    { name: '3.4', count: 105 },
+    { name: '4.1', count: 367 },
+    { name: '4.2', count: 207 },
+    { name: '4.3', count: 214 },
+    { name: '4.4', count: 122 },
+    { name: '4.5', count: 3 },
+    { name: '5.1', count: 96 },
+    { name: '5.2', count: 106 },
+    { name: '6.1', count: 118 },
+    { name: '6.2', count: 157 },
+    { name: '6.3', count: 135 },
+    { name: '7.1', count: 58 },
+    { name: '7.2', count: 35 },
+  ],
+  total: 2370,
+  imageCells: 51,
 } as const;
 
 type PdfSection = 'stem' | 'option' | 'afterAnswer' | 'analysis';
@@ -291,6 +323,7 @@ interface ParsedM1Workbook {
   totalRows: number;
   imageCells: number;
   duplicateStems: number;
+  singleOptionQuestions: number;
 }
 
 interface M1ChapterPreview {
@@ -800,7 +833,11 @@ export class QuestionService {
     }
 
     const expiresAt = new Date(Date.now() + M1_PREVIEW_TTL_MS);
-    const warnings = parsed.duplicateStems > 0 ? [`检测到 ${parsed.duplicateStems} 个重复题干，按已确认规则全部保留`] : [];
+    const warnings: string[] = [];
+    if (parsed.duplicateStems > 0) warnings.push(`检测到 ${parsed.duplicateStems} 个重复题干，按已确认规则全部保留`);
+    if (parsed.singleOptionQuestions > 0) {
+      warnings.push(`检测到 ${parsed.singleOptionQuestions} 道题仅有 1 个有效选项，按原始题面保留`);
+    }
     const preview: M1PreviewData = {
       batchId,
       category: M1_CATEGORY,
@@ -811,7 +848,7 @@ export class QuestionService {
       duplicateStems: parsed.duplicateStems,
       warnings,
       chapters,
-      confirmPhrase: M1_CONFIRM_PHRASE,
+      confirmPhrase: `发布M1 ${parsed.totalRows}题`,
       expiresAt: expiresAt.toISOString(),
     };
     const batch = this.importBatches.create({
@@ -864,9 +901,9 @@ export class QuestionService {
     batchId: string,
     confirm: string,
   ): Promise<{ batchId: string; category: string; imported: number; generation: number; publishedAt: string; idempotent: boolean }> {
-    if (confirm !== M1_CONFIRM_PHRASE) throw new BadRequestException('发布确认语不匹配');
     const initial = await this.importBatches.findOne({ where: { id: batchId, tenantId: admin.tenantId, category: M1_CATEGORY } });
     if (!initial) throw new NotFoundException('预检批次不存在');
+    if (confirm !== `发布M1 ${initial.totalRows}题`) throw new BadRequestException('发布确认语不匹配');
     if (initial.status === 'published' && initial.generation && initial.publishedAt) {
       await this.cleanupM1BatchArtifacts(batchId, true);
       return {
@@ -946,11 +983,20 @@ export class QuestionService {
       throw new BadRequestException('M1 Excel 解析失败');
     }
     const visibleNames = wb.SheetNames.filter((_, index) => (wb.Workbook?.Sheets?.[index]?.Hidden ?? 0) === 0);
-    const expectedNames = M1_POLICY.chapters.map((chapter) => chapter.name);
-    if (visibleNames.length !== expectedNames.length || visibleNames.some((name, index) => name !== expectedNames[index])) {
-      throw new BadRequestException(`M1 工作表必须按顺序为：${expectedNames.join('、')}`);
-    }
+    const legacyNames = M1_LEGACY_POLICY.chapters.map((chapter) => chapter.name);
+    const isLegacy = visibleNames.length === legacyNames.length && visibleNames.every((name, index) => name === legacyNames[index]);
+    const parsed = isLegacy ? this.parseLegacyM1Workbook(wb, visibleNames) : this.parseConsolidatedM1Workbook(wb);
+    return {
+      fileName: basename(file.originalname),
+      fileHash: createHash('sha1').update(file.buffer).digest('hex'),
+      ...parsed,
+    };
+  }
 
+  private parseLegacyM1Workbook(
+    wb: XLSX.WorkBook,
+    visibleNames: string[],
+  ): Omit<ParsedM1Workbook, 'fileName' | 'fileHash'> {
     const chapters: ParsedM1Chapter[] = [];
     const allStems: string[] = [];
     let totalRows = 0;
@@ -960,9 +1006,9 @@ export class QuestionService {
       const sheet = wb.Sheets[name];
       const rows = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, blankrows: false, raw: false, defval: '' });
       if (rows.length < 2) throw new BadRequestException(`${name} 没有题目数据`);
-      const rowImages = this.extractWpsCellImages(wb, sheet);
+      const rowImages = this.extractWorkbookImages(wb, sheet);
       const plan = this.buildImportPlan(rows, rowImages);
-      const expected = M1_POLICY.chapters[order];
+      const expected = M1_LEGACY_POLICY.chapters[order];
       if (plan.failed.length > 0) {
         const first = plan.failed[0];
         throw new BadRequestException(`${name} 第 ${first.row} 行：${first.reason}`);
@@ -975,17 +1021,96 @@ export class QuestionService {
       allStems.push(...plan.toSave.map((row) => row.parsed.stem));
       chapters.push({ name, order, rows, rowImages, plan });
     }
-    if (totalRows !== M1_POLICY.total) throw new BadRequestException(`M1 总题量应为 ${M1_POLICY.total}，实际为 ${totalRows}`);
-    if (imageCells !== M1_POLICY.imageCells) {
-      throw new BadRequestException(`M1 图片单元格应为 ${M1_POLICY.imageCells}，实际识别 ${imageCells}`);
+    if (totalRows !== M1_LEGACY_POLICY.total) {
+      throw new BadRequestException(`M1 总题量应为 ${M1_LEGACY_POLICY.total}，实际为 ${totalRows}`);
+    }
+    if (imageCells !== M1_LEGACY_POLICY.imageCells) {
+      throw new BadRequestException(`M1 图片单元格应为 ${M1_LEGACY_POLICY.imageCells}，实际识别 ${imageCells}`);
     }
     return {
-      fileName: basename(file.originalname),
-      fileHash: createHash('sha1').update(file.buffer).digest('hex'),
       chapters,
       totalRows,
       imageCells,
       duplicateStems: this.countDuplicateStems(allStems),
+      singleOptionQuestions: 0,
+    };
+  }
+
+  private parseConsolidatedM1Workbook(wb: XLSX.WorkBook): Omit<ParsedM1Workbook, 'fileName' | 'fileHash'> {
+    const sheet = wb.Sheets[M1_CONSOLIDATED_POLICY.dataSheet];
+    if (!sheet) {
+      throw new BadRequestException(
+        `M1 工作表必须按顺序为旧版 ${M1_LEGACY_POLICY.chapters.map((chapter) => chapter.name).join('、')}，或包含“${M1_CONSOLIDATED_POLICY.dataSheet}”工作表`,
+      );
+    }
+    const rows = XLSX.utils.sheet_to_json<unknown[]>(sheet, {
+      header: 1,
+      blankrows: true,
+      raw: false,
+      defval: '',
+    });
+    if (rows.length < 2) throw new BadRequestException('题库工作表没有题目数据');
+    const normalizeHeader = (value: unknown): string => String(value ?? '').replace(/\s/g, '').trim();
+    const chapterColumn = rows[0].findIndex((value) => normalizeHeader(value) === M1_CONSOLIDATED_POLICY.chapterHeader);
+    if (chapterColumn < 0) throw new BadRequestException('题库工作表缺少“章节”列');
+
+    const workbookImages = this.extractWorkbookImages(wb, sheet);
+    const byChapter = new Map<string, Array<{ sourceIndex: number; row: unknown[] }>>(
+      M1_CONSOLIDATED_POLICY.chapters.map((chapter) => [chapter.name, []]),
+    );
+    let lastChapterOrder = -1;
+    for (let sourceIndex = 1; sourceIndex < rows.length; sourceIndex += 1) {
+      const row = rows[sourceIndex];
+      if (!row.some((value) => String(value ?? '').trim())) continue;
+      const chapterName = String(row[chapterColumn] ?? '').trim();
+      const chapterOrder = M1_CONSOLIDATED_POLICY.chapters.findIndex((chapter) => chapter.name === chapterName);
+      if (chapterOrder < 0) throw new BadRequestException(`题库第 ${sourceIndex + 1} 行章节“${chapterName || '空'}”不在发布清单内`);
+      if (chapterOrder < lastChapterOrder) throw new BadRequestException(`题库第 ${sourceIndex + 1} 行章节顺序错误`);
+      lastChapterOrder = chapterOrder;
+      byChapter.get(chapterName)!.push({ sourceIndex, row });
+    }
+
+    const chapters: ParsedM1Chapter[] = [];
+    const allStems: string[] = [];
+    let totalRows = 0;
+    let imageCells = 0;
+    let singleOptionQuestions = 0;
+    for (let order = 0; order < M1_CONSOLIDATED_POLICY.chapters.length; order += 1) {
+      const expected = M1_CONSOLIDATED_POLICY.chapters[order];
+      const sourceRows = byChapter.get(expected.name) ?? [];
+      const chapterRows = [rows[0], ...sourceRows.map((item) => item.row)];
+      const rowImages = new Map<number, ExtractedImage[]>();
+      sourceRows.forEach((item, index) => {
+        const images = workbookImages.get(item.sourceIndex);
+        if (images?.length) rowImages.set(index + 1, images);
+      });
+      const plan = this.buildImportPlan(chapterRows, rowImages, 1);
+      if (plan.failed.length > 0) {
+        const first = plan.failed[0];
+        const sourceRow = sourceRows[first.row - 2]?.sourceIndex;
+        throw new BadRequestException(`${expected.name} 第 ${(sourceRow ?? first.row - 1) + 1} 行：${first.reason}`);
+      }
+      if (plan.toSave.length !== expected.count) {
+        throw new BadRequestException(`${expected.name} 题量应为 ${expected.count}，实际为 ${plan.toSave.length}`);
+      }
+      totalRows += plan.toSave.length;
+      imageCells += [...rowImages.values()].reduce((sum, images) => sum + images.length, 0);
+      singleOptionQuestions += plan.toSave.filter((row) => row.parsed.options.length === 1).length;
+      allStems.push(...plan.toSave.map((row) => row.parsed.stem));
+      chapters.push({ name: expected.name, order, rows: chapterRows, rowImages, plan });
+    }
+    if (totalRows !== M1_CONSOLIDATED_POLICY.total) {
+      throw new BadRequestException(`M1 总题量应为 ${M1_CONSOLIDATED_POLICY.total}，实际为 ${totalRows}`);
+    }
+    if (imageCells !== M1_CONSOLIDATED_POLICY.imageCells) {
+      throw new BadRequestException(`M1 图片单元格应为 ${M1_CONSOLIDATED_POLICY.imageCells}，实际识别 ${imageCells}`);
+    }
+    return {
+      chapters,
+      totalRows,
+      imageCells,
+      duplicateStems: this.countDuplicateStems(allStems),
+      singleOptionQuestions,
     };
   }
 
@@ -1146,7 +1271,10 @@ export class QuestionService {
           imported: prepared.length,
           abandonedAttempts: abandoned.affected ?? 0,
           generation: nextGeneration,
-          chapterCounts: Object.fromEntries(M1_POLICY.chapters.map((chapter) => [chapter.name, chapter.count])),
+          chapterCounts: prepared.reduce<Record<string, number>>((counts, question) => {
+            counts[question.chapterName] = (counts[question.chapterName] ?? 0) + 1;
+            return counts;
+          }, {}),
         },
       }),
     );
@@ -1186,7 +1314,7 @@ export class QuestionService {
       const sheet = wb.Sheets[sheetName];
       if (!sheet) throw new Error('empty workbook');
       rows = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, blankrows: false });
-      rowImages = this.extractWpsCellImages(wb, sheet);
+      rowImages = this.extractWorkbookImages(wb, sheet);
     } catch {
       throw new BadRequestException('Excel parse failed');
     }
@@ -1197,6 +1325,7 @@ export class QuestionService {
   private buildImportPlan(
     rows: unknown[][],
     rowImages = new Map<number, ExtractedImage[]>(),
+    minOptions = 2,
   ): { toSave: ImportPlanRow[]; failed: ImportFailure[]; colMap: ImportColumnMap } {
     const colMap = this.buildColMap(rows[0]);
     if (colMap.stem < 0) throw new BadRequestException('missing stem column');
@@ -1206,7 +1335,7 @@ export class QuestionService {
     const failed: ImportFailure[] = [];
     const toSave: ImportPlanRow[] = [];
     for (let i = 1; i < rows.length; i++) {
-      const parsed = this.parseRow(rows[i], colMap, rowImages.get(i) ?? []);
+      const parsed = this.parseRow(rows[i], colMap, rowImages.get(i) ?? [], minOptions);
       if ('error' in parsed) {
         failed.push({ row: i + 1, reason: parsed.error });
         continue;
@@ -1321,7 +1450,7 @@ export class QuestionService {
       const sheet = wb.Sheets[sheetName];
       if (!sheet) throw new Error('空工作簿');
       rows = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, blankrows: false });
-      rowImages = this.extractWpsCellImages(wb, sheet);
+      rowImages = this.extractWorkbookImages(wb, sheet);
     } catch {
       throw new BadRequestException('Excel 解析失败,请用模板填写');
     }
@@ -1472,6 +1601,83 @@ export class QuestionService {
     return rows;
   }
 
+  private extractWorkbookImages(wb: XLSX.WorkBook, sheet: XLSX.WorkSheet): Map<number, ExtractedImage[]> {
+    const result = new Map<number, ExtractedImage[]>();
+    const seen = new Set<string>();
+    for (const source of [this.extractWpsCellImages(wb, sheet), this.extractDrawingImages(wb, sheet)]) {
+      for (const [rowIndex, images] of source) {
+        for (const image of images) {
+          const hash = createHash('sha256').update(image.buffer).digest('hex');
+          const key = `${rowIndex}:${image.colIndex}:${hash}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          result.set(rowIndex, [...(result.get(rowIndex) ?? []), image]);
+        }
+      }
+    }
+    return result;
+  }
+
+  private extractDrawingImages(wb: XLSX.WorkBook, sheet: XLSX.WorkSheet): Map<number, ExtractedImage[]> {
+    const files = (wb as XLSX.WorkBook & { files?: Record<string, { content?: Buffer }> }).files;
+    const sheetIndex = wb.SheetNames.findIndex((name) => wb.Sheets[name] === sheet);
+    if (!files || sheetIndex < 0) return new Map();
+
+    const sheetPath = `xl/worksheets/sheet${sheetIndex + 1}.xml`;
+    const sheetRelsPath = `xl/worksheets/_rels/sheet${sheetIndex + 1}.xml.rels`;
+    const sheetRels = this.parsePackageRelationships(files[sheetRelsPath]?.content?.toString('utf8') ?? '');
+    const drawingTarget = [...sheetRels.values()].find((relationship) => relationship.type.endsWith('/drawing'))?.target;
+    if (!drawingTarget) return new Map();
+    const drawingPath = this.resolvePackagePath(sheetPath, drawingTarget);
+    const drawingName = drawingPath.split('/').pop();
+    if (!drawingName) return new Map();
+    const drawingRelsPath = `${drawingPath.slice(0, drawingPath.length - drawingName.length)}_rels/${drawingName}.rels`;
+    const drawingRels = this.parsePackageRelationships(files[drawingRelsPath]?.content?.toString('utf8') ?? '');
+    const drawingXml = files[drawingPath]?.content?.toString('utf8') ?? '';
+
+    const result = new Map<number, ExtractedImage[]>();
+    for (const match of drawingXml.matchAll(/<xdr:(?:twoCellAnchor|oneCellAnchor)\b[\s\S]*?<\/xdr:(?:twoCellAnchor|oneCellAnchor)>/g)) {
+      const anchor = match[0];
+      const from = anchor.match(/<xdr:from>([\s\S]*?)<\/xdr:from>/)?.[1];
+      const rowIndex = Number(from?.match(/<xdr:row>(\d+)<\/xdr:row>/)?.[1]);
+      const colIndex = Number(from?.match(/<xdr:col>(\d+)<\/xdr:col>/)?.[1]);
+      const rid = anchor.match(/<a:blip\b[^>]*r:embed="([^"]+)"/)?.[1];
+      if (!Number.isInteger(rowIndex) || !Number.isInteger(colIndex) || !rid) continue;
+      const target = drawingRels.get(rid)?.target;
+      if (!target) continue;
+      const imagePath = this.resolvePackagePath(drawingPath, target);
+      const image = files[imagePath]?.content;
+      if (!image?.length) continue;
+      const ext = extname(imagePath).toLowerCase() || '.png';
+      result.set(rowIndex, [...(result.get(rowIndex) ?? []), { ext, buffer: Buffer.from(image), colIndex }]);
+    }
+    return result;
+  }
+
+  private parsePackageRelationships(xml: string): Map<string, { target: string; type: string }> {
+    const result = new Map<string, { target: string; type: string }>();
+    for (const match of xml.matchAll(/<Relationship\b([^>]*)\/?\s*>/g)) {
+      const attributes = new Map<string, string>();
+      for (const attribute of match[1].matchAll(/([\w:]+)="([^"]*)"/g)) attributes.set(attribute[1], attribute[2]);
+      const id = attributes.get('Id');
+      const target = attributes.get('Target');
+      if (id && target) result.set(id, { target, type: attributes.get('Type') ?? '' });
+    }
+    return result;
+  }
+
+  private resolvePackagePath(sourceFile: string, target: string): string {
+    if (target.startsWith('/')) return target.replace(/^\/+/, '');
+    const parts = sourceFile.split('/');
+    parts.pop();
+    for (const part of target.replace(/\\/g, '/').split('/')) {
+      if (!part || part === '.') continue;
+      if (part === '..') parts.pop();
+      else parts.push(part);
+    }
+    return parts.join('/');
+  }
+
   private extractWpsCellImages(wb: XLSX.WorkBook, sheet: XLSX.WorkSheet): Map<number, ExtractedImage[]> {
     const files = (wb as XLSX.WorkBook & { files?: Record<string, { content?: Buffer }> }).files;
     const cellImagesXml = files?.['xl/cellimages.xml']?.content?.toString('utf8') ?? '';
@@ -1561,6 +1767,7 @@ export class QuestionService {
     row: unknown[],
     colMap: ImportColumnMap,
     rowImages: ExtractedImage[] = [],
+    minOptions = 2,
   ): { stem: string; options: QuestionOption[]; answer: string; analysis: string } | { error: string } {
     const cell = (idx: number): string => (idx < 0 ? '' : this.stripWpsImageFormula(String(row[idx] ?? '').trim()));
     const stem = cell(colMap.stem);
@@ -1572,7 +1779,7 @@ export class QuestionService {
       const text = cell(o.idx);
       if (text) options.push({ key: o.key, text });
     }
-    if (options.length < 2) return { error: '至少需要 2 个选项' };
+    if (options.length < minOptions) return { error: `至少需要 ${minOptions} 个选项` };
 
     const answer = cell(colMap.answer)
       .toUpperCase()
