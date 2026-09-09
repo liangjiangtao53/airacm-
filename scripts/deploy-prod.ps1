@@ -123,7 +123,9 @@ cd "`$REL"
 cp "`$BASE/current/.env" .env
 mkdir -p deploy/nginx/certs
 if [ -d "`$BASE/current/deploy/nginx/certs" ]; then
-  cp -a "`$BASE/current/deploy/nginx/certs/." deploy/nginx/certs/
+  # Renewed private keys are intentionally root-owned (0600); copy them with sudo
+  # into the new release while preserving their owner and mode.
+  sudo -n cp -a "`$BASE/current/deploy/nginx/certs/." deploy/nginx/certs/
 fi
 # 原先继承 current/uploads 会把“持久”数据继续挂在某个旧发布目录下，清理旧版本时会连带删除上传文件。
 # 统一锚定到 BASE 下的真实目录；遇到历史符号链接时拒绝部署，先人工迁移数据。
