@@ -640,6 +640,9 @@ export const api = {
   deleteUser: (id: string) => req<{ deleted: number }>(`/admin/users/${id}`, { method: 'DELETE' }),
   unbindUserWechat: (id: string) =>
     req<{ unbound: boolean }>(`/admin/users/${id}/wechat-binding`, { method: 'DELETE' }),
+  // 重置密码(仅超管):后端生成随机临时密码,响应中返回一次
+  resetUserPassword: (id: string) =>
+    req<{ password: string }>(`/admin/users/${id}/reset-password`, { method: 'POST' }),
   // 新增业务管理员(仅超管)
   adminCreateAdmin: (phone: string, password: string, nickname: string) =>
     req<{ id: string; phone: string; nickname: string; role: UserRole }>('/admin/admins', {

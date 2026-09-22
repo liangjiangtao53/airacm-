@@ -25,9 +25,10 @@ export class SessionService {
     return sid;
   }
 
-  // 每请求校验。管理员放行;待补全 token 一律拒绝业务接口(补全接口走 PendingGuard 绕过)。
+  // 每请求校验。仅 super 免查库;admin/user 均比对单点——重置密码后轮换 sid 可立即踢下线。
+  // 待补全 token 一律拒绝业务接口(补全接口走 PendingGuard 绕过)。
   async validate(claims: SessionClaims): Promise<void> {
-    if (claims.role !== 'user') return;
+    if (claims.role === 'super') return;
     if (claims.pending) throw new UnauthorizedException('请先完善账号资料');
     const u = await this.users.findOne({
       where: { id: claims.sub },

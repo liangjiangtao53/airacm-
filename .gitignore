@@ -38,3 +38,14 @@ airacm*.tar.gz
 
 # Screenshot-enabled APK is local QA-only and must never be published.
 frontend/public/downloads/app/airacm-android-screenshot.apk
+
+# 本地分析产物/逆向目录/部署脚本本地副本(不入库)
+backend-pre/sim.js
+docs/_analysis/
+docs/*.xlsx
+docs/*.pdf
+reverse_apk_*/
+reverse_com.appbyme.app/
+scripts/deploy-prod.ps1
+scripts/backup-db.sh
+airacm-*.tar.gz

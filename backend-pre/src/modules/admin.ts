@@ -444,6 +444,27 @@ export class AdminService {
     return { unbound: true };
   }
 
+  // 超管重置密码:生成随机临时密码,仅在响应中返回一次(库中只存哈希)。
+  // 同时轮换 sessionId 踢下线(与 unbindWechat 同一手法)。
+  async resetUserPassword(caller: AuthUser, targetId: string): Promise<{ password: string }> {
+    const target = await this.users.findOne({
+      where: { tenantId: caller.tenantId, id: targetId },
+    });
+    if (!target) throw new NotFoundException('用户不存在');
+    if (target.role === 'super') throw new ForbiddenException('不能重置超级管理员密码');
+    const password = crypto.randomBytes(12).toString('base64url');
+    await this.users.update(target.id, {
+      passwordHash: await bcrypt.hash(password, 10),
+      sessionId: crypto.randomUUID(),
+    });
+    await this.logAdminOperation(caller, 'user_reset_password', 'user', target.id, {
+      phone: target.phone,
+      nickname: target.nickname,
+      role: target.role,
+    });
+    return { password };
+  }
+
   async listOperationLogs(
     caller: AuthUser,
     q: OperationLogQuery,
@@ -543,6 +564,12 @@ export class AdminController {
   @Delete('users/:id/wechat-binding')
   unbindWechat(@CurrentUser() admin: AuthUser, @Param('id') id: string) {
     return this.svc.unbindWechat(admin, id);
+  }
+
+  // 重置密码:仅超管(类级 @Roles('super')),可重置业务管理员与普通用户。
+  @Post('users/:id/reset-password')
+  resetUserPassword(@CurrentUser() admin: AuthUser, @Param('id') id: string) {
+    return this.svc.resetUserPassword(admin, id);
   }
 
   // 新增业务管理员:仅超管(类级 @Roles('super'),方法不放宽)。

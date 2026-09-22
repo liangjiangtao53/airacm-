@@ -593,6 +593,14 @@ export default function AdminPage() {
       setUsers((list) => list.map((item) => (item.id === u.id ? { ...item, wechatBound: false } : item)));
     })();
 
+  // 重置业务管理员密码(仅超管):新密码只在弹窗显示一次。
+  const resetPwd = (u: AdminUser) =>
+    wrap(async () => {
+      if (!window.confirm(`确认重置 ${u.phone || u.nickname} 的密码？原密码将立即失效。`)) return;
+      const r = await api.resetUserPassword(u.id);
+      window.alert(`已重置 ${u.phone || u.nickname} 的密码为：\n${r.password}\n\n仅显示这一次，请立即告知本人。`);
+    })();
+
   const addTopic = wrap(async () => {
     const name = newTopic.trim();
     if (!name) return;
@@ -1517,6 +1525,11 @@ export default function AdminPage() {
                     )}
                   </span>
                   <span className="flex items-center gap-3">
+                    {isSuper && u.role === 'admin' && (
+                      <button onClick={() => resetPwd(u)} className="text-xs text-sky hover:underline">
+                        重置密码
+                      </button>
+                    )}
                     {isSuper && u.wechatBound && (
                       <button onClick={() => unbindUserWechat(u)} className="text-xs text-sky hover:underline">
                         解绑微信
