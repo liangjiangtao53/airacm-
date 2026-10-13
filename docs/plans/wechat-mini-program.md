@@ -79,6 +79,14 @@ The goal is not merely to make `build:mp-weixin` succeed. The release is complet
 
 ## Architecture
 
+### Education QR consistency contract
+
+- **QRC-01 Source of Truth:** Web and uni-app clients both read `GET /api/app/customer-service-qr` (the uni-app base URL already includes `/api`). The API first reads the persistent `uploads/customer-service/customer-service-qr.png`; when absent, it reads the packaged backend fallback image.
+- **QRC-02 Synchronization direction:** Operators update the persistent server image; deployments update only the packaged fallback. A deployment must never overwrite an existing persistent image. The API response is the only client-facing representation.
+- **QRC-03 Normalization and versioning:** Compare image content by raw-byte SHA-256 and serve the MIME type derived from the selected file extension. HTTP timestamps, ETags, and request IDs are non-semantic.
+- **QRC-04 Conflict and repair:** A valid persistent image always wins over the packaged fallback. Missing persistent content is repaired only by falling back at read time; no process may silently copy or overwrite either representation. Persistent updates must upload to a temporary file, verify the expected SHA-256, and atomically rename it into place; repeating the same bytes is idempotent.
+- **QRC-05 Acceptance:** Given no persistent image, when Web or uni-app requests the QR, then both receive the packaged fallback bytes. Given a valid persistent image, when either client requests it repeatedly or after an API restart, then both receive the persistent bytes with `Cache-Control: no-store`. Given neither image exists or the selected extension is unsupported, when requested, then the API returns 404 without altering stored files. After deployment, compare the Web and API response SHA-256 values with the intended source image before declaring the release complete.
+
 ```text
                          +---------------------------+
                          |  WeChat platform services |
