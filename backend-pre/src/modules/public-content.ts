@@ -16,7 +16,7 @@ const IMAGE_CONTENT_TYPES: Record<string, string> = {
 export class PublicContentController {
   @Get('customer-service-qr')
   customerServiceQr(@Res() res: Response): void {
-    // 真实二维码不存在时返回后端内置模拟图；上传同名文件后下一次请求自动切换。
+    // 外置二维码不存在时返回后端内置默认二维码；上传同名文件后下一次请求自动切换。
     const qrPath = existsSync(env.customerServiceQrPath)
       ? env.customerServiceQrPath
       : env.customerServiceQrFallbackPath;

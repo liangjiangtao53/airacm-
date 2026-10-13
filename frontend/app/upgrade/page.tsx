@@ -1,4 +1,4 @@
-const qrUrl = '/images/customer-service-qr.png';
+const qrUrl = '/api/app/customer-service-qr';
 const advisorUrl = '/images/customer-service-advisor.png';
 
 // 仅展示当前主推院校，其他学校统一引导用户咨询客服确认。
